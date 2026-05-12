@@ -1,0 +1,31 @@
+"""
+Redis client for Pub/Sub publishing.
+"""
+
+import json
+import logging
+import redis.asyncio as aioredis
+
+from app.config import settings
+
+logger = logging.getLogger(__name__)
+_redis: aioredis.Redis | None = None
+
+
+async def init_redis():
+    global _redis
+    _redis = aioredis.from_url(settings.redis_url, decode_responses=True)
+    logger.info("Redis client initialized.")
+
+
+def get_redis() -> aioredis.Redis:
+    if _redis is None:
+        raise RuntimeError("Redis client not initialized")
+    return _redis
+
+
+async def publish(channel: str, data: dict):
+    try:
+        await get_redis().publish(channel, json.dumps(data))
+    except Exception as e:
+        logger.warning(f"Redis publish failed on channel {channel}: {e}")

@@ -1,0 +1,18 @@
+# Example strategy configuration
+# Copy this file and rename to activate a strategy instance
+# File name doesn't matter — all *.yaml files in this dir are loaded
+
+strategy_id: rsi-btc-5m
+class: RsiStrategy
+name: "RSI BTC 5m"
+symbol: BTC/USDT
+interval: 5m
+platform: auto
+enabled: false   # Set to true to activate
+
+params:
+  period: 14
+  oversold: 30
+  overbought: 70
+  size: "0.01"
+  leverage: 10

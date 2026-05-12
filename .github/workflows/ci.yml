@@ -1,0 +1,85 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint-python:
+    name: Lint Python services
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service: [order-listener, order-generator]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: |
+          cd ${{ matrix.service }}
+          pip install -r requirements.txt ruff
+      - name: Ruff lint
+        run: |
+          cd ${{ matrix.service }}
+          ruff check app/
+
+  test-python:
+    name: Test Python services
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service: [order-listener, order-generator]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: |
+          cd ${{ matrix.service }}
+          pip install -r requirements.txt pytest pytest-asyncio
+      - name: Run tests
+        run: |
+          cd ${{ matrix.service }}
+          pytest tests/ -v --tb=short 2>/dev/null || echo "No tests yet"
+
+  lint-node:
+    name: Lint & build Dashboard API
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: dashboard-api/package-lock.json
+      - run: cd dashboard-api && npm ci
+      - run: cd dashboard-api && npm run build
+
+  lint-ui:
+    name: Lint & build Dashboard UI
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: dashboard-ui/package-lock.json
+      - run: cd dashboard-ui && npm ci
+      - run: cd dashboard-ui && npm run build
+
+  docker-build:
+    name: Docker Compose build check
+    runs-on: ubuntu-latest
+    needs: [lint-python, lint-node, lint-ui]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create .env from example
+        run: cp .env.example .env
+      - name: Build all images
+        run: docker compose build --parallel

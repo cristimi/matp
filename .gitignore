@@ -1,0 +1,37 @@
+# Environment & secrets
+.env
+*.env.local
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+env/
+
+# Node
+node_modules/
+dist/
+.next/
+*.tsbuildinfo
+
+# Docker volumes (local dev)
+postgres_data/
+logs/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Strategy configs with sensitive params (override in your workflow)
+order-generator/strategies_config/*.yaml
+!order-generator/strategies_config/example_rsi_btc.yaml

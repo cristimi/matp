@@ -1,0 +1,112 @@
+version: "3.9"
+
+networks:
+  matp_net:
+
+volumes:
+  postgres_data:
+  logs:
+  strategy_configs:
+
+services:
+
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - order-listener
+      - order-generator
+      - dashboard-api
+      - dashboard-ui
+    networks: [matp_net]
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: matp
+      POSTGRES_USER: matp
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    networks: [matp_net]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U matp"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    networks: [matp_net]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  order-listener:
+    build: ./order-listener
+    environment:
+      DATABASE_URL: postgresql://matp:${POSTGRES_PASSWORD}@postgres:5432/matp
+      REDIS_URL: redis://redis:6379
+      WEBHOOK_SECRET: ${WEBHOOK_SECRET}
+      MASTER_KEY: ${MASTER_KEY}
+      BLOFIN_API_KEY: ${BLOFIN_API_KEY}
+      BLOFIN_API_SECRET: ${BLOFIN_API_SECRET}
+      HYPERLIQUID_PRIVATE_KEY: ${HYPERLIQUID_PRIVATE_KEY}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks: [matp_net]
+    restart: unless-stopped
+    volumes:
+      - logs:/app/logs
+
+  order-generator:
+    build: ./order-generator
+    environment:
+      DATABASE_URL: postgresql://matp:${POSTGRES_PASSWORD}@postgres:5432/matp
+      LISTENER_WEBHOOK_URL: http://order-listener:8001/webhook
+      WEBHOOK_SECRET: ${WEBHOOK_SECRET}
+      DATA_FEED_EXCHANGE: ${DATA_FEED_EXCHANGE:-binance}
+    volumes:
+      - strategy_configs:/app/strategies_config
+    depends_on:
+      order-listener:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+    networks: [matp_net]
+    restart: unless-stopped
+
+  dashboard-api:
+    build: ./dashboard-api
+    environment:
+      DATABASE_URL: postgresql://matp:${POSTGRES_PASSWORD}@postgres:5432/matp
+      REDIS_URL: redis://redis:6379
+      GENERATOR_URL: http://order-generator:8002
+      LISTENER_URL: http://order-listener:8001
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks: [matp_net]
+    restart: unless-stopped
+
+  dashboard-ui:
+    build: ./dashboard-ui
+    environment:
+      VITE_API_BASE: /api/dashboard
+      VITE_WS_URL: /ws/orders
+    networks: [matp_net]
+    restart: unless-stopped
