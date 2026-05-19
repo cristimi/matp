@@ -30,13 +30,13 @@ app.get('/health', (_req, res) => {
 });
 
 const server = http.createServer(app);
-initWebSocket(server);
 
 const PORT = parseInt(process.env.PORT || '8003', 10);
 
 async function main() {
   await initDb();
   await initRedis();
+  initWebSocket(server);
   server.listen(PORT, '0.0.0.0', () => {
     console.log(`Dashboard API listening on :${PORT}`);
   });

@@ -10,6 +10,7 @@ FROM node:20-alpine
 WORKDIR /app
 COPY package*.json ./
 RUN npm ci --omit=dev
+RUN apk add --no-cache curl
 COPY --from=builder /app/dist ./dist
 
 EXPOSE 8003
