@@ -27,6 +27,11 @@ class WebhookPayload(BaseModel):
     signal:     Literal["open_long", "close_long", "open_short", "close_short"]
     timestamp:  datetime
     token:      str
+    # New fields
+    signal_source: Optional[str] = "tradingview"
+    signal_metadata: Optional[dict] = {}
+    indicator_price: Optional[Decimal] = None
+
 
     @field_validator("size")
     @classmethod

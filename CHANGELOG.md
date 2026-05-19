@@ -2,14 +2,14 @@
 
 All notable changes to this project will be tracked in this file.
 
+## [2026-05-19 15:45]
+
+### Enhancements: Granular Strategy Monitoring
+- Updated database schema (`orders` table) to track `signal_source`, `signal_metadata` (JSONB), and `indicator_price`.
+- Updated `order-listener` to ingest and persist these new signal attributes, allowing for precise origin tracking (TradingView vs Internal) and indicator-based analysis.
+
 ## [2026-05-19 15:25]
-
-### Testing Phase 1: Final Webhook Integration Success
-- Successfully verified end-to-end webhook delivery via `webhooks.bbs15.duckdns.org`.
-- Configured Zoraxy to proxy requests directly to port `8001` with Authentication bypassed, relying on internal HMAC security.
-- Confirmed full integration with a `200 OK` response from the system.
-
-## [2026-05-19 15:15]
+...
 
 ### Testing Phase 1: Webhook Test D (Platform Switching)
 - Verified active platform switching.

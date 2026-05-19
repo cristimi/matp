@@ -69,11 +69,11 @@ async def _log_order(pool, payload: WebhookPayload, order_id: uuid.UUID, strateg
             INSERT INTO orders (
                 id, received_at, symbol, side, signal, order_type, size, price,
                 leverage, margin_mode, tp_price, sl_price, platform, strategy_id,
-                status, raw_webhook
+                status, raw_webhook, signal_source, signal_metadata, indicator_price
             ) VALUES (
                 $1, $2, $3, $4, $5, $6, $7, $8,
                 $9, $10, $11, $12, $13, $14,
-                'received', $15
+                'received', $15, $16, $17, $18
             )
             """,
             order_id,
@@ -91,6 +91,9 @@ async def _log_order(pool, payload: WebhookPayload, order_id: uuid.UUID, strateg
             payload.platform,
             strategy_id,
             json.dumps(payload.model_dump(mode="json", exclude={"token"})),
+            payload.signal_source,
+            json.dumps(payload.signal_metadata),
+            payload.indicator_price
         )
 
 
@@ -127,8 +130,9 @@ async def receive_webhook(
         await _log_webhook_call(pool, strategy_id, 404, "Strategy not found")
         raise HTTPException(status_code=404, detail="Strategy not found")
 
-    # 2. Authenticate
-    if not x_webhook_token or not await _verify_token(x_webhook_token, strategy['webhook_secret']):
+    # 2. Authenticate (Check Header or Body)
+    token_to_verify = x_webhook_token or payload.token
+    if not token_to_verify or not await _verify_token(token_to_verify, strategy['webhook_secret']):
         logger.warning(f"Rejected webhook: invalid token for strategy={strategy_id}")
         await _log_webhook_call(pool, strategy_id, 403, "Invalid token")
         raise HTTPException(status_code=403, detail="Invalid token")
