@@ -1,19 +1,21 @@
 markdown
-
 # Software Design Document (SDD)
 ## Modular Automated Trading Platform (MATP)
 
-**Version:** 1.1 — Implementation Edition
-**Date:** 2026-05-13
-**Status:** Active Development — Phase 1 Scaffolded
-**Previous:** 1.0 — 2026-05-11 — Master Plan
+**Version:** 1.2 — Signal Bot & Monitoring Edition
+**Date:** 2026-05-19
+**Status:** Phase 1 Core Complete — Webhook & Monitoring Ready
+**Previous:** 1.1 — 2026-05-13 — Implementation Edition
 
 ---
 
 ## Table of Contents
 
 1. [Introduction](#1-introduction)
-2. [Implementation Status](#2-implementation-status) *(new in v1.1)*
+   - 1.6 [Reference Documents](#16-reference-documents) *(new in v1.2)*
+2. [Implementation Status](#2-implementation-status) *(updated in v1.2)*
+...
+
 3. [System Overview](#3-system-overview)
 4. [Architecture](#4-architecture)
 5. [Component Specifications](#5-component-specifications)
@@ -67,14 +69,25 @@ The platform covers:
 - **Resilience**: Failed exchange calls do not crash the system; retries and dead-letter queues
 - **Mobile-friendly**: Dashboard usable on phone as well as desktop
 
-### 1.5 What Changed in v1.1
+### 1.5 What Changed in v1.1/1.2
 
 | Section | Change |
 |---------|--------|
-| §2 | **New** — Implementation status table: all 66 files committed to GitHub |
+| §1.6 | **New (v1.2)** — Reference Documents: Added links to Action and Test plans |
+| §2 | **Updated (v1.2)** — Implementation status: Webhook & Monitoring features added |
 | §10 | **Updated** — Roadmap now shows per-phase build status |
 | §12 | **New** — Full testing plan: smoke tests, integration tests, DB checks, CI verification |
 | §13 | **New** — Next steps: 33 prioritised tasks across all phases with effort estimates |
+
+### 1.6 Reference Documents
+
+To maintain focus and clarity, the following operational documents are maintained alongside the SDD:
+
+| Document | Description |
+|----------|-------------|
+| [**CHANGELOG.md**](./CHANGELOG.md) | Reverse-chronological history of all technical changes and fixes. |
+| [**ACTION_PLAN.md**](./ACTION_PLAN.md) | Immediate prioritised tasks for TradingView and Blofin integration. |
+| [**TEST_PLAN.md**](./TEST_PLAN.md) | Comprehensive test cases for webhooks, adapters, and UI. |
 
 ---
 
@@ -84,7 +97,7 @@ All services have been scaffolded and committed to GitHub (66 files total). The 
 
 | Component | Files | Status | Notes |
 |-----------|-------|--------|-------|
-| **order-listener** | 14 Python files | ✅ Ready | FastAPI, webhook auth, PostgreSQL logging, Blofin adapter, router, orders & config API |
+| **order-listener** | 14 Python files | ✅ Phase 1 | Enhanced webhook auth (TV body token), Granular Monitoring (Origin, Metadata, Indicator Price) |
 | **order-generator** | 8 Python files | 🟡 Scaffold | APScheduler, RSI & MA strategies, CCXT feed — activate in Phase 5 |
 | **dashboard-api** | 9 TypeScript files | ✅ Ready | Node/Express, orders + stats + config + positions routes, Redis WebSocket feed |
 | **dashboard-ui** | 15 React/TS files | ✅ Ready | 5 pages (Dashboard, Orders, Positions, Strategies, Settings), mobile nav, dark theme |
