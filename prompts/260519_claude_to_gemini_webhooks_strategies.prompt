@@ -1,0 +1,296 @@
+You are an expert software engineer helping implement strategy-specific webhooks and performance tracking for a modular automated trading platform (MATP). Your task is to generate production-ready code based on the architecture specification provided.
+
+# CONTEXT
+
+The Modular Automated Trading Platform (MATP) is a Docker-based trading system with:
+- Python FastAPI services (order-listener, order-generator)
+- Node.js/Express/React dashboard
+- PostgreSQL database
+- TradingView webhook integration
+- Blofin and Hyperliquid exchange adapters
+
+Current state: Single webhook endpoint `/webhook` receives all signals. Goal: Create strategy-specific webhook endpoints `/webhook/{strategyId}` with independent performance tracking.
+
+# ARCHITECTURE CHANGES
+
+## 1. Database Schema Changes
+
+### Add to strategies table:
+```sql
+ALTER TABLE strategies ADD COLUMN (
+    webhook_secret       VARCHAR(255) UNIQUE NOT NULL,
+    webhook_enabled      BOOLEAN DEFAULT TRUE,
+    description          TEXT,
+    platform_override    VARCHAR(20),
+    max_daily_signals    INTEGER,
+    created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at           TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX idx_strategies_webhook_secret ON strategies(webhook_secret);
+CREATE INDEX idx_strategies_enabled ON strategies(webhook_enabled);
+```
+
+### Create strategy_performance table:
+```sql
+CREATE TABLE strategy_performance (
+    id                  BIGSERIAL PRIMARY KEY,
+    strategy_id         VARCHAR(100) NOT NULL REFERENCES strategies(id) ON DELETE CASCADE,
+    period_type         VARCHAR(20) NOT NULL,
+    period_date         DATE,
+    
+    total_signals       INTEGER DEFAULT 0,
+    filled_orders       INTEGER DEFAULT 0,
+    failed_orders       INTEGER DEFAULT 0,
+    rejected_orders     INTEGER DEFAULT 0,
+    
+    winning_trades      INTEGER DEFAULT 0,
+    losing_trades       INTEGER DEFAULT 0,
+    neutral_trades      INTEGER DEFAULT 0,
+    win_rate            DECIMAL(5, 2),
+    
+    total_pnl           DECIMAL(18, 8),
+    avg_pnl             DECIMAL(18, 8),
+    median_pnl          DECIMAL(18, 8),
+    max_win             DECIMAL(18, 8),
+    max_loss            DECIMAL(18, 8),
+    
+    consecutive_wins    INTEGER DEFAULT 0,
+    consecutive_losses  INTEGER DEFAULT 0,
+    profit_factor       DECIMAL(10, 4),
+    
+    largest_drawdown    DECIMAL(5, 2),
+    
+    calculated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    
+    UNIQUE(strategy_id, period_type, period_date)
+);
+
+CREATE INDEX idx_strat_perf_strategy ON strategy_performance(strategy_id);
+CREATE INDEX idx_strat_perf_period ON strategy_performance(period_type, period_date DESC);
+```
+
+### Create strategy_webhook_calls table:
+```sql
+CREATE TABLE strategy_webhook_calls (
+    id              BIGSERIAL PRIMARY KEY,
+    strategy_id     VARCHAR(100) NOT NULL REFERENCES strategies(id),
+    received_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    http_status     INTEGER,
+    error_message   TEXT,
+    source_ip       INET
+);
+
+CREATE INDEX idx_webhook_calls_strategy ON strategy_webhook_calls(strategy_id, received_at DESC);
+CREATE INDEX idx_webhook_calls_status ON strategy_webhook_calls(http_status);
+```
+
+## 2. Order Listener Changes (Python FastAPI)
+
+### File: order-listener/app/webhook_handler.py
+
+Replace the existing single `/webhook` endpoint with a new parametrized endpoint that:
+1. Accepts POST to `/webhook/{strategy_id}`
+2. Extracts strategy_id from URL path
+3. Loads the strategy from the database
+4. Validates the webhook_secret against the token in header (X-Webhook-Token) using constant-time comparison
+5. Checks if webhook is enabled for that strategy
+6. Checks daily signal rate limit (max_daily_signals)
+7. Enriches the payload with strategy_id and platform defaults from the strategy record
+8. Calls the existing routing logic (no changes needed)
+9. Logs all webhook calls to strategy_webhook_calls table
+10. Returns {order_id, status, message, strategy_id}
+
+Key requirements:
+- Use constant-time HMAC comparison to prevent timing attacks
+- Rate limiting should count signals received TODAY (UTC date boundary)
+- Payload model should NOT require strategyId (it comes from URL)
+- All validation errors should log to strategy_webhook_calls with error_message and http_status
+- Success logging should only record http_status=200 with NULL error_message
+
+### File: order-listener/app/router.py
+
+Update the route_order() function to:
+1. Accept the signal with strategy_id already set
+2. Check signal.platform first (if set and != "auto")
+3. If not set, look up strategy from DB and use strategy.platform_override
+4. If still not set, use get_active_platform() from config
+5. Return the selected platform name
+
+### File: order-listener/app/models.py
+
+Update WebhookPayload Pydantic model:
+- Remove strategyId from required fields (it's set by webhook_handler)
+- Add optional strategy_id field (set after URL extraction)
+- Keep all other validation exactly the same
+- Add Pydantic validators to ensure price is provided for limit orders
+- Include JSON schema example in Config
+
+## 3. Order Generator Changes (Python)
+
+### File: order-generator/app/emitter.py
+
+Update emit_signal() function to:
+1. Accept a strategy object (already has strategy.strategy_id)
+2. Query the database for strategy.webhook_secret
+3. Build webhook URL as: {LISTENER_BASE_URL}/webhook/{strategy.strategy_id}
+4. Send POST with X-Webhook-Token header = strategy.webhook_secret
+5. Payload should NOT include strategyId (it's implicit from URL)
+6. Implement exponential backoff retries (3 attempts, wait 1s, 2s, 4s between)
+7. Log success and all failures
+
+The webhook payload should include:
+- symbol, side, signal, orderType, size, leverage, marginMode, tpPrice, slPrice, timestamp, platform
+- NO strategyId (it's in the URL)
+- NO token (it's in the header)
+
+## 4. Dashboard API Changes (Node.js/TypeScript/Express)
+
+### File: dashboard-api/src/routes/strategies.ts
+
+Create or update strategies router with these endpoints:
+
+#### GET /strategies
+Returns array of all strategies with:
+- id, name, symbol, interval, enabled, webhook_enabled, webhook_url (calculated as /api/listener/webhook/{id}), max_daily_signals, platform_override
+- metrics object: { total_signals, filled_orders, avg_pnl, win_rate, total_pnl }
+- Join with orders table to count signals and calculate current stats
+- Join with strategy_performance table (period_type = 'all_time') to get aggregated metrics
+
+#### GET /strategies/{strategyId}/performance
+Query params: period (default 'all_time'), date (YYYY-MM-DD, optional)
+Returns single performance record from strategy_performance table
+If no data exists, return 404 with message "No performance data yet for this strategy"
+
+#### POST /strategies/{strategyId}/webhook-secret/rotate
+Generates new random 32-byte secret (hex encoded)
+Updates strategies table webhook_secret column
+Returns { message: 'Webhook secret rotated', strategy_id, new_secret_preview: 'first-8-chars...' }
+
+#### GET /strategies/{strategyId}/webhook-calls
+Query params: limit (default 50), status_filter (optional: 200, 403, 429, 422)
+Returns recent webhook call logs from strategy_webhook_calls table
+Includes: received_at, http_status, error_message, source_ip
+
+### File: dashboard-api/src/routes/stats.ts
+
+Update existing stats endpoint to ensure by_strategy breakdown is calculated correctly.
+Should query strategy_performance table if available, fallback to order aggregation if not.
+
+## 5. Dashboard UI Changes (React/TypeScript)
+
+### New File: dashboard-ui/src/pages/StrategyAnalytics.tsx
+
+Create new page component that:
+- Fetches all strategies from GET /strategies
+- Allows selecting a strategy (button group)
+- Allows selecting period (24h, 7d, 30d, all_time)
+- Displays metric cards: Win Rate (%), Total P&L ($), Avg P&L ($), Total Signals
+- Placeholder sections for future charts (Cumulative P&L LineChart, Win/Loss BarChart)
+- Mobile responsive (stack cards vertically on small screens)
+- Use Tailwind CSS for styling to match existing dashboard theme
+
+### Update File: dashboard-ui/src/pages/Settings.tsx
+
+Add new "Webhook Configuration" section under existing settings:
+- For each strategy, display:
+  - Webhook URL (in code block): POST {origin}/api/listener/webhook/{strategy_id}
+  - Masked webhook secret: {first-8-chars}...
+  - Rotate button that calls POST /strategies/{id}/webhook-secret/rotate
+  - Toggle button for webhook_enabled (calls PUT /strategies/{id}/webhook-enabled)
+  - Input field for max_daily_signals (calls PUT /strategies/{id}/max-daily-signals)
+  - Recent webhook calls list (last 10 calls with status and timestamp)
+
+### Update File: dashboard-ui/src/App.tsx or Navigation Component
+
+Add new navigation item to sidebar/menu:
+- Label: "Strategy Analytics" or "Strategy Performance"
+- Icon: chart/analytics icon
+- Route: /strategies/analytics
+- Only visible if multiple strategies exist or feature flag is enabled
+
+## 6. Database Migration Script
+
+Create file: db/migrations/001_add_strategy_webhooks.sql
+
+Should include:
+1. ALTER TABLE strategies ADD COLUMN statements
+2. UPDATE to backfill webhook_secret with random values (using gen_random_bytes)
+3. ALTER TABLE strategies ALTER COLUMN webhook_secret SET NOT NULL
+4. CREATE INDEX statements
+5. CREATE TABLE strategy_performance
+6. CREATE TABLE strategy_webhook_calls
+7. Comments explaining each change
+
+## IMPLEMENTATION REQUIREMENTS
+
+### Code Quality
+- Follow existing code style in the repository
+- Include docstrings/comments for new functions
+- Use async/await patterns for I/O operations
+- Proper error handling with try-catch and logging
+- Type hints in Python and TypeScript
+
+### Security
+- Constant-time HMAC comparison for token validation (use hmac.compare_digest in Python)
+- Never log full webhook secrets
+- Never return full webhook secrets in API responses
+- Rate limiting default of 500 signals per strategy per day
+- Log all webhook calls including failed attempts
+
+### Testing
+- Include example curl commands for testing each endpoint
+- Test invalid token rejection
+- Test rate limit rejection
+- Test strategy not found rejection
+- Test successful order routing
+
+### Documentation
+- Include inline code comments explaining webhook flow
+- Add docstrings to new functions
+- Include example JSON payloads in function docstrings
+
+## DELIVERABLES
+
+Generate the following files in order:
+
+1. db/migrations/001_add_strategy_webhooks.sql
+2. order-listener/app/webhook_handler.py (complete rewrite)
+3. order-listener/app/router.py (updated)
+4. order-listener/app/models.py (updated)
+5. order-generator/app/emitter.py (updated)
+6. dashboard-api/src/routes/strategies.ts (new)
+7. dashboard-api/src/routes/stats.ts (updated, if needed)
+8. dashboard-ui/src/pages/StrategyAnalytics.tsx (new)
+9. dashboard-ui/src/pages/Settings.tsx (updated, just the webhook config section)
+10. dashboard-ui/src/App.tsx or navigation component (updated to add new route)
+
+For each file:
+- Include full working code (not pseudo-code)
+- Include all imports and dependencies
+- Include error handling
+- Include logging statements
+- Show where it fits in the existing codebase
+
+## TESTING INSTRUCTIONS
+
+After implementation, provide:
+1. SQL commands to verify schema changes
+2. Curl commands to test each new webhook endpoint
+3. Steps to verify performance metrics are being tracked
+4. Steps to verify Dashboard shows strategy analytics
+5. Instructions for updating TradingView alert URLs to new format
+
+## QUESTIONS TO CLARIFY
+
+If you need to make assumptions about:
+- Database connection pooling method
+- Logging library used (structlog, loguru, standard logging?)
+- TypeScript strict mode settings
+- React state management (hooks, context, or existing pattern?)
+- Chart library preferences (recharts is mentioned in SDD)
+
+State your assumptions clearly and ask for clarification.
+
+Now, please begin generating the implementation code files in the order specified above.
