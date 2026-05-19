@@ -23,7 +23,7 @@ class WebhookPayload(BaseModel):
     tpPrice:    Optional[Decimal] = None
     slPrice:    Optional[Decimal] = None
     platform:   str = "auto"
-    strategyId: Optional[str] = None
+    strategy_id: Optional[str] = None
     signal:     Literal["open_long", "close_long", "open_short", "close_short"]
     timestamp:  datetime
     token:      str
@@ -41,6 +41,14 @@ class WebhookPayload(BaseModel):
         if v is not None and not (1 <= v <= 200):
             raise ValueError("leverage must be between 1 and 200")
         return v
+
+    @field_validator("price")
+    @classmethod
+    def price_required_for_limit(cls, v: Optional[Decimal], info) -> Optional[Decimal]:
+        if info.data.get("orderType") == "limit" and v is None:
+            raise ValueError("price is required for limit orders")
+        return v
+
 
 
 class OrderResult(BaseModel):

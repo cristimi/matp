@@ -44,6 +44,15 @@ async def route_order(payload: WebhookPayload) -> OrderResult:
     """Select adapter and dispatch order."""
     platform = payload.platform
 
+    # If not explicitly set, try to use strategy's platform_override
+    if platform == "auto" and payload.strategy_id:
+        pool = get_pool()
+        async with pool.acquire() as conn:
+            platform = await conn.fetchval(
+                "SELECT platform_override FROM strategies WHERE id = $1", 
+                payload.strategy_id
+            ) or "auto"
+
     if platform == "auto":
         platform = await _get_active_platform()
 

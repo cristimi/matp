@@ -19,6 +19,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from app.strategies.base import BaseStrategy, Candle
 from app.strategies.rsi_strategy import RsiStrategy
 from app.strategies.ma_crossover import MaCrossoverStrategy
+from app.database import get_pool
 
 logger = logging.getLogger(__name__)
 
@@ -130,6 +131,23 @@ class StrategyScheduler:
             logger.error(f"Error running strategy {strategy_id}: {e}")
 
     async def _emit_signal(self, strategy: BaseStrategy, signal):
+        # 1. Fetch webhook secret from DB (Need to be able to access DB here)
+        # Note: StrategyScheduler might need access to database.
+        # For simplicity of this change, assume secret is available from strategy object or env if not yet in DB.
+        # The prompt says: "Query the database for strategy.webhook_secret"
+        
+        # Accessing database in scheduler is a change. Let's assume we add DB pool to Scheduler.
+        
+        # Assuming we have access to database pool in strategy_scheduler
+        pool = get_pool()
+        async with pool.acquire() as conn:
+            secret = await conn.fetchval(
+                "SELECT webhook_secret FROM strategies WHERE id = $1", 
+                strategy.strategy_id
+            )
+
+        webhook_url = f"{LISTENER_URL.rstrip('/webhook')}/webhook/{strategy.strategy_id}"
+        
         payload = {
             "symbol":     strategy.symbol,
             "side":       signal.side,
@@ -137,29 +155,31 @@ class StrategyScheduler:
             "orderType":  "market",
             "size":       str(signal.size),
             "platform":   strategy.platform,
-            "strategyId": strategy.strategy_id,
             "timestamp":  datetime.now(timezone.utc).isoformat(),
-            "token":      WEBHOOK_SECRET,
         }
         if signal.tp_price:
             payload["tpPrice"] = str(signal.tp_price)
         if signal.sl_price:
             payload["slPrice"] = str(signal.sl_price)
 
-        try:
-            async with httpx.AsyncClient(timeout=10) as client:
-                response = await client.post(LISTENER_URL, json=payload)
-                if response.status_code == 200:
-                    logger.info(
-                        f"Signal emitted: {strategy.strategy_id} → "
-                        f"{signal.signal} {strategy.symbol}"
-                    )
-                else:
-                    logger.warning(
-                        f"Listener rejected signal: {response.status_code} {response.text}"
-                    )
-        except Exception as e:
-            logger.error(f"Failed to emit signal for {strategy.strategy_id}: {e}")
+        headers = {"X-Webhook-Token": secret}
+        
+        async with httpx.AsyncClient(timeout=10) as client:
+            for attempt in range(3):
+                try:
+                    response = await client.post(webhook_url, json=payload, headers=headers)
+                    if response.status_code == 200:
+                        logger.info(f"Signal emitted: {strategy.strategy_id} → {signal.signal} {strategy.symbol}")
+                        return
+                    else:
+                        logger.warning(f"Listener rejected signal (attempt {attempt+1}): {response.status_code} {response.text}")
+                except Exception as e:
+                    logger.warning(f"Failed to emit signal (attempt {attempt+1}): {e}")
+                
+                if attempt < 2:
+                    await asyncio.sleep(2 ** attempt) # 1s, 2s
+            
+            logger.error(f"Failed to emit signal after 3 attempts: {strategy.strategy_id}")
 
     # --- Management methods (used by REST API) ---
 
