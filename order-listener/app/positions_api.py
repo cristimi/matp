@@ -23,7 +23,24 @@ async def list_positions():
         raise HTTPException(status_code=400, detail=f"Unsupported platform: {platform}")
     
     adapter = adapter_class()
-    return await adapter.get_open_positions()
+    positions = await adapter.get_open_positions()
+    
+    # Enrich with strategy_id
+    enriched = []
+    async with pool.acquire() as conn:
+        for p in positions:
+            # Find the latest filled order for this symbol and platform to identify the strategy
+            strategy_id = await conn.fetchval(
+                """
+                SELECT strategy_id FROM orders 
+                WHERE symbol = $1 AND platform = $2 AND status = 'filled'
+                ORDER BY received_at DESC LIMIT 1
+                """,
+                p["symbol"], p["platform"]
+            )
+            p["strategy_id"] = strategy_id
+            enriched.append(p)
+    return enriched
 
 @router.post("/{symbol}/close")
 async def close_position(symbol: str, request_data: dict):

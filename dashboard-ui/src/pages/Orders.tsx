@@ -106,7 +106,7 @@ export default function OrdersPage() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="text-xs text-gray-500 uppercase border-b border-gray-200 dark:border-gray-800">
-                  {['Time', 'Origin', 'Symbol', 'Side', 'Signal', 'Size', 'Ind. Price', 'Platform', 'Status', 'P&L', ''].map((h) => (
+                  {['Time', 'Origin', 'Symbol', 'Side', 'Signal', 'Size', 'Strategy', 'Ind. Price', 'Platform', 'Status', 'P&L', ''].map((h) => (
                     <th key={h} className="px-4 py-3 text-left font-medium">{h}</th>
                   ))}
                 </tr>
@@ -129,6 +129,7 @@ export default function OrdersPage() {
                       <td className="px-4 py-3"><SideBadge side={o.side} /></td>
                       <td className="px-4 py-3 text-gray-500 dark:text-gray-400 text-xs">{o.signal}</td>
                       <td className="px-4 py-3 font-mono text-gray-600 dark:text-gray-300">{o.size}</td>
+                      <td className="px-4 py-3 text-xs text-gray-500 dark:text-gray-400 font-medium">{o.strategy_id || '—'}</td>
                       <td className="px-4 py-3 font-mono text-gray-500 dark:text-gray-400 text-xs">
                         {o.indicator_price ? `$${parseFloat(o.indicator_price).toLocaleString()}` : '—'}
                       </td>
