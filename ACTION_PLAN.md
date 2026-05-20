@@ -27,14 +27,16 @@ Enable seamless reception of TradingView signals and execution on Blofin as auto
     - Verify record creation in PostgreSQL with correct `signal_source` and `indicator_price`.
 
 ## 3. Dashboard Observability
-- [ ] **UI Updates:**
+- [x] **UI Updates:**
     - Add "Origin" (Source) and "Ind. Price" columns to the Orders page table.
     - Implement badges for different signal sources (TV icon for TradingView, Gear icon for Internal).
-- [ ] **Real-time Feed:**
+- [x] **Theme Support:**
+    - Implement Light Theme and theme switcher.
+- [x] **Real-time Feed:**
     - Ensure the live feed highlights the source of the signal.
 
 ## 4. Automation & Robustness
-- [ ] **Internal Scheduler Sync:**
+- [x] **Internal Scheduler Sync:**
     - Update `order-generator` to include `signal_source: "internal"` in its generated signals.
 - [ ] **Error Handling:**
     - Improve `route_failed` logging to capture the exact reason from Blofin (e.g., "Insufficient Margin").

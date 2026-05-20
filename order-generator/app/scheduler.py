@@ -156,6 +156,7 @@ class StrategyScheduler:
             "size":       str(signal.size),
             "platform":   strategy.platform,
             "timestamp":  datetime.now(timezone.utc).isoformat(),
+            "signal_source": "internal",
         }
         if signal.tp_price:
             payload["tpPrice"] = str(signal.tp_price)

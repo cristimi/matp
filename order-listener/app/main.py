@@ -6,7 +6,9 @@ Receives webhooks, validates, logs, and routes to exchange adapters.
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, status
+from fastapi.responses import JSONResponse
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
@@ -49,6 +51,20 @@ app.add_middleware(
 app.include_router(webhook_router)
 app.include_router(orders_router)
 app.include_router(config_router)
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    body = await request.body()
+    logger.error(f"Validation error: {exc.errors()}")
+    try:
+        logger.error(f"Request body: {body.decode()}")
+    except Exception:
+        logger.error(f"Request body: {body}")
+    return JSONResponse(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        content={"detail": exc.errors(), "body": body.decode() if body else ""},
+    )
 
 
 @app.get("/health")

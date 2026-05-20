@@ -2,6 +2,14 @@
 
 All notable changes to this project will be tracked in this file.
 
+## [2026-05-20 10:30]
+
+### Enhancements: Theme Support & Monitoring UI
+- **Light Theme:** Implemented a full light theme and a theme switcher (sun/moon toggle) in the Dashboard. Preference is persisted to local storage.
+- **Monitoring Columns:** Added "Origin" (Signal Source) and "Ind. Price" (Indicator Price) columns to the Orders page.
+- **Visual Polish:** Refactored all components (`StatPanel`, `LiveFeed`, `PlatformSelector`) to be theme-aware with improved contrast and responsiveness.
+- **API Types:** Updated Dashboard UI's `Order` interface to support granular signal metadata.
+
 ## [2026-05-19 15:45]
 
 ### Enhancements: Granular Strategy Monitoring

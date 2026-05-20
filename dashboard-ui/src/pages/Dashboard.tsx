@@ -42,18 +42,20 @@ export default function DashboardPage() {
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
-          <h2 className="text-xl font-bold text-white">Overview</h2>
+          <h2 className="text-xl font-bold text-gray-900 dark:text-white transition-colors">Overview</h2>
           <p className="text-xs text-gray-500 mt-0.5">Automated Trading Platform</p>
         </div>
         <div className="flex flex-col sm:flex-row gap-3 sm:items-center">
           <PlatformSelector current={activePlatform} onChange={setActivePlatform} />
-          <div className="flex gap-1">
+          <div className="flex gap-1 bg-gray-100 dark:bg-gray-800 p-1 rounded-lg">
             {PERIODS.map((p) => (
               <button
                 key={p}
                 onClick={() => setPeriod(p)}
-                className={`px-2.5 py-1 rounded text-xs font-medium ${
-                  period === p ? 'bg-indigo-600 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'
+                className={`px-3 py-1 rounded-md text-xs font-medium transition-all ${
+                  period === p 
+                    ? 'bg-white dark:bg-gray-700 text-indigo-600 dark:text-indigo-400 shadow-sm' 
+                    : 'text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'
                 }`}
               >
                 {p}
@@ -67,7 +69,7 @@ export default function DashboardPage() {
       {loading ? (
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
           {[...Array(4)].map((_, i) => (
-            <div key={i} className="stat-card animate-pulse h-20 bg-gray-800" />
+            <div key={i} className="stat-card animate-pulse h-24 bg-white dark:bg-gray-900 border border-gray-100 dark:border-gray-800" />
           ))}
         </div>
       ) : stats ? (
@@ -93,17 +95,25 @@ export default function DashboardPage() {
       <div className="grid md:grid-cols-2 gap-4">
         {/* Platform breakdown bar chart */}
         <div className="stat-card">
-          <h3 className="text-sm font-semibold text-gray-300 mb-4">Orders by Platform</h3>
+          <h3 className="text-sm font-semibold text-gray-600 dark:text-gray-300 mb-4">Orders by Platform</h3>
           {chartData.length === 0 ? (
-            <p className="text-gray-600 text-sm text-center py-6">No data for this period</p>
+            <div className="flex items-center justify-center py-12">
+              <p className="text-gray-400 text-sm italic">No data for this period</p>
+            </div>
           ) : (
             <ResponsiveContainer width="100%" height={160}>
               <BarChart data={chartData} margin={{ top: 0, right: 0, left: -20, bottom: 0 }}>
-                <XAxis dataKey="name" tick={{ fill: '#6b7280', fontSize: 11 }} />
-                <YAxis tick={{ fill: '#6b7280', fontSize: 11 }} />
+                <XAxis dataKey="name" tick={{ fill: '#9ca3af', fontSize: 11 }} axisLine={{ stroke: '#e5e7eb' }} />
+                <YAxis tick={{ fill: '#9ca3af', fontSize: 11 }} axisLine={{ stroke: '#e5e7eb' }} />
                 <Tooltip
-                  contentStyle={{ background: '#111827', border: '1px solid #374151', borderRadius: 8 }}
-                  labelStyle={{ color: '#e5e7eb' }}
+                  cursor={{ fill: 'transparent' }}
+                  contentStyle={{ 
+                    backgroundColor: 'var(--tw-bg-opacity, #ffffff)', 
+                    borderColor: '#e5e7eb', 
+                    borderRadius: 8,
+                    fontSize: 12
+                  }}
+                  itemStyle={{ fontSize: 12 }}
                 />
                 <Bar dataKey="orders" fill="#6366f1" radius={[4, 4, 0, 0]} />
               </BarChart>

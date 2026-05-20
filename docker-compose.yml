@@ -60,7 +60,7 @@ services:
     ports:
       - "8001:8001"
     environment:
-      DATABASE_URL: postgresql://matp:${POSTGRES_PASSWORD}@postgres:5432/matp
+      DATABASE_URL: postgresql://matp:matp@postgres:5432/matp
       REDIS_URL: redis://redis:6379
       WEBHOOK_SECRET: ${WEBHOOK_SECRET}
       MASTER_KEY: ${MASTER_KEY}
@@ -85,7 +85,7 @@ services:
   order-generator:
     build: ./order-generator
     environment:
-      DATABASE_URL: postgresql://matp:${POSTGRES_PASSWORD}@postgres:5432/matp
+      DATABASE_URL: postgresql://matp:matp@postgres:5432/matp
       LISTENER_WEBHOOK_URL: http://order-listener:8001/webhook
       WEBHOOK_SECRET: ${WEBHOOK_SECRET}
       DATA_FEED_EXCHANGE: ${DATA_FEED_EXCHANGE:-binance}
@@ -102,7 +102,7 @@ services:
   dashboard-api:
     build: ./dashboard-api
     environment:
-      DATABASE_URL: postgresql://matp:${POSTGRES_PASSWORD}@postgres:5432/matp
+      DATABASE_URL: postgresql://matp:matp@postgres:5432/matp
       REDIS_URL: redis://redis:6379
       GENERATOR_URL: http://order-generator:8002
       LISTENER_URL: http://order-listener:8001

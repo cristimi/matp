@@ -4,6 +4,12 @@ import { StatusBadge, SideBadge, PlatformBadge } from '../components/Badges';
 
 const STATUSES = ['', 'filled', 'received', 'routing', 'route_failed', 'rejected'];
 
+function SourceIcon({ source }: { source?: string }) {
+  if (source === 'tradingview') return <span title="TradingView">📡</span>;
+  if (source === 'internal') return <span title="Internal">⚙️</span>;
+  return <span title="Unknown">❓</span>;
+}
+
 export default function OrdersPage() {
   const [orders, setOrders] = useState<Order[]>([]);
   const [total, setTotal] = useState(0);
@@ -51,20 +57,20 @@ export default function OrdersPage() {
   return (
     <div className="p-4 md:p-6 space-y-4">
       <div className="flex items-center justify-between">
-        <h2 className="text-xl font-bold text-white">Orders</h2>
+        <h2 className="text-xl font-bold text-gray-900 dark:text-white">Orders</h2>
         <span className="text-xs text-gray-500">{total} total</span>
       </div>
 
       {/* Filters */}
       <div className="flex flex-wrap gap-2">
         <input
-          className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-gray-200 placeholder-gray-600 focus:outline-none focus:border-indigo-500 w-36"
+          className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg px-3 py-1.5 text-sm text-gray-900 dark:text-gray-200 placeholder-gray-400 dark:placeholder-gray-600 focus:outline-none focus:border-indigo-500 w-36 transition-colors"
           placeholder="Symbol…"
           value={symbol}
           onChange={(e) => { setSymbol(e.target.value.toUpperCase()); setPage(1); }}
         />
         <select
-          className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-indigo-500"
+          className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg px-3 py-1.5 text-sm text-gray-900 dark:text-gray-200 focus:outline-none focus:border-indigo-500 transition-colors"
           value={platform}
           onChange={(e) => { setPlatform(e.target.value); setPage(1); }}
         >
@@ -73,7 +79,7 @@ export default function OrdersPage() {
           <option value="hyperliquid">Hyperliquid</option>
         </select>
         <select
-          className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-indigo-500"
+          className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg px-3 py-1.5 text-sm text-gray-900 dark:text-gray-200 focus:outline-none focus:border-indigo-500 transition-colors"
           value={status}
           onChange={(e) => { setStatus(e.target.value); setPage(1); }}
         >
@@ -90,22 +96,22 @@ export default function OrdersPage() {
       {loading ? (
         <div className="space-y-2">
           {[...Array(8)].map((_, i) => (
-            <div key={i} className="h-10 bg-gray-800 rounded animate-pulse" />
+            <div key={i} className="h-10 bg-white dark:bg-gray-800 rounded animate-pulse border border-gray-100 dark:border-gray-700" />
           ))}
         </div>
       ) : (
         <>
           {/* Desktop table */}
-          <div className="hidden md:block overflow-x-auto rounded-xl border border-gray-800">
+          <div className="hidden md:block overflow-x-auto rounded-xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 transition-colors">
             <table className="w-full text-sm">
               <thead>
-                <tr className="text-xs text-gray-500 uppercase border-b border-gray-800">
-                  {['Time', 'Symbol', 'Side', 'Signal', 'Size', 'Platform', 'Status', 'P&L', ''].map((h) => (
+                <tr className="text-xs text-gray-500 uppercase border-b border-gray-200 dark:border-gray-800">
+                  {['Time', 'Origin', 'Symbol', 'Side', 'Signal', 'Size', 'Ind. Price', 'Platform', 'Status', 'P&L', ''].map((h) => (
                     <th key={h} className="px-4 py-3 text-left font-medium">{h}</th>
                   ))}
                 </tr>
               </thead>
-              <tbody>
+              <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
                 {orders.map((o) => (
                   <>
                     <tr
@@ -113,18 +119,24 @@ export default function OrdersPage() {
                       className="table-row-hover cursor-pointer"
                       onClick={() => setExpanded(expanded === o.id ? null : o.id)}
                     >
-                      <td className="px-4 py-3 text-gray-400 font-mono text-xs">
+                      <td className="px-4 py-3 text-gray-500 dark:text-gray-400 font-mono text-xs">
                         {new Date(o.received_at).toLocaleString()}
                       </td>
-                      <td className="px-4 py-3 font-mono font-semibold text-gray-200">{o.symbol}</td>
+                      <td className="px-4 py-3 text-center">
+                        <SourceIcon source={o.signal_source} />
+                      </td>
+                      <td className="px-4 py-3 font-mono font-semibold text-gray-900 dark:text-gray-200">{o.symbol}</td>
                       <td className="px-4 py-3"><SideBadge side={o.side} /></td>
-                      <td className="px-4 py-3 text-gray-400 text-xs">{o.signal}</td>
-                      <td className="px-4 py-3 font-mono text-gray-300">{o.size}</td>
+                      <td className="px-4 py-3 text-gray-500 dark:text-gray-400 text-xs">{o.signal}</td>
+                      <td className="px-4 py-3 font-mono text-gray-600 dark:text-gray-300">{o.size}</td>
+                      <td className="px-4 py-3 font-mono text-gray-500 dark:text-gray-400 text-xs">
+                        {o.indicator_price ? `$${parseFloat(o.indicator_price).toLocaleString()}` : '—'}
+                      </td>
                       <td className="px-4 py-3"><PlatformBadge platform={o.platform} /></td>
                       <td className="px-4 py-3"><StatusBadge status={o.status} /></td>
                       <td className="px-4 py-3 font-mono">
                         {o.pnl != null ? (
-                          <span className={parseFloat(o.pnl) >= 0 ? 'text-emerald-400' : 'text-red-400'}>
+                          <span className={parseFloat(o.pnl) >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'}>
                             ${parseFloat(o.pnl).toFixed(2)}
                           </span>
                         ) : '—'}
@@ -143,12 +155,14 @@ export default function OrdersPage() {
                     </tr>
                     {expanded === o.id && (
                       <tr key={`${o.id}-expand`}>
-                        <td colSpan={9} className="px-4 py-3 bg-gray-900">
-                          <div className="text-xs text-gray-400 space-y-1">
-                            <p><span className="text-gray-600">ID:</span> {o.id}</p>
-                            {o.exchange_order_id && <p><span className="text-gray-600">Exchange ID:</span> {o.exchange_order_id}</p>}
-                            {o.strategy_id && <p><span className="text-gray-600">Strategy:</span> {o.strategy_id}</p>}
-                            {o.error_msg && <p className="text-red-400"><span className="text-gray-600">Error:</span> {o.error_msg}</p>}
+                        <td colSpan={11} className="px-4 py-3 bg-gray-50 dark:bg-gray-900/50">
+                          <div className="text-xs text-gray-500 dark:text-gray-400 space-y-1">
+                            <p><span className="text-gray-400 dark:text-gray-600">ID:</span> {o.id}</p>
+                            {o.exchange_order_id && <p><span className="text-gray-400 dark:text-gray-600">Exchange ID:</span> {o.exchange_order_id}</p>}
+                            {o.strategy_id && <p><span className="text-gray-400 dark:text-gray-600">Strategy:</span> {o.strategy_id}</p>}
+                            {o.signal_source && <p><span className="text-gray-400 dark:text-gray-600">Signal Source:</span> {o.signal_source}</p>}
+                            {o.indicator_price && <p><span className="text-gray-400 dark:text-gray-600">Indicator Price:</span> ${o.indicator_price}</p>}
+                            {o.error_msg && <p className="text-red-600 dark:text-red-400"><span className="text-gray-400 dark:text-gray-600">Error:</span> {o.error_msg}</p>}
                           </div>
                         </td>
                       </tr>
@@ -162,20 +176,28 @@ export default function OrdersPage() {
           {/* Mobile cards */}
           <div className="md:hidden space-y-2">
             {orders.map((o) => (
-              <div key={o.id} className="stat-card space-y-2 text-sm">
+              <div key={o.id} className="stat-card space-y-2 text-sm shadow-sm transition-colors">
                 <div className="flex items-center justify-between">
-                  <span className="font-mono font-bold text-gray-200">{o.symbol}</span>
+                  <div className="flex items-center gap-2">
+                    <SourceIcon source={o.signal_source} />
+                    <span className="font-mono font-bold text-gray-900 dark:text-gray-200">{o.symbol}</span>
+                  </div>
                   <StatusBadge status={o.status} />
                 </div>
-                <div className="flex gap-2">
+                <div className="flex gap-2 items-center flex-wrap">
                   <SideBadge side={o.side} />
                   <PlatformBadge platform={o.platform} />
-                  <span className="text-gray-500 text-xs">{o.signal}</span>
+                  <span className="text-gray-500 dark:text-gray-400 text-xs">{o.signal}</span>
+                  {o.indicator_price && (
+                    <span className="text-gray-400 dark:text-gray-500 text-xs font-mono ml-auto">
+                      ${parseFloat(o.indicator_price).toLocaleString()}
+                    </span>
+                  )}
                 </div>
-                <div className="flex justify-between items-center text-xs text-gray-500">
+                <div className="flex justify-between items-center text-xs text-gray-500 dark:text-gray-400">
                   <span>{new Date(o.received_at).toLocaleString()}</span>
                   {o.pnl != null && (
-                    <span className={parseFloat(o.pnl) >= 0 ? 'text-emerald-400 font-mono' : 'text-red-400 font-mono'}>
+                    <span className={parseFloat(o.pnl) >= 0 ? 'text-emerald-600 dark:text-emerald-400 font-mono font-bold' : 'text-red-600 dark:text-red-400 font-mono font-bold'}>
                       ${parseFloat(o.pnl).toFixed(2)}
                     </span>
                   )}
@@ -196,14 +218,14 @@ export default function OrdersPage() {
           {/* Pagination */}
           {totalPages > 1 && (
             <div className="flex items-center justify-center gap-2 pt-2">
-              <button className="btn-ghost text-sm" disabled={page === 1} onClick={() => setPage(p => p - 1)}>← Prev</button>
-              <span className="text-sm text-gray-400">{page} / {totalPages}</span>
-              <button className="btn-ghost text-sm" disabled={page >= totalPages} onClick={() => setPage(p => p + 1)}>Next →</button>
+              <button className="btn-ghost text-sm border border-gray-200 dark:border-gray-800" disabled={page === 1} onClick={() => setPage(p => p - 1)}>← Prev</button>
+              <span className="text-sm text-gray-500 dark:text-gray-400">{page} / {totalPages}</span>
+              <button className="btn-ghost text-sm border border-gray-200 dark:border-gray-800" disabled={page >= totalPages} onClick={() => setPage(p => p + 1)}>Next →</button>
             </div>
           )}
 
           {orders.length === 0 && (
-            <p className="text-center text-gray-600 py-12">No orders found</p>
+            <p className="text-center text-gray-500 py-12">No orders found</p>
           )}
         </>
       )}

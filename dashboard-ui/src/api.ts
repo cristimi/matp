@@ -34,6 +34,8 @@ export interface Order {
   exchange_order_id?: string;
   pnl?: string;
   error_msg?: string;
+  signal_source?: string;
+  indicator_price?: string;
 }
 
 export interface Stats {

@@ -14,7 +14,7 @@ from pydantic import BaseModel, field_validator
 
 class WebhookPayload(BaseModel):
     symbol:     str
-    side:       Literal["buy", "sell"]
+    side:       str
     orderType:  Literal["market", "limit"] = "market"
     size:       Decimal
     price:      Optional[Decimal] = None
@@ -24,7 +24,7 @@ class WebhookPayload(BaseModel):
     slPrice:    Optional[Decimal] = None
     platform:   str = "auto"
     strategy_id: Optional[str] = None
-    signal:     Literal["open_long", "close_long", "open_short", "close_short"]
+    signal:     str
     timestamp:  datetime
     token:      str
     # New fields
@@ -32,6 +32,15 @@ class WebhookPayload(BaseModel):
     signal_metadata: Optional[dict] = {}
     indicator_price: Optional[Decimal] = None
 
+
+    @field_validator("side", mode="before")
+    @classmethod
+    def side_to_lower(cls, v: str) -> str:
+        if isinstance(v, str):
+            v = v.lower()
+            if v not in ["buy", "sell"]:
+                raise ValueError("side must be 'buy' or 'sell'")
+        return v
 
     @field_validator("size")
     @classmethod
