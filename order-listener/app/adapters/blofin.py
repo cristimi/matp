@@ -109,7 +109,26 @@ class BlofinAdapter(ExchangeAdapter):
             return []
             
         data = response.json()
-        return data.get("data", [])
+        raw_positions = data.get("data", [])
+        
+        mapped_positions = []
+        for p in raw_positions:
+            size_val = float(p.get("positions", "0"))
+            if size_val == 0:
+                continue
+                
+            mapped_positions.append({
+                "symbol": p.get("instId"),
+                "side": "buy" if size_val > 0 else "sell",
+                "size": str(abs(size_val)),
+                "entryPx": p.get("averagePrice"),
+                "markPx": p.get("markPrice"),
+                "unrealizedPnl": p.get("unrealizedPnl"),
+                "liquidationPx": p.get("liquidationPrice") or None,
+                "platform": "blofin"
+            })
+            
+        return mapped_positions
 
     async def close_position(self, symbol: str, side: str) -> OrderResult:
         # BloFin provides a specific endpoint for closing entire positions via market order.

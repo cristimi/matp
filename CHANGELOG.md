@@ -2,6 +2,13 @@
 
 All notable changes to this project will be tracked in this file.
 
+## [2026-05-20 14:25]
+
+### Live Position Tracking
+- **Blofin Position Mapping:** Implemented standard mapping for Blofin positions, enabling correct display of Symbol, Side, Size, Entry, and P&L in the Dashboard.
+- **Hyperliquid Position Mapping:** Added initial implementation for fetching and mapping Hyperliquid positions.
+- **UI Consistency:** Verified data flow from exchange adapters through `order-listener` and `dashboard-api` to the React frontend.
+
 ## [2026-05-20 14:15]
 
 ### Blofin Adapter & TradingView Integration

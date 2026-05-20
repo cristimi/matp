@@ -12,6 +12,9 @@ Enable seamless reception of TradingView signals and execution on Blofin as auto
 - [x] **Blofin Adapter Completion:** 
     - Implemented a robust `close_position` method using Blofin's dedicated `/api/v1/trade/close-position` endpoint.
     - Verified end-to-end flow (open and close) with live demo account.
+- [x] **Live Position Tracking:** 
+    - Implemented exchange-to-standard mapping for Blofin and Hyperliquid positions.
+    - Verified real-time updates on the Dashboard Positions page.
 - [ ] **DNS Stability:** 
     - Monitor `webhooks.bbs15.duckdns.org` propagation.
     - If instability persists, fallback to the verified `trading.bbs15.duckdns.org` domain for webhook ingestion.

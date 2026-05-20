@@ -76,3 +76,52 @@ class HyperliquidAdapter(ExchangeAdapter):
         
         # Return from cache
         return self._asset_indices.get(symbol)
+
+    async def place_order(self, signal: WebhookPayload, strategy: dict) -> OrderResult:
+        logger.warning("Hyperliquid place_order not yet implemented")
+        return OrderResult(success=False, status="rejected", error_msg="Hyperliquid adapter incomplete")
+
+    async def get_open_positions(self) -> List[dict]:
+        if not settings.hyperliquid_private_key:
+            return []
+        
+        try:
+            account = _get_private_key()
+            address = account.address
+            
+            async with httpx.AsyncClient(base_url=HL_BASE_URL, timeout=10) as client:
+                response = await client.post("/info", json={
+                    "type": "clearinghouseState",
+                    "user": address
+                })
+                response.raise_for_status()
+                data = response.json()
+                
+                # HL returns positions in assetPositions
+                raw_positions = data.get("assetPositions", [])
+                mapped_positions = []
+                
+                for p_wrap in raw_positions:
+                    p = p_wrap.get("position", {})
+                    size = float(p.get("s", "0"))
+                    if size == 0:
+                        continue
+                        
+                    mapped_positions.append({
+                        "symbol": f"{p.get('coin')}-USDT",
+                        "side": "buy" if size > 0 else "sell",
+                        "size": str(abs(size)),
+                        "entryPx": p.get("entryPx"),
+                        "markPx": p.get("markPx") or "0", 
+                        "unrealizedPnl": p.get("unrealizedPnl"),
+                        "liquidationPx": p.get("liquidationPx"),
+                        "platform": "hyperliquid"
+                    })
+                return mapped_positions
+        except Exception as e:
+            logger.error(f"Failed to fetch HL positions: {e}")
+            return []
+
+    async def close_position(self, symbol: str, side: str) -> OrderResult:
+        logger.warning("Hyperliquid close_position not yet implemented")
+        return OrderResult(success=False, status="rejected", error_msg="Hyperliquid adapter incomplete")
