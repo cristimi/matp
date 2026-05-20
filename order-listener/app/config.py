@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     master_key:              str = ""
     blofin_api_key:          str = ""
     blofin_api_secret:       str = ""
+    blofin_api_passphrase:   str = ""
     hyperliquid_private_key: str = ""
 
     class Config:

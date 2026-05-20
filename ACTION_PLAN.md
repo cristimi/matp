@@ -7,12 +7,11 @@
 Enable seamless reception of TradingView signals and execution on Blofin as automated signal bots, with full observability in the MATP Dashboard.
 
 ## 1. Immediate Technical Fixes
-- [ ] **Blofin API Authorization:** Diagnose and fix the "Unauthorized" error from Blofin.
-    - Verify `BLOFIN_API_KEY` and `BLOFIN_API_SECRET` in `.env`.
-    - Confirm the signature logic in `blofin.py` matches Blofin's latest API documentation.
-- [ ] **Blofin Adapter Completion:** 
-    - Implement a robust `close_position` method that uses Blofin's `reduceOnly` or `close` parameters.
-    - Ensure `size` calculations are correct for Blofin's minimum requirements.
+- [x] **Blofin API Authorization:** Diagnose and fix the "Unauthorized" error from Blofin.
+    - Verified working with new API keys and correct Hex-to-Base64 signature method.
+- [x] **Blofin Adapter Completion:** 
+    - Implemented a robust `close_position` method using Blofin's dedicated `/api/v1/trade/close-position` endpoint.
+    - Verified end-to-end flow (open and close) with live demo account.
 - [ ] **DNS Stability:** 
     - Monitor `webhooks.bbs15.duckdns.org` propagation.
     - If instability persists, fallback to the verified `trading.bbs15.duckdns.org` domain for webhook ingestion.

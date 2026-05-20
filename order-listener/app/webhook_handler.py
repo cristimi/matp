@@ -118,9 +118,12 @@ async def _update_order_status(pool, order_id: uuid.UUID, status: str, result=No
 @router.post("/webhook/{strategy_id}", response_model=OrderResponse)
 async def receive_webhook(
     strategy_id: str, 
-    payload: WebhookPayload, 
+    request: Request,
     x_webhook_token: str = Header(None)
 ):
+    body = await request.body()
+    logger.info(f"DEBUG: Received raw payload for {strategy_id}: {body.decode()}")
+    payload = WebhookPayload(**json.loads(body))
     pool = get_pool()
     
     # 1. Load strategy
@@ -130,46 +133,71 @@ async def receive_webhook(
         await _log_webhook_call(pool, strategy_id, 404, "Strategy not found")
         raise HTTPException(status_code=404, detail="Strategy not found")
 
-    # 2. Authenticate (Check Header or Body)
-    token_to_verify = x_webhook_token or payload.token
+    # 2. Authenticate (Check Header, signalToken, or old token)
+    token_to_verify = x_webhook_token or payload.signalToken or payload.token
     if not token_to_verify or not await _verify_token(token_to_verify, strategy['webhook_secret']):
         logger.warning(f"Rejected webhook: invalid token for strategy={strategy_id}")
         await _log_webhook_call(pool, strategy_id, 403, "Invalid token")
         raise HTTPException(status_code=403, detail="Invalid token")
 
-    # 3. Check enabled
+    # 3. Lag Check
+    lag_exceeded = False
+    if payload.maxLag:
+        now = datetime.now(timezone.utc)
+        if (now - payload.timestamp.replace(tzinfo=timezone.utc)).total_seconds() > payload.maxLag:
+            logger.warning(f"Webhook signal lag exceeded for strategy={strategy_id}")
+            lag_exceeded = True
+
+    # 4. Check enabled
     if not strategy['webhook_enabled']:
         logger.warning(f"Rejected webhook: disabled strategy={strategy_id}")
         await _log_webhook_call(pool, strategy_id, 403, "Strategy disabled")
         raise HTTPException(status_code=403, detail="Strategy disabled")
 
-    # 4. Rate limit check
+    # 5. Rate limit check
     if not await _check_rate_limit(pool, strategy_id, strategy['max_daily_signals']):
         logger.warning(f"Rejected webhook: rate limit exceeded for strategy={strategy_id}")
         await _log_webhook_call(pool, strategy_id, 429, "Rate limit exceeded")
         raise HTTPException(status_code=429, detail="Rate limit exceeded")
 
-    # Enrichment
+    # Enrichment (Map TradingView field to MATP schema if needed)
     payload.strategy_id = strategy_id
     if payload.platform == "auto" and strategy['platform_override']:
         payload.platform = strategy['platform_override']
-
+    
+    # Map TV Action/Signal to MATP Side/Signal
+    if payload.action and not payload.side:
+        payload.side = payload.action.lower()
+    if not payload.signal and payload.action:
+        payload.signal = payload.action
+    
+    # Map TV Instrument/Amount to MATP Symbol/Size
+    if payload.instrument and not payload.symbol:
+        payload.symbol = payload.instrument
+    if payload.amount and payload.size is None:
+        payload.size = payload.amount
+    
     order_id = uuid.uuid4()
     
     # Persist initial record
     await _log_webhook_call(pool, strategy_id, 200)
     await _log_order(pool, payload, order_id, strategy_id)
 
+    if lag_exceeded:
+        # Mark as failed due to lag and stop
+        await _update_order_status(pool, order_id, "lag_failed", type('obj', (object,), {'error_msg': 'Max lag exceeded', 'exchange_order_id': None, 'raw_response': None}))
+        return OrderResponse(order_id=order_id, status="received", message="Lag exceeded, signal logged as failed")
+
     # Trigger processing
-    asyncio.create_task(_process_order(pool, order_id, payload))
+    asyncio.create_task(_process_order(pool, order_id, payload, strategy))
 
     return OrderResponse(order_id=order_id, status="received", message="OK")
 
 
-async def _process_order(pool, order_id: uuid.UUID, payload: WebhookPayload):
+async def _process_order(pool, order_id: uuid.UUID, payload: WebhookPayload, strategy: dict):
     try:
         # Route
-        result = await route_order(payload)
+        result = await route_order(payload, strategy)
         final_status = "filled" if result.success else "route_failed"
         await _update_order_status(pool, order_id, final_status, result)
         

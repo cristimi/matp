@@ -40,21 +40,13 @@ async def _get_active_platform() -> str:
     return platform
 
 
-async def route_order(payload: WebhookPayload) -> OrderResult:
+async def route_order(payload: WebhookPayload, strategy: dict) -> OrderResult:
     """Select adapter and dispatch order."""
     platform = payload.platform
 
-    # If not explicitly set, try to use strategy's platform_override
-    if platform == "auto" and payload.strategy_id:
-        pool = get_pool()
-        async with pool.acquire() as conn:
-            platform = await conn.fetchval(
-                "SELECT platform_override FROM strategies WHERE id = $1", 
-                payload.strategy_id
-            ) or "auto"
-
+    # If not explicitly set, use strategy's platform_override
     if platform == "auto":
-        platform = await _get_active_platform()
+        platform = strategy.get('platform_override') or await _get_active_platform()
 
     adapter_class = ADAPTERS.get(platform)
     if adapter_class is None:
@@ -69,7 +61,8 @@ async def route_order(payload: WebhookPayload) -> OrderResult:
     logger.info(f"Routing {payload.symbol} {payload.signal} → {platform}")
 
     try:
-        result = await adapter.place_order(payload)
+        # Pass the strategy record for token access
+        result = await adapter.place_order(payload, strategy)
         return result
     except Exception as e:
         logger.exception(f"Adapter {platform} raised: {e}")

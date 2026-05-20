@@ -13,10 +13,11 @@ from pydantic import BaseModel, field_validator
 
 
 class WebhookPayload(BaseModel):
-    symbol:     str
-    side:       str
+    # Original MATP fields
+    symbol:     Optional[str] = None
+    side:       Optional[str] = None
     orderType:  Literal["market", "limit"] = "market"
-    size:       Decimal
+    size:       Optional[Decimal] = None
     price:      Optional[Decimal] = None
     leverage:   Optional[int] = None
     marginMode: Optional[Literal["cross", "isolated"]] = "cross"
@@ -24,13 +25,23 @@ class WebhookPayload(BaseModel):
     slPrice:    Optional[Decimal] = None
     platform:   str = "auto"
     strategy_id: Optional[str] = None
-    signal:     str
+    signal:     Optional[str] = None
     timestamp:  datetime
-    token:      str
+    token:      Optional[str] = None
     # New fields
     signal_source: Optional[str] = "tradingview"
     signal_metadata: Optional[dict] = {}
     indicator_price: Optional[Decimal] = None
+    # TradingView-specific payload fields
+    action:             Optional[str] = None
+    marketPosition:     Optional[str] = None
+    prevMarketPosition: Optional[str] = None
+    instrument:         Optional[str] = None
+    signalToken:        Optional[str] = None
+    maxLag:             Optional[int] = 60
+    investmentType:     Optional[str] = None
+    amount:             Optional[Decimal] = None
+    id:                 Optional[str] = None
 
 
     @field_validator("side", mode="before")

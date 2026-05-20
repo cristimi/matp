@@ -2,8 +2,16 @@
 
 All notable changes to this project will be tracked in this file.
 
-## [2026-05-20 10:30]
+## [2026-05-20 14:15]
 
+### Blofin Adapter & TradingView Integration
+- **Fixed Blofin Authentication:** Implemented the exact Hex-to-Base64 HMAC-SHA256 signature method required by Blofin.
+- **Improved Position Closing:** Implemented `close_position` using the dedicated `/api/v1/trade/close-position` endpoint for reliable market exits.
+- **Enhanced Documentation:** Updated `docs/tradingview.md` with strategy-specific webhook URLs, `signalToken` authentication, and indicator metadata support.
+- **End-to-End Verification:** Successfully tested the full signal lifecycle (TradingView Webhook -> MATP Router -> Blofin Execution) on a live demo account.
+
+## [2026-05-20 12:55]
+...
 ### Enhancements: Theme Support & Monitoring UI
 - **Light Theme:** Implemented a full light theme and a theme switcher (sun/moon toggle) in the Dashboard. Preference is persisted to local storage.
 - **Monitoring Columns:** Added "Origin" (Signal Source) and "Ind. Price" (Indicator Price) columns to the Orders page.

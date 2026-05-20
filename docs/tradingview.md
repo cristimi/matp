@@ -2,9 +2,13 @@
 
 ## Webhook URL
 
+Each strategy has its own unique webhook endpoint:
+
 ```
-http://<your-local-ip>/api/listener/webhook
+http://<your-public-ip>/api/listener/webhook/<strategy_id>
 ```
+
+Replace `<strategy_id>` with the ID of your strategy as configured in the MATP Dashboard.
 
 > **Note:** TradingView requires a publicly accessible URL. For local hosting use:
 > - A VPN (WireGuard / Tailscale) to expose your local machine, **or**
@@ -12,7 +16,7 @@ http://<your-local-ip>/api/listener/webhook
 
 ## Alert Message Format
 
-Paste this JSON into the TradingView alert **Message** field:
+Paste this JSON into the TradingView alert **Message** field. It is recommended to use the `signalToken` field for authentication.
 
 ```json
 {
@@ -24,9 +28,10 @@ Paste this JSON into the TradingView alert **Message** field:
   "leverage": 10,
   "marginMode": "cross",
   "platform": "auto",
-  "strategyId": "my-tv-strategy",
+  "indicator_price": "{{close}}",
+  "signal_source": "tradingview",
   "timestamp": "{{timenow}}",
-  "token": "YOUR_WEBHOOK_SECRET"
+  "signalToken": "YOUR_STRATEGY_WEBHOOK_SECRET"
 }
 ```
 
@@ -47,7 +52,7 @@ Paste this JSON into the TradingView alert **Message** field:
 | `blofin` | Blofin Signal Bot always |
 | `hyperliquid` | Hyperliquid always |
 
-## Multiple Alerts (Long & Short)
+## Example: RSI Strategy (Long & Short)
 
 Create two separate TradingView alerts — one for entry, one for exit:
 
@@ -60,10 +65,9 @@ Create two separate TradingView alerts — one for entry, one for exit:
   "orderType": "market",
   "size": "0.01",
   "leverage": 10,
-  "platform": "auto",
-  "strategyId": "my-rsi-strategy",
+  "indicator_price": "{{close}}",
   "timestamp": "{{timenow}}",
-  "token": "YOUR_WEBHOOK_SECRET"
+  "signalToken": "YOUR_STRATEGY_WEBHOOK_SECRET"
 }
 ```
 
@@ -75,11 +79,9 @@ Create two separate TradingView alerts — one for entry, one for exit:
   "signal": "close_long",
   "orderType": "market",
   "size": "0.01",
-  "leverage": 10,
-  "platform": "auto",
-  "strategyId": "my-rsi-strategy",
+  "indicator_price": "{{close}}",
   "timestamp": "{{timenow}}",
-  "token": "YOUR_WEBHOOK_SECRET"
+  "signalToken": "YOUR_STRATEGY_WEBHOOK_SECRET"
 }
 ```
 
@@ -91,11 +93,13 @@ Create two separate TradingView alerts — one for entry, one for exit:
 | `tpPrice` | Take profit trigger price |
 | `slPrice` | Stop loss trigger price |
 | `marginMode` | `"cross"` (default) or `"isolated"` |
+| `indicator_price` | The price of the indicator at signal time |
+| `signal_metadata` | JSON object for custom data |
 
 ## Testing with curl
 
 ```bash
-curl -X POST http://localhost/api/listener/webhook \
+curl -X POST http://localhost/api/listener/webhook/strat-001 \
   -H "Content-Type: application/json" \
   -d '{
     "symbol": "BTC-USDT",
@@ -104,14 +108,8 @@ curl -X POST http://localhost/api/listener/webhook \
     "orderType": "market",
     "size": "0.001",
     "leverage": 10,
-    "platform": "auto",
-    "strategyId": "test",
-    "timestamp": "2026-05-11T10:00:00Z",
-    "token": "YOUR_WEBHOOK_SECRET"
+    "indicator_price": 65000,
+    "timestamp": "2026-05-20T10:00:00Z",
+    "signalToken": "STRATEGY_SECRET_TOKEN"
   }'
-```
-
-Expected response:
-```json
-{"order_id": "uuid", "status": "received", "message": "OK"}
 ```
