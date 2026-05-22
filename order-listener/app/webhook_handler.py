@@ -194,14 +194,47 @@ async def receive_webhook(
     return OrderResponse(order_id=order_id, status="received", message="OK")
 
 
+async def _create_strategy_position(pool, payload: WebhookPayload, strategy: dict, opening_order_id: uuid.UUID, result: OrderResult) -> None:
+    """Create a new strategy position record in the database."""
+    async with pool.acquire() as conn:
+        entry_price = payload.price if payload.price is not None else 0  # Default to 0 for market if no price provided
+
+        await conn.execute(
+            """
+            INSERT INTO strategy_positions (
+                strategy_id, exchange, symbol, side, entry_price, size,
+                leverage, margin_mode, opening_order_id, status, opened_at
+            ) VALUES (
+                $1, $2, $3, $4, $5, $6,
+                $7, $8, $9, 'open', NOW()
+            )
+            """,
+            payload.strategy_id,
+            payload.platform,  # 'platform' in payload maps to 'exchange' in strategy_positions
+            payload.symbol,
+            payload.side,
+            entry_price,
+            payload.size,
+            payload.leverage,
+            payload.marginMode,
+            opening_order_id,
+        )
+
+
 async def _process_order(pool, order_id: uuid.UUID, payload: WebhookPayload, strategy: dict):
     try:
         # Route
         result = await route_order(payload, strategy)
         final_status = "filled" if result.success else "route_failed"
         await _update_order_status(pool, order_id, final_status, result)
-        
+
         logger.info(f"Order {order_id} processed for strategy {payload.strategy_id}: {final_status}")
+
+        if result.success and payload.symbol and payload.side and payload.size:
+            # Only create a strategy position if the order was successful and
+            # essential position-related fields are present.
+            await _create_strategy_position(pool, payload, strategy, order_id, result)
+
     except Exception as e:
         logger.exception(f"Error processing order {order_id}: {e}")
         await _update_order_status(pool, order_id, "route_failed", None)

@@ -1,120 +1,130 @@
-import { useEffect, useState, useCallback } from 'react';
-import { api, Strategy } from '../api';
+import { useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
+import { api, Strategy, fetchStrategies, fetchStrategyComparison, StrategyComparison } from '../api';
 
-function IntervalBadge({ interval }: { interval: string }) {
-  return (
-    <span className="badge badge-gray">{interval}</span>
-  );
-}
+const PERIODS = ['today', '7d', '30d', 'all'] as const;
 
 export default function StrategiesPage() {
-  const [strategies, setStrategies] = useState<Strategy[]>([]);
+  const [strategies, setStrategies] = useState<(Strategy & Partial<StrategyComparison>)[]>([]);
+  const [period, setPeriod] = useState<string>('7d');
   const [loading, setLoading] = useState(true);
-  const [toggling, setToggling] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const load = useCallback(async () => {
+  const load = async () => {
     setLoading(true);
+    setError(null);
     try {
-      const data = await api.get<Strategy[]>('/strategies');
-      setStrategies(data);
+      const [strats, comparisons] = await Promise.all([fetchStrategies(), fetchStrategyComparison(period)]);
+      console.log('Strategies:', strats);
+      console.log('Comparisons:', comparisons);
+      
+      const safeStrats = Array.isArray(strats) ? strats : [];
+      const safeComparisons = Array.isArray(comparisons) ? comparisons : [];
+
+      const merged = safeStrats.map(s => {
+        const comp = safeComparisons.find(c => c.strategy_id === s.id) || {};
+        return {
+          ...s,
+          ...comp
+        };
+      }).sort((a, b) => ((b as any).pnl_total || 0) - ((a as any).pnl_total || 0));
+      
+      console.log('Merged strategies:', merged);
+      setStrategies(merged);
     } catch (e: any) {
+      console.error('Load error:', e);
       setError(e.message);
     } finally {
       setLoading(false);
     }
-  }, []);
+  };
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { load(); }, [period]);
 
   async function toggle(id: string, enabled: boolean) {
-    setToggling(id);
     try {
       await api.post(`/strategies/${id}/${enabled ? 'disable' : 'enable'}`);
-      setStrategies((prev) =>
-        prev.map((s) => s.id === id ? { ...s, enabled: !enabled } : s)
-      );
+      setStrategies((prev) => prev.map((s) => s.id === id ? { ...s, enabled: !enabled } : s));
     } catch (e: any) {
       alert(`Failed: ${e.message}`);
-    } finally {
-      setToggling(null);
     }
   }
 
+  if (loading) return <div className="p-6 text-gray-500">Loading strategies...</div>;
+  if (error) return <div className="p-6 text-red-500">Error: {error}</div>;
+
   return (
-    <div className="p-4 md:p-6 space-y-4">
+    <div className="p-4 md:p-6 space-y-6">
       <div className="flex items-center justify-between">
-        <h2 className="text-xl font-bold text-gray-900 dark:text-white transition-colors">Strategies</h2>
-        <button className="btn-ghost text-sm" onClick={load}>↻ Refresh</button>
+        <h2 className="text-xl font-bold text-gray-900 dark:text-white">Strategies</h2>
+        <div className="flex gap-1 bg-gray-100 dark:bg-gray-800 p-1 rounded-lg">
+          {PERIODS.map((p) => (
+            <button
+              key={p}
+              onClick={() => setPeriod(p)}
+              className={`px-3 py-1 rounded-md text-xs font-medium transition-all ${period === p ? 'bg-white dark:bg-gray-700 text-indigo-600 dark:text-indigo-400 shadow-sm' : 'text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'}`}
+            >
+              {p}
+            </button>
+          ))}
+        </div>
       </div>
 
-      {error && (
-        <div className="bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-800 rounded-xl p-4 text-red-600 dark:text-red-300 text-sm">
-          {error}
-        </div>
-      )}
+      <div className="hidden md:block overflow-x-auto rounded-xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="text-xs text-gray-500 uppercase border-b border-gray-200 dark:border-gray-800">
+              <th className="px-4 py-3 text-left">Strategy</th>
+              <th className="px-4 py-3 text-left">Symbol</th>
+              <th className="px-4 py-3 text-right">Trades</th>
+              <th className="px-4 py-3 text-right">Win Rate</th>
+              <th className="px-4 py-3 text-right">P&L</th>
+              <th className="px-4 py-3 text-right">Open Pos</th>
+              <th className="px-4 py-3 text-center">Status</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
+            {strategies.map(s => {
+              const pnl = Number(s.pnl_total || 0);
+              return (
+                <tr key={s.id} className="table-row-hover">
+                  <td className="px-4 py-3">
+                    <Link to={`/strategy/${s.id}`} className="font-semibold text-indigo-600 dark:text-indigo-400 hover:underline">{s.name}</Link>
+                  </td>
+                  <td className="px-4 py-3 text-gray-600 dark:text-gray-300 font-mono text-xs">{s.symbol}</td>
+                  <td className="px-4 py-3 text-right font-mono">{s.trades_count || 0}</td>
+                  <td className="px-4 py-3 text-right font-mono">{Number(s.win_rate || 0).toFixed(0)}%</td>
+                  <td className={`px-4 py-3 text-right font-mono font-semibold ${pnl >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
+                    {(pnl >= 0 ? '+' : '')}${Number(pnl).toFixed(0)}
+                  </td>
+                  <td className="px-4 py-3 text-right font-mono">{s.open_positions || 0}</td>
+                  <td className="px-4 py-3 text-center">
+                    <button onClick={() => toggle(s.id, s.enabled)} className={`flex items-center justify-center w-full gap-2 ${s.enabled ? 'text-emerald-600' : 'text-red-600'}`}>
+                      <span className="inline-block w-2 h-2 rounded-full bg-current" />
+                      <span className="text-xs">{s.enabled ? 'Enabled' : 'Disabled'}</span>
+                    </button>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
 
-      {loading ? (
-        <div className="space-y-2">
-          {[...Array(3)].map((_, i) => (
-            <div key={i} className="h-20 bg-white dark:bg-gray-800 rounded-xl animate-pulse border border-gray-100 dark:border-gray-700" />
-          ))}
-        </div>
-      ) : strategies.length === 0 ? (
-        <div className="text-center py-20 text-gray-400">
-          <p className="text-5xl mb-4">⚙️</p>
-          <p className="mb-1 font-medium text-gray-500">No strategies loaded</p>
-          <p className="text-xs text-gray-400 max-w-xs mx-auto">
-            Add YAML files to the <code className="text-gray-500 dark:text-gray-600">strategies_config/</code> volume and restart the order-generator service.
-          </p>
-        </div>
-      ) : (
-        <div className="space-y-3">
-          {strategies.map((s) => (
-            <div key={s.id} className="stat-card flex items-center gap-4 shadow-sm transition-colors">
-              {/* Toggle */}
-              <button
-                onClick={() => toggle(s.id, s.enabled)}
-                disabled={toggling === s.id}
-                className={`relative w-11 h-6 rounded-full transition-colors shrink-0 ${
-                  s.enabled ? 'bg-indigo-600' : 'bg-gray-200 dark:bg-gray-700'
-                } ${toggling === s.id ? 'opacity-50' : ''}`}
-              >
-                <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${
-                  s.enabled ? 'translate-x-5' : ''
-                }`} />
-              </button>
-
-              {/* Info */}
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-2 flex-wrap">
-                  <span className="font-semibold text-gray-900 dark:text-gray-200 text-sm">{s.name}</span>
-                  <IntervalBadge interval={s.interval} />
-                  <span className="badge badge-gray">{s.platform}</span>
-                  {!s.enabled && <span className="badge badge-gray">paused</span>}
-                </div>
-                <p className="text-xs text-gray-500 dark:text-gray-500 mt-1 font-mono">{s.symbol} · {s.id}</p>
-              </div>
-
-              {/* Last signal */}
-              <div className="text-right shrink-0">
-                <p className="text-xs text-gray-400 dark:text-gray-600 font-medium uppercase tracking-tight">Last signal</p>
-                <p className="text-xs text-gray-600 dark:text-gray-400 font-mono mt-0.5">
-                  {s.last_signal_time
-                    ? new Date(s.last_signal_time).toLocaleTimeString()
-                    : '—'}
-                </p>
-              </div>
+      <div className="md:hidden space-y-3">
+        {strategies.map(s => (
+          <div key={s.id} className="stat-card shadow-sm">
+            <div className="flex justify-between items-center mb-2">
+              <Link to={`/strategy/${s.id}`} className="font-bold text-gray-900 dark:text-gray-200">{s.name}</Link>
+              <span className={`inline-block w-2 h-2 rounded-full ${s.enabled ? 'bg-emerald-500' : 'bg-red-500'}`} />
             </div>
-          ))}
-        </div>
-      )}
-
-      <div className="bg-gray-100 dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl p-4 text-xs text-gray-500 dark:text-gray-500 space-y-2 transition-colors">
-        <p className="text-gray-700 dark:text-gray-400 font-bold uppercase tracking-wider text-[10px]">Adding a new strategy</p>
-        <p>1. Create a <code className="text-indigo-600 dark:text-indigo-400">.yaml</code> config in the <code className="text-gray-600 dark:text-gray-400">strategies_config/</code> Docker volume</p>
-        <p>2. Restart the <code className="text-indigo-600 dark:text-indigo-400">order-generator</code> container</p>
-        <p>3. The strategy will appear here and can be enabled/disabled in real time</p>
+            <p className="text-xs text-gray-400 font-mono mb-3">{s.symbol} · {s.platform}</p>
+            <div className="flex justify-between text-sm">
+              <p>{s.trades_count || 0} trades</p>
+              <p className="font-bold">{Number(s.pnl_total || 0).toFixed(0)} P&L</p>
+            </div>
+          </div>
+        ))}
       </div>
     </div>
   );

@@ -1,15 +1,20 @@
 const BASE = import.meta.env.VITE_API_BASE || '/api/dashboard';
 
 async function req<T>(path: string, options?: RequestInit): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
+  const url = `${BASE}${path}`;
+  console.log(`API Fetch: ${url}`);
+  const res = await fetch(url, {
     headers: { 'Content-Type': 'application/json' },
     ...options,
   });
   if (!res.ok) {
+    console.error(`API Error: ${res.status} ${res.statusText}`);
     const err = await res.json().catch(() => ({ error: res.statusText }));
     throw new Error(err.error || err.detail || res.statusText);
   }
-  return res.json();
+  const data = await res.json();
+  console.log(`API Success: ${url}`, data);
+  return data;
 }
 
 export const api = {
@@ -60,6 +65,65 @@ export interface Strategy {
   platform: string;
   enabled: boolean;
   last_signal_time?: number;
+  tags: string[];
+  max_position_size: number;
+  max_leverage: number;
+  max_daily_drawdown_percent: number;
+  pnl_today: number;
+  pnl_total: number;
+  win_count: number;
+  loss_count: number;
+  last_signal_at: string | null;
+  win_rate: number;
+  total_trades: number;
+}
+
+export interface StrategyStats {
+  strategy_id: string;
+  period: string;
+  trades_count: number;
+  trades_won: number;
+  win_rate: number;
+  pnl_total: number;
+  pnl_avg: number;
+  max_drawdown: number;
+}
+
+export interface EquityCurvePoint {
+  date: string;
+  pnl: number;
+  cumulative: number;
+}
+
+export interface StrategyComparison {
+  strategy_id: string;
+  name: string;
+  trades_count: number;
+  win_rate: number;
+  pnl_total: number;
+  max_drawdown: number;
+  open_positions: number;
+}
+
+export async function fetchStrategies(): Promise<Strategy[]> {
+  return api.get<Strategy[]>('/strategies');
+}
+
+export async function fetchStrategyStats(id: string, period: string): Promise<StrategyStats> {
+  return api.get<StrategyStats>(`/strategies/${id}/stats?period=${period}`);
+}
+
+export async function fetchEquityCurve(id: string, days: number): Promise<EquityCurvePoint[]> {
+  // TODO: endpoint not yet implemented in dashboard-api
+  return [];
+}
+
+export async function fetchStrategyPositions(id: string): Promise<Position[]> {
+  return api.get<Position[]>(`/strategies/${id}/positions`);
+}
+
+export async function fetchStrategyComparison(period: string): Promise<StrategyComparison[]> {
+  return api.get<StrategyComparison[]>(`/strategies/comparison?period=${period}`);
 }
 
 export interface Position {

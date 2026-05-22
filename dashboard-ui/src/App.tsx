@@ -4,14 +4,15 @@ import DashboardPage from './pages/Dashboard';
 import OrdersPage from './pages/Orders';
 import PositionsPage from './pages/Positions';
 import StrategiesPage from './pages/Strategies';
+import StrategyDetail from './pages/StrategyDetail';
 import SettingsPage from './pages/Settings';
 
 const NAV = [
-  { to: '/',           label: 'Dashboard', icon: '📊' },
-  { to: '/orders',     label: 'Orders',    icon: '📋' },
-  { to: '/positions',  label: 'Positions', icon: '📈' },
-  { to: '/strategies', label: 'Strategies',icon: '⚙️' },
-  { to: '/settings',   label: 'Settings',  icon: '🔧' },
+  { to: '/strategies', label: 'Strategies', icon: '⚙️' },
+  { to: '/',           label: 'Dashboard',  icon: '📊' },
+  { to: '/orders',     label: 'Orders',     icon: '📋' },
+  { to: '/positions',  label: 'Positions',  icon: '📈' },
+  { to: '/settings',   label: 'Settings',   icon: '🔧' },
 ];
 
 function ThemeToggle({ dark, toggle }: { dark: boolean; toggle: () => void }) {
@@ -109,6 +110,7 @@ export default function App() {
           <Route path="/orders"     element={<OrdersPage />} />
           <Route path="/positions"  element={<PositionsPage />} />
           <Route path="/strategies" element={<StrategiesPage />} />
+          <Route path="/strategy/:id" element={<StrategyDetail />} />
           <Route path="/settings"   element={<SettingsPage />} />
         </Routes>
       </main>

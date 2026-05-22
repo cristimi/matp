@@ -13,34 +13,35 @@ ADAPTERS = {
 @router.get("")
 async def list_positions():
     pool = get_pool()
-    # Get active platform to decide which adapter to use
+    
     async with pool.acquire() as conn:
         row = await conn.fetchrow("SELECT value FROM config WHERE key = 'active_platform'")
         platform = row["value"] if row else "blofin"
 
-    adapter_class = ADAPTERS.get(platform)
-    if not adapter_class:
-        raise HTTPException(status_code=400, detail=f"Unsupported platform: {platform}")
+        # Query strategy_positions directly for open positions associated with the active platform
+        positions = await conn.fetch(
+            """
+            SELECT 
+                id,
+                strategy_id,
+                exchange as platform,
+                symbol,
+                side,
+                size::text,
+                entry_price as "entryPx",
+                current_price as "markPx",
+                pnl_unrealized as "unrealizedPnl",
+                leverage,
+                margin_mode,
+                opened_at
+            FROM strategy_positions
+            WHERE status = 'open' AND exchange = $1
+            """,
+            platform
+        )
     
-    adapter = adapter_class()
-    positions = await adapter.get_open_positions()
-    
-    # Enrich with strategy_id
-    enriched = []
-    async with pool.acquire() as conn:
-        for p in positions:
-            # Find the latest filled order for this symbol and platform to identify the strategy
-            strategy_id = await conn.fetchval(
-                """
-                SELECT strategy_id FROM orders 
-                WHERE symbol = $1 AND platform = $2 AND status = 'filled'
-                ORDER BY received_at DESC LIMIT 1
-                """,
-                p["symbol"], p["platform"]
-            )
-            p["strategy_id"] = strategy_id
-            enriched.append(p)
-    return enriched
+    # Convert records to dictionaries for consistent output
+    return [dict(p) for p in positions]
 
 @router.post("/{symbol}/close")
 async def close_position(symbol: str, request_data: dict):

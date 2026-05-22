@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback } from 'react';
-import { api, Order } from '../api';
-import { StatusBadge, SideBadge, PlatformBadge } from '../components/Badges';
+import { useSearchParams } from 'react-router-dom';
+import { api, Order, fetchStrategies, Strategy } from '../api';
+import { StatusBadge, SideBadge, PlatformBadge, StrategyBadge } from '../components/Badges';
 
 const STATUSES = ['', 'filled', 'received', 'routing', 'route_failed', 'rejected'];
 
@@ -11,19 +12,28 @@ function SourceIcon({ source }: { source?: string }) {
 }
 
 export default function OrdersPage() {
+  const [searchParams, setSearchParams] = useSearchParams();
   const [orders, setOrders] = useState<Order[]>([]);
+  const [strategies, setStrategies] = useState<Strategy[]>([]);
   const [total, setTotal] = useState(0);
-  const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
 
-  // Filters
-  const [symbol, setSymbol] = useState('');
-  const [platform, setPlatform] = useState('');
-  const [status, setStatus] = useState('');
+  // Filters from URL
+  const symbol = searchParams.get('symbol') || '';
+  const platform = searchParams.get('platform') || '';
+  const status = searchParams.get('status') || '';
+  const strategy_id = searchParams.get('strategy_id') || '';
+
   const [expanded, setExpanded] = useState<string | null>(null);
   const [retrying, setRetrying] = useState<string | null>(null);
 
   const LIMIT = 50;
+  const page = parseInt(searchParams.get('page') || '1');
+
+  const loadStrategies = async () => {
+    const data = await fetchStrategies();
+    setStrategies(data);
+  };
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -31,6 +41,8 @@ export default function OrdersPage() {
     if (symbol) params.set('symbol', symbol);
     if (platform) params.set('platform', platform);
     if (status) params.set('status', status);
+    if (strategy_id) params.set('strategy_id', strategy_id);
+
     try {
       const res = await api.get<{ total: number; items: Order[] }>(`/orders?${params}`);
       setOrders(res.items);
@@ -38,9 +50,18 @@ export default function OrdersPage() {
     } finally {
       setLoading(false);
     }
-  }, [page, symbol, platform, status]);
+  }, [page, symbol, platform, status, strategy_id]);
 
+  useEffect(() => { loadStrategies(); }, []);
   useEffect(() => { load(); }, [load]);
+
+  const setFilter = (key: string, value: string) => {
+    const next = new URLSearchParams(searchParams);
+    if (value) next.set(key, value);
+    else next.delete(key);
+    next.set('page', '1');
+    setSearchParams(next);
+  };
 
   async function retry(orderId: string) {
     setRetrying(orderId);
@@ -67,12 +88,20 @@ export default function OrdersPage() {
           className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg px-3 py-1.5 text-sm text-gray-900 dark:text-gray-200 placeholder-gray-400 dark:placeholder-gray-600 focus:outline-none focus:border-indigo-500 w-36 transition-colors"
           placeholder="Symbol…"
           value={symbol}
-          onChange={(e) => { setSymbol(e.target.value.toUpperCase()); setPage(1); }}
+          onChange={(e) => setFilter('symbol', e.target.value.toUpperCase())}
         />
         <select
           className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg px-3 py-1.5 text-sm text-gray-900 dark:text-gray-200 focus:outline-none focus:border-indigo-500 transition-colors"
+          value={strategy_id}
+          onChange={(e) => setFilter('strategy_id', e.target.value)}
+        >
+          <option value="">All strategies</option>
+          {strategies.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+        </select>
+        <select
+          className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg px-3 py-1.5 text-sm text-gray-900 dark:text-gray-200 focus:outline-none focus:border-indigo-500 transition-colors"
           value={platform}
-          onChange={(e) => { setPlatform(e.target.value); setPage(1); }}
+          onChange={(e) => setFilter('platform', e.target.value)}
         >
           <option value="">All platforms</option>
           <option value="blofin">Blofin</option>
@@ -81,13 +110,13 @@ export default function OrdersPage() {
         <select
           className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg px-3 py-1.5 text-sm text-gray-900 dark:text-gray-200 focus:outline-none focus:border-indigo-500 transition-colors"
           value={status}
-          onChange={(e) => { setStatus(e.target.value); setPage(1); }}
+          onChange={(e) => setFilter('status', e.target.value)}
         >
           {STATUSES.map((s) => (
             <option key={s} value={s}>{s || 'All statuses'}</option>
           ))}
         </select>
-        <button className="btn-ghost text-sm" onClick={() => { setSymbol(''); setPlatform(''); setStatus(''); setPage(1); }}>
+        <button className="btn-ghost text-sm" onClick={() => setSearchParams({})}>
           Clear
         </button>
       </div>
@@ -219,9 +248,21 @@ export default function OrdersPage() {
           {/* Pagination */}
           {totalPages > 1 && (
             <div className="flex items-center justify-center gap-2 pt-2">
-              <button className="btn-ghost text-sm border border-gray-200 dark:border-gray-800" disabled={page === 1} onClick={() => setPage(p => p - 1)}>← Prev</button>
+              <button 
+                className="btn-ghost text-sm border border-gray-200 dark:border-gray-800" 
+                disabled={page === 1} 
+                onClick={() => setFilter('page', String(page - 1))}
+              >
+                ← Prev
+              </button>
               <span className="text-sm text-gray-500 dark:text-gray-400">{page} / {totalPages}</span>
-              <button className="btn-ghost text-sm border border-gray-200 dark:border-gray-800" disabled={page >= totalPages} onClick={() => setPage(p => p + 1)}>Next →</button>
+              <button 
+                className="btn-ghost text-sm border border-gray-200 dark:border-gray-800" 
+                disabled={page >= totalPages} 
+                onClick={() => setFilter('page', String(page + 1))}
+              >
+                Next →
+              </button>
             </div>
           )}
 

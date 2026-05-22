@@ -1,49 +1,71 @@
-# MATP Action Plan: TradingView to Blofin Signal Bots
+# MATP — Action Plan
+**Version:** 2.0  **Date:** 2026-05-22
+**Current Phase:** P2-Dashboard + P2-StrategyUI (running in parallel)
 
-**Date:** 2026-05-19
-**Status:** Active Implementation
+## Status Summary
+The core Docker stack is functional, with all 7 services running and initial smoke tests passing. Key infrastructure for webhook reception, logging, and Blofin routing is complete. Phase 1 validation is primarily done, and the system is ready to deepen Dashboard observability and begin the Strategy-centric UI refactor. Parallel efforts will focus on Hyperliquid integration.
 
-## Objective
-Enable seamless reception of TradingView signals and execution on Blofin as automated signal bots, with full observability in the MATP Dashboard.
+## How to Use This Document
+This document outlines the planned tasks for the MATP project. Each task in the table is designed to be self-contained. To execute a task, copy the content from the "Details" column into an AI agent (like Gemini CLI). Pay close attention to the "Who Executes" column: if it's "Terminal", you'll find the exact command to run. "User Test" indicates a task requiring only browser interaction.
 
-## 1. Immediate Technical Fixes
-- [x] **Blofin API Authorization:** Diagnose and fix the "Unauthorized" error from Blofin.
-    - Verified working with new API keys and correct Hex-to-Base64 signature method.
-- [x] **Blofin Adapter Completion:** 
-    - Implemented a robust `close_position` method using Blofin's dedicated `/api/v1/trade/close-position` endpoint.
-    - Verified end-to-end flow (open and close) with live demo account.
-- [x] **Live Position Tracking:** 
-    - Implemented exchange-to-standard mapping for Blofin and Hyperliquid positions.
-    - Verified real-time updates on the Dashboard Positions page.
-- [ ] **DNS Stability:** 
-    - Monitor `webhooks.bbs15.duckdns.org` propagation.
-    - If instability persists, fallback to the verified `trading.bbs15.duckdns.org` domain for webhook ingestion.
+## AI Model Guide
+| Model | Use For | Example Tasks |
+|-------|---------|---------------|
+| Flash | Fast, cheap, good for boilerplate, CRUD operations, schema changes, straightforward code generation. Ideal for small, well-defined code modifications. | Adding a new field to an existing Pydantic model, generating a simple API endpoint, minor UI component changes. |
+| Sonnet | Balanced, good for moderate complexity, integration work, multi-file changes. Suitable for tasks requiring some contextual understanding and coordinating changes across components. | Refactoring an API route, integrating a new feature across frontend and backend, implementing a data transformation logic. |
+| Opus/Deep | Complex reasoning required: architecture decisions, security-sensitive code, ECDSA signing, multi-system integration logic. Use when cryptographic correctness, deep architectural understanding, or extensive cross-component analysis is critical. | Implementing an exchange adapter with complex signing, designing new risk management modules, complex database schema refactoring. |
+| N/A | No AI needed. These tasks involve manual configuration, UI testing, or live exchange testing directly by a human. | Updating `.env` file, browser-based testing, placing a real test trade on an exchange. |
 
-## 2. TradingView Alert Integration
-- [ ] **Finalize Alert Template:**
-    - Standardize the JSON message format to include `signal_source: "tradingview"`, `token`, and `indicator_price`.
-    - Document the template in `docs/tradingview.md`.
-- [ ] **Live Test:**
-    - Trigger a manual alert from TV.
-    - Verify receipt in `order-listener` logs.
-    - Verify record creation in PostgreSQL with correct `signal_source` and `indicator_price`.
+## Task Table
 
-## 3. Dashboard Observability
-- [x] **UI Updates:**
-    - Add "Origin" (Source) and "Ind. Price" columns to the Orders page table.
-    - Implement badges for different signal sources (TV icon for TradingView, Gear icon for Internal).
-- [x] **Theme Support:**
-    - Implement Light Theme and theme switcher.
-- [x] **Real-time Feed:**
-    - Ensure the live feed highlights the source of the signal.
-
-## 4. Automation & Robustness
-- [x] **Internal Scheduler Sync:**
-    - Update `order-generator` to include `signal_source: "internal"` in its generated signals.
-- [ ] **Error Handling:**
-    - Improve `route_failed` logging to capture the exact reason from Blofin (e.g., "Insufficient Margin").
-
-## Timeline
-- **Today:** Fix Blofin Auth and DNS.
-- **Tomorrow:** Finalize TV Alert format and perform end-to-end live testing.
-- **Day after:** Update UI for enhanced observability.
+| # | Phase | Task | Details | AI Model | Who Executes | Prompt Needed | Est. Time |
+|---|---|---|---|---|---|---|---|
+| T01 | P2-Dashboard | Validate stats SQL aggregations | Verify that the aggregated statistics returned by the `/api/dashboard/stats` endpoint (`dashboard-api/src/routes/stats.ts`) accurately reflect counts and sums from the `orders` table in the PostgreSQL database. Specifically, check `total_orders`, `filled`, `failed` counts and `total_pnl`, `win_rate`. This requires running direct SQL queries and comparing with API output. | N/A | Terminal | No | 1h |
+| T02 | P2-Dashboard | Wire P&L extraction from Blofin | Modify `order-listener/app/adapters/blofin.py` to extract the `realizedPnl` from Blofin's order fill response and update the `orders.pnl` field in the database. The `place_order` method's `OrderResult` should be extended to include this P&L, which is then persisted. | Sonnet | AI Agent | Yes — generate | 2h |
+| T03 | P2-Dashboard | Validate Dashboard stat cards | Verify that the summary stat cards on the Dashboard page (e.g., Total Orders, Win Rate, Total P&L, Failed Orders) in `dashboard-ui/src/pages/Dashboard.tsx` match the exact counts and values derived from direct database queries (e.g. `SELECT COUNT(*) FROM orders WHERE status = 'filled';`). This involves comparing UI with `psql` output. | N/A | Terminal | No | 1h |
+| T04 | P2-Dashboard | Add error toast notification | Implement an error toast notification mechanism in the Dashboard UI (`dashboard-ui/src/App.tsx` or similar central component) to display user-friendly messages when the WebSocket receives an `order:route_failed` event from `dashboard-api/src/ws/orderFeed.ts`. The notification should clearly indicate the failure. | Sonnet | AI Agent | Yes — generate | 1h |
+| T05 | P2-Dashboard | Test Orders page filters | From a web browser, navigate to the Orders page. Use the filter controls for `symbol`, `platform`, and `status`. Verify that the displayed orders accurately reflect the applied filters and that pagination (if any) functions correctly. This is a pure UI test. | N/A | User Test | No | 30m |
+| T06 | P2-Dashboard | Test live feed WebSocket updates | Open the Dashboard page in a browser. Send a test webhook signal (e.g., via `curl`) while monitoring the Live Feed panel. Verify that new order events appear in real-time without requiring a page refresh. Disconnect and reconnect your network to simulate a WebSocket drop and ensure auto-reconnect works. | N/A | User Test | No | 30m |
+| T07 | P2-Dashboard | Test active platform switcher E2E | Navigate to the Settings page in the browser. Change the active platform using the selector and save. Send an "auto" platform webhook signal (via `curl`) and verify that the order is routed to the newly selected platform. Check the `config` table in the database to ensure the change is persisted. | N/A | User Test | No | 45m |
+| T08 | P2-Dashboard | Test mobile layout at 375px | Using a mobile device or browser developer tools, set the viewport width to 375px. Navigate through all Dashboard UI pages (Dashboard, Orders, Positions, Strategies, Settings) and verify that the layout is responsive, components stack correctly, navigation is accessible, and tap targets are comfortable. | N/A | User Test | No | 45m |
+| T09 | P2-StrategyUI | Add strategy comparison API | Add a new GET endpoint to `dashboard-api/src/routes/strategies.ts` that retrieves aggregated performance metrics for multiple strategies, allowing for comparison over specified periods. This endpoint should query `strategy_stats` and `strategy_positions` tables. Output should be an array of strategy objects with comparison data. | Sonnet | AI Agent | Yes — generate | 2h |
+| T10 | P2-StrategyUI | Add per-strategy stats API | Create a new GET endpoint in `dashboard-api/src/routes/strategies.ts` (e.g., `/strategies/:id/stats`) that returns detailed performance statistics for a single strategy over a given period. This should query the `strategy_stats` table. | Flash | AI Agent | Yes — generate | 1h |
+| T11 | P2-StrategyUI | Add equity curve API | Implement a new GET endpoint in `dashboard-api/src/routes/strategies.ts` (e.g., `/strategies/:id/equity-curve`) that returns time-series data suitable for plotting an equity curve for a given strategy. This will aggregate `orders.pnl` and potentially `strategy_positions.pnl_realized` over time. | Sonnet | AI Agent | Yes — generate | 2h |
+| T12 | P2-StrategyUI | Add strategy positions API | Add a new GET endpoint to `dashboard-api/src/routes/strategies.ts` (e.g., `/strategies/:id/positions`) that fetches all open and closed positions for a specific strategy from the `strategy_positions` table. This should be distinct from the general `/positions` endpoint. | Flash | AI Agent | Yes — generate | 1h |
+| T13 | P2-StrategyUI | Add strategy toggle API | Implement a new POST endpoint in `dashboard-api/src/routes/strategies.ts` (e.g., `/strategies/:id/toggle`) that allows enabling or disabling a strategy. This endpoint should proxy the request to the `order-generator`'s API (e.g., `/api/generator/strategies/:id/enable` or `/disable`) and update the `strategies.enabled` field in the database. | Sonnet | AI Agent | Yes — generate | 1.5h |
+| T14 | P2-StrategyUI | Add StrategyBadge component | Create a new React component `StrategyBadge` in `dashboard-ui/src/components/Badges.tsx`. This badge should display the strategy's name or ID and potentially a status indicator. It will be used across Orders and Positions pages. | Flash | AI Agent | Yes — use existing | 1h |
+| T15 | P2-StrategyUI | Rebuild Strategies.tsx | Refactor `dashboard-ui/src/pages/Strategies.tsx` into a comprehensive performance dashboard for strategies. Use the new API endpoints (T09, T10, T11, T12) to display comparative metrics, individual strategy stats, and position lists. Include the enable/disable toggle (T13). | Sonnet | AI Agent | Yes — use existing | 4h |
+| T16 | P2-StrategyUI | Create StrategyDetail.tsx page | Create a new page `dashboard-ui/src/pages/StrategyDetail.tsx` that provides a detailed view for a single strategy. This page should leverage the per-strategy stats, equity curve, and positions APIs (T10, T11, T12) to display comprehensive information for a selected strategy. | Sonnet | AI Agent | Yes — use existing | 4h |
+| T17 | P2-StrategyUI | Add strategy column + filter | Modify `dashboard-ui/src/pages/Orders.tsx` to add a new column for `strategy_id` in the orders table. Also, add a filter dropdown to allow filtering orders by strategy. Use the `StrategyBadge` component (T14) for display. | Sonnet | AI Agent | Yes — use existing | 2h |
+| T18 | P2-StrategyUI | Update Dashboard.tsx summary | Modify `dashboard-ui/src/pages/Dashboard.tsx` to update the strategy summary section. Integrate relevant data from the new strategy comparison API (T09) to provide a high-level overview of strategy performance directly on the dashboard. | Sonnet | AI Agent | Yes — use existing | 1.5h |
+| T19 | P2-StrategyUI | Reorder nav, add /strategy route | Modify `dashboard-ui/src/App.tsx` to update the navigation bar, adding a link to the new `Strategies.tsx` dashboard and incorporating a dynamic route for `StrategyDetail.tsx` (e.g., `/strategy/:id`). Ensure proper navigation flow. | Flash | AI Agent | Yes — use existing | 1h |
+| T20 | P2-StrategyUI | User test: verify strategy data | Navigate to the new Strategies page and then to individual Strategy Detail pages. Verify that all displayed data (stats, positions, equity curve) is correct and corresponds to the selected strategy. Use previously tested strategies if available. | N/A | User Test | No | 1h |
+| T21 | P2-StrategyUI | User test: equity curve renders | On the Strategy Detail page (T16), verify that the equity curve chart renders correctly with real or test data. Check for proper labels, scales, and data points, ensuring it provides a clear visual representation of strategy performance. | N/A | User Test | No | 30m |
+| T22 | P3-Hyperliquid | Install eth-account dependency | Add `eth-account` to `order-listener/requirements.txt`. This Python library is essential for implementing ECDSA signing for Hyperliquid API interactions. | Flash | AI Agent | Yes — generate | 15m |
+| T23 | P3-Hyperliquid | Fetch HL asset index | Implement a mechanism in `order-listener/app/adapters/hyperliquid.py` to fetch and cache Hyperliquid asset indices (e.g., symbol to `asset_id` mapping) from the `/info` endpoint. This is crucial for constructing Hyperliquid orders. (requires T22) | Sonnet | AI Agent | Yes — generate | 1h |
+| T24 | P3-Hyperliquid | Implement ECDSA order signing | This is the most complex task. Implement the ECDSA signature process for Hyperliquid API requests within `order-listener/app/adapters/hyperliquid.py`. This involves constructing the L1 action, signing it using `eth-account` with the `HYPERLIQUID_PRIVATE_KEY`, and embedding the signature in the POST request. *Opus/Deep is recommended due to the cryptographic nature and potential for subtle, hard-to-debug errors with simpler models.* (requires T23) | Opus/Deep | AI Agent | Yes — generate | 6h |
+| T25 | P3-Hyperliquid | Implement place_order for HL | Complete the `place_order` method in `order-listener/app/adapters/hyperliquid.py` using the implemented ECDSA signing (T24). Map the standard `WebhookPayload` to Hyperliquid's specific order format (perp trading). (requires T24) | Sonnet | AI Agent | Yes — generate | 2h |
+| T26 | P3-Hyperliquid | Implement get_open_positions for HL | Implement the `get_open_positions` method in `order-listener/app/adapters/hyperliquid.py`. This will involve querying Hyperliquid's API (e.g., `/info` with type=clearinghouseState) and parsing the response to map to MATP's standard position format. (requires T22) | Flash | AI Agent | Yes — generate | 1.5h |
+| T27 | P3-Hyperliquid | Implement close_position for HL | Implement the `close_position` method in `order-listener/app/adapters/hyperliquid.py`. This typically involves sending a market order with `reduceOnly=true` or using a specific Hyperliquid `closePosition` action. (requires T24) | Sonnet | AI Agent | Yes — generate | 2h |
+| T28 | P3-Hyperliquid | E2E test: webhook routes to HL | Configure `active_platform` to `hyperliquid` (T07). Send a test webhook (via `curl`) and verify that the order is routed to Hyperliquid. Check Hyperliquid's dashboard for the placed order and the MATP `orders` table for `exchange_order_id` and correct status. (requires T25) | N/A | Terminal | No | 1h |
+| T29 | P3-Hyperliquid | Test platform switcher | From the Dashboard Settings UI (T07), switch the active platform between Blofin and Hyperliquid. Send test webhooks (via `curl`) with `platform: "auto"` after each switch and verify that the orders are correctly routed to the currently active exchange. (requires T28) | N/A | User Test | No | 45m |
+| T30 | P3-Hyperliquid | Add HL credential management | Update the Settings UI (`dashboard-ui/src/pages/Settings.tsx`) to include fields for managing Hyperliquid private key. This involves adding corresponding API endpoints in `dashboard-api/src/routes/config.ts` to store/retrieve the key securely (encrypted) in the database. (requires T24) | Sonnet | AI Agent | Yes — generate | 2.5h |
+| T31 | P4-Hardening | Add max order size guard | Implement a maximum order size guard in `order-listener/app/webhook_handler.py`. Configure `MAX_ORDER_SIZE` as an environment variable (or per strategy in DB). If an incoming order's size exceeds this limit, reject it with a 400 error and log it to `dead_letter_orders`. | Sonnet | AI Agent | Yes — generate | 1.5h |
+| T32 | P4-Hardening | Wire Positions page to adapters | Refactor `dashboard-api/src/routes/positions.ts` to fetch live open positions by calling the `order-listener`'s `positions_api` endpoint, which in turn calls the `get_open_positions()` method of the active exchange adapter (`blofin.py` or `hyperliquid.py`). This will display real-time positions. (requires T26, T07) | Sonnet | AI Agent | Yes — generate | 2h |
+| T33 | P4-Hardening | Manual close position E2E | On the Positions page (`dashboard-ui/src/pages/Positions.tsx`), test the manual "Close" button functionality. Verify that clicking it sends a close signal through `dashboard-api`, `order-listener`, and the active exchange adapter's `close_position()` method (T27), resulting in the position being closed on the exchange. (requires T32) | N/A | User Test | No | 1h |
+| T34 | P4-Hardening | Dead letter retry UI E2E | Force an order to `route_failed` status (e.g., by temporarily invalidating an API key for Blofin, then sending a webhook). Navigate to the Orders page, locate the failed order, and click the "Retry" button. Restore the API key and verify that the order is successfully reprocessed and filled. (requires T04) | N/A | User Test | No | 1h |
+| T35 | P4-Hardening | Write pytest suite | Develop a comprehensive `pytest` suite for the `order-listener` service. Focus on `webhook_handler.py` (token validation, Pydantic validation, rate limiting), `router.py` (platform selection), and adapter mock tests. Target 80%+ code coverage. | Sonnet | AI Agent | Yes — generate | 5h |
+| T36 | P4-Hardening | Add structured error logging | Enhance error logging across `order-listener` (especially in adapters like `blofin.py` and `hyperliquid.py`) to capture and store the exact reason for `route_failed` or `rejected` orders (e.g., Blofin's specific error messages) in the `orders.error_msg` field. | Flash | AI Agent | Yes — generate | 1.5h |
+| T37 | P4-Hardening | HTTPS self-signed cert | Generate a self-signed SSL certificate and configure Nginx (`nginx/nginx.conf`) to serve the dashboard over HTTPS. This is crucial for local LAN access to avoid browser security warnings on mobile devices. Provide full commands for generation and Nginx config. | N/A | Terminal | No | 1h |
+| T38 | P4-Hardening | Add Nginx basic auth | Implement Nginx basic authentication (`nginx/nginx.conf`) to protect the dashboard from unauthorized access when exposed on a local LAN. Provide instructions for setting up username/password. | N/A | Terminal | No | 1h |
+| T39 | P4-Hardening | Improve WebSocket reconnection feedback | Enhance the `LiveFeed.tsx` component (`dashboard-ui/src/components/LiveFeed.tsx`) to provide clearer visual feedback on WebSocket connection status (e.g., a distinct "connecting..." state, explicit "disconnected" message) beyond just a green/grey dot. | Flash | AI Agent | Yes — generate | 1h |
+| T40 | P5-StrategyEngine | Enable RSI strategy | Copy `order-generator/strategies_config/example_rsi_btc.yaml` to a new file, set `enabled: true`, and mount this config into the `order-generator` container via a Docker volume. Restart `order-generator`. This will activate the RSI strategy. | N/A | Terminal | No | 15m |
+| T41 | P5-StrategyEngine | Verify CCXT data feed | Inspect the logs of the `order-generator` container (`docker compose logs order-generator`) after enabling a strategy (T40). Verify that CCXT is successfully fetching OHLCV data from Binance (or the configured data feed exchange) and that candle data is being passed to `strategy.on_candle()`. | N/A | Terminal | No | 30m |
+| T42 | P5-StrategyEngine | Test strategy signal E2E | After enabling a strategy (T40) and verifying its data feed (T41), wait for the strategy to generate a signal. Verify that the signal is sent as a webhook to `order-listener`, appears in the MATP `orders` table with a `strategy_id` populated, and is routed to the exchange. (requires T07) | N/A | User Test | No | 1h |
+| T43 | P5-StrategyEngine | Strategy enable/disable round-trip | Use the Dashboard Strategies UI (T15) to toggle an active strategy off and then back on. Verify in the `order-generator` logs (`docker compose logs order-generator`) that the scheduler job is removed and then re-added, and that signals resume/stop accordingly. (requires T13) | N/A | User Test | No | 30m |
+| T44 | P5-StrategyEngine | Add MA crossover strategy | Copy and configure the `ma_crossover` strategy (`order-generator/app/strategies/ma_crossover.py`) via a new YAML config file. Enable it and verify its operation as per T40-T42. | N/A | Terminal | No | 30m |
+| T45 | P5-RiskMgmt | Implement position size limit | Implement a position size limit check within `order-listener/app/webhook_handler.py`. This limit should be configurable per strategy (e.g., in the `strategies` table or `config_yaml`). Reject orders exceeding this limit with a clear error. | Sonnet | AI Agent | Yes — generate | 2h |
+| T46 | P5-RiskMgmt | Implement leverage limit check | Add a leverage limit check in `order-listener/app/webhook_handler.py`. This limit should be configurable per strategy. Reject orders attempting to use leverage higher than the configured maximum. | Flash | AI Agent | Yes — generate | 1.5h |
+| T47 | P5-RiskMgmt | Implement daily drawdown stop | Develop logic in `order-listener` (or a new `risk_manager.py` module) to track daily P&L per strategy and automatically disable a strategy if its cumulative daily drawdown exceeds a predefined percentage (`max_daily_drawdown_percent` from `strategies` table). Send a notification if this occurs. | Opus/Deep | AI Agent | Yes — generate | 4h |
+| T48 | P5-RiskMgmt | Add strategy correlation warning | Implement logic (e.g., in `order-listener` or a separate module) to detect and warn if two active strategies are attempting to open opposing positions (long/short) on the same symbol. This warning should be logged and potentially displayed in the UI. | Sonnet | AI Agent | Yes — generate | 3h |
+| T49 | P5-RiskMgmt | User test: send oversized order | Using `curl`, send a test webhook with a `size` value significantly larger than the configured `MAX_ORDER_SIZE` (T31). Verify that the order is rejected with a clear error message, logged to `dead_letter_orders`, and displayed as a failed order in the UI. | N/A | User Test | No | 30m |

@@ -39,6 +39,23 @@ export default function PositionsPage() {
     }
   }
 
+  function formatPrice(symbol: string, price: string | number) {
+    const p = Number(price);
+    if (isNaN(p)) return price;
+    
+    // Simple tick size mapping based on symbol
+    if (symbol.includes('BTC') || symbol.includes('ETH')) {
+      return p.toFixed(2);
+    } else if (symbol.includes('SOL')) {
+      return p.toFixed(3);
+    } else if (symbol.includes('XRP') || symbol.includes('ADA') || symbol.includes('DOGE')) {
+      return p.toFixed(4);
+    } else if (p < 1) {
+      return p.toFixed(6);
+    }
+    return p.toFixed(2);
+  }
+
   return (
     <div className="p-4 md:p-6 space-y-4">
       <div className="flex items-center justify-between">
@@ -88,8 +105,8 @@ export default function PositionsPage() {
                       <td className="px-4 py-3 font-mono font-semibold text-gray-900 dark:text-gray-200">{p.symbol}</td>
                       <td className="px-4 py-3"><SideBadge side={p.side} /></td>
                       <td className="px-4 py-3 font-mono text-gray-600 dark:text-gray-300">{p.size}</td>
-                      <td className="px-4 py-3 font-mono text-gray-400 dark:text-gray-500">{p.entryPx}</td>
-                      <td className="px-4 py-3 font-mono text-gray-600 dark:text-gray-300">{p.markPx}</td>
+                      <td className="px-4 py-3 font-mono text-gray-400 dark:text-gray-500">{formatPrice(p.symbol, p.entryPx)}</td>
+                      <td className="px-4 py-3 font-mono text-gray-600 dark:text-gray-300">{formatPrice(p.symbol, p.markPx)}</td>
                       <td className={`px-4 py-3 font-mono font-semibold ${pnl >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'}`}>
                         {pnl >= 0 ? '+' : ''}{pnl.toFixed(2)}
                       </td>
@@ -131,11 +148,11 @@ export default function PositionsPage() {
                     </div>
                     <div>
                       <p className="text-xs text-gray-400 dark:text-gray-600 uppercase font-medium">Entry</p>
-                      <p className="font-mono text-gray-700 dark:text-gray-300">{p.entryPx}</p>
+                      <p className="font-mono text-gray-700 dark:text-gray-300">{formatPrice(p.symbol, p.entryPx)}</p>
                     </div>
                     <div>
                       <p className="text-xs text-gray-400 dark:text-gray-600 uppercase font-medium">Mark</p>
-                      <p className="font-mono text-gray-700 dark:text-gray-300">{p.markPx}</p>
+                      <p className="font-mono text-gray-700 dark:text-gray-300">{formatPrice(p.symbol, p.markPx)}</p>
                     </div>
                     <div>
                       <p className="text-xs text-gray-400 dark:text-gray-600 uppercase font-medium">Unrealized P&L</p>
