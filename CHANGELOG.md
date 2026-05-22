@@ -2,6 +2,27 @@
 
 All notable changes to this project will be tracked in this file.
 
+## [2026-05-22] - 2.0.0
+
+### Added
+- New documentation framework: ACTION_PLAN.md and TEST_PLAN.md rewritten.
+- Dashboard UI: `StrategyDetail.tsx` page (placeholder).
+
+### Changed
+- Core Documentation: MATP.SDD.md completely rewritten as architectural reference, including a new "Strategy-Centric Design" section and updated database schema (reflecting `strategy_positions`, `strategy_stats`, and related strategy fields).
+- Order Listener: Positions API (`order-listener/app/positions_api.py`) now directly queries `strategy_positions` for open positions.
+- Order Listener: Webhook handler (`order-listener/app/webhook_handler.py`) creates/updates `strategy_positions` records on successful order fills.
+- Documentation: `ACTION_PLAN.md` and `TEST_PLAN.md` fully revised with new structure, content, and task breakdown.
+- Dashboard API: Strategies route (`dashboard-api/src/routes/strategies.ts`) updated for better database interaction and error handling.
+- Dashboard UI: Various updates across `App.tsx`, `api.ts`, `Badges.tsx`, `Dashboard.tsx`, `Orders.tsx`, `Positions.tsx`, `Strategies.tsx` for consistency and future strategy-centric features.
+
+### Fixed
+- (Implicit) Corrected strategy association for open positions in `order-listener` through direct `strategy_positions` querying.
+
+### Tested
+- All core documentation files updated and formatted.
+- Git tracked new `StrategyDetail.tsx` and existing migration files.
+
 ## [2026-05-20 14:25]
 
 ### Live Position Tracking
