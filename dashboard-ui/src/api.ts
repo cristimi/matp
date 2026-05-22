@@ -128,12 +128,15 @@ export async function fetchStrategyComparison(period: string): Promise<StrategyC
 }
 
 export interface Position {
+  id: string;
   symbol: string;
   side: string;
   size: string;
   entryPx: string;
   markPx: string;
+  closePx?: string;
   unrealizedPnl: string;
   liquidationPx?: string;
   platform: string;
+  status: 'open' | 'closed';
 }

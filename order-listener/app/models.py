@@ -61,6 +61,9 @@ class WebhookPayload(BaseModel):
     def side_to_lower(cls, v: str) -> str:
         if isinstance(v, str):
             v = v.lower()
+            # Map 'short' to 'sell' and 'long' to 'buy'
+            mapping = {"short": "sell", "long": "buy"}
+            v = mapping.get(v, v)
             if v not in ["buy", "sell"]:
                 raise ValueError("side must be 'buy' or 'sell'")
         return v
@@ -94,6 +97,7 @@ class OrderResult(BaseModel):
     status:            str   # "filled" | "pending" | "rejected"
     error_msg:         Optional[str] = None
     raw_response:      Optional[dict] = None
+    actual_fill_price: Optional[Decimal] = None
 
 
 class OrderResponse(BaseModel):

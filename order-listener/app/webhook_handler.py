@@ -9,6 +9,7 @@ import logging
 import uuid
 import asyncio
 from datetime import datetime, timezone, date
+from decimal import Decimal
 
 from fastapi import APIRouter, HTTPException, Request, Header
 from fastapi.responses import JSONResponse
@@ -104,7 +105,8 @@ async def _update_order_status(pool, order_id: uuid.UUID, status: str, result=No
             UPDATE orders SET status = $1,
                 exchange_order_id = $2,
                 raw_response = $3,
-                error_msg = $4
+                error_msg = $4,
+                actual_fill_price = $6
             WHERE id = $5
             """,
             status,
@@ -112,6 +114,7 @@ async def _update_order_status(pool, order_id: uuid.UUID, status: str, result=No
             json.dumps(result.raw_response) if result and result.raw_response else None,
             result.error_msg if result else None,
             order_id,
+            result.actual_fill_price if result else None,
         )
 
 
@@ -144,7 +147,8 @@ async def receive_webhook(
     lag_exceeded = False
     if payload.maxLag:
         now = datetime.now(timezone.utc)
-        if (now - payload.timestamp.replace(tzinfo=timezone.utc)).total_seconds() > payload.maxLag:
+        ts = payload.timestamp if payload.timestamp.tzinfo else payload.timestamp.replace(tzinfo=timezone.utc)
+        if (now - ts).total_seconds() > payload.maxLag:
             logger.warning(f"Webhook signal lag exceeded for strategy={strategy_id}")
             lag_exceeded = True
 
@@ -197,23 +201,27 @@ async def receive_webhook(
 async def _create_strategy_position(pool, payload: WebhookPayload, strategy: dict, opening_order_id: uuid.UUID, result: OrderResult) -> None:
     """Create a new strategy position record in the database."""
     async with pool.acquire() as conn:
-        entry_price = payload.price if payload.price is not None else 0  # Default to 0 for market if no price provided
+        entry_price = result.actual_fill_price or payload.price or payload.indicator_price or 0
+        current_price = entry_price
+        
+        logger.info(f"DEBUG: Creating position for strategy_id={payload.strategy_id} with entry_price={entry_price}")
 
         await conn.execute(
             """
             INSERT INTO strategy_positions (
-                strategy_id, exchange, symbol, side, entry_price, size,
+                strategy_id, exchange, symbol, side, entry_price, current_price, size,
                 leverage, margin_mode, opening_order_id, status, opened_at
             ) VALUES (
-                $1, $2, $3, $4, $5, $6,
-                $7, $8, $9, 'open', NOW()
+                $1, $2, $3, $4, $5, $6, $7,
+                $8, $9, $10, 'open', NOW()
             )
             """,
             payload.strategy_id,
-            payload.platform,  # 'platform' in payload maps to 'exchange' in strategy_positions
+            payload.platform,
             payload.symbol,
             payload.side,
             entry_price,
+            current_price,
             payload.size,
             payload.leverage,
             payload.marginMode,
@@ -231,9 +239,39 @@ async def _process_order(pool, order_id: uuid.UUID, payload: WebhookPayload, str
         logger.info(f"Order {order_id} processed for strategy {payload.strategy_id}: {final_status}")
 
         if result.success and payload.symbol and payload.side and payload.size:
-            # Only create a strategy position if the order was successful and
-            # essential position-related fields are present.
-            await _create_strategy_position(pool, payload, strategy, order_id, result)
+            # Ensure strategy_id is correctly set on payload
+            payload.strategy_id = strategy['id']
+            
+            async with pool.acquire() as conn:
+                # Check for existing open position
+                existing = await conn.fetchrow(
+                    "SELECT id, size FROM strategy_positions WHERE strategy_id = $1 AND symbol = $2 AND status = 'open'",
+                    payload.strategy_id, payload.symbol
+                )
+                
+                if existing:
+                    current_pos_size = float(existing['size'])
+                    order_size = float(payload.size)
+                    
+                    if order_size >= current_pos_size:
+                        # Update position status to closed
+                        await conn.execute(
+                            "UPDATE strategy_positions SET status = 'closed', closed_at = NOW(), closing_order_id = $1 WHERE id = $2",
+                            order_id, existing['id']
+                        )
+                        logger.info(f"Position {existing['id']} closed for order {order_id}")
+                    else:
+                        # Reduce position size
+                        new_size = current_pos_size - order_size
+                        await conn.execute(
+                            "UPDATE strategy_positions SET size = $1 WHERE id = $2",
+                            new_size, existing['id']
+                        )
+                        logger.info(f"Position {existing['id']} reduced by {order_size} for order {order_id}. New size: {new_size}")
+                else:
+                    # Only create a strategy position if the order was successful and
+                    # essential position-related fields are present.
+                    await _create_strategy_position(pool, payload, strategy, order_id, result)
 
     except Exception as e:
         logger.exception(f"Error processing order {order_id}: {e}")

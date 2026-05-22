@@ -18,30 +18,53 @@ async def list_positions():
         row = await conn.fetchrow("SELECT value FROM config WHERE key = 'active_platform'")
         platform = row["value"] if row else "blofin"
 
-        # Query strategy_positions directly for open positions associated with the active platform
-        positions = await conn.fetch(
+    # 1. Fetch live data from exchange
+    adapter_class = ADAPTERS.get(platform)
+    live_positions = []
+    if adapter_class:
+        adapter = adapter_class()
+        live_positions = await adapter.get_open_positions()
+
+    # 2. Fetch history from DB
+    async with pool.acquire() as conn:
+        positions_db = await conn.fetch(
             """
             SELECT 
-                id,
+                id::text,
                 strategy_id,
                 exchange as platform,
                 symbol,
                 side,
                 size::text,
-                entry_price as "entryPx",
-                current_price as "markPx",
-                pnl_unrealized as "unrealizedPnl",
-                leverage,
-                margin_mode,
+                COALESCE(entry_price, 0)::text as "entryPx",
+                COALESCE(current_price, 0)::text as "markPx",
+                COALESCE(closing_price, 0)::text as "closePx",
+                COALESCE(pnl_unrealized, 0)::text as "unrealizedPnl",
+                COALESCE(liquidation_price, 0)::text as "liquidationPx",
+                status,
                 opened_at
             FROM strategy_positions
-            WHERE status = 'open' AND exchange = $1
+            WHERE exchange = $1
+            ORDER BY opened_at DESC
             """,
             platform
         )
+
+    # 3. Merge: If live data exists for a symbol, use its prices/P&L, else use DB
+    result = []
+    live_map = {p['symbol']: p for p in live_positions}
     
-    # Convert records to dictionaries for consistent output
-    return [dict(p) for p in positions]
+    for row in positions_db:
+        pos = dict(row)
+        if pos['status'] == 'open' and pos['symbol'] in live_map:
+            live = live_map[pos['symbol']]
+            pos['entryPx'] = live['entryPx']
+            pos['markPx'] = live['markPx']
+            pos['unrealizedPnl'] = live['unrealizedPnl']
+            pos['liquidationPx'] = live['liquidationPx']
+        result.append(pos)
+        
+    return result
 
 @router.post("/{symbol}/close")
 async def close_position(symbol: str, request_data: dict):

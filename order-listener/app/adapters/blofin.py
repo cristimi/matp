@@ -43,14 +43,28 @@ class BlofinAdapter(ExchangeAdapter):
             "Content-Type": "application/json",
         }
 
+    def _map_symbol(self, symbol: str) -> str:
+        # Simple mapping for BTCUSDT.P -> BTC-USDT
+        mapping = {"BTCUSDT.P": "BTC-USDT", "ETHUSDT.P": "ETH-USDT"}
+        return mapping.get(symbol, symbol)
+
     async def place_order(self, signal: WebhookPayload, strategy: dict) -> OrderResult:
         path = "/api/v1/trade/order"
+        
+        # Blofin requires order size to be a multiple of lotSize (0.1) and >= minSize (0.1) for BTC-USDT.
+        # Conversion: [API Contract Amount] = [BTC Volume] / 0.001 = [BTC Volume] * 1000
+        order_size = float(signal.size) * 1000.0
+        
+        # Enforce minimum size and round to the nearest increment (lotSize = 0.1)
+        if signal.symbol in ["BTCUSDT.P", "BTC-USDT"]:
+            order_size = max(0.1, round(order_size, 1))
+
         body_data = {
-            "instId": signal.symbol,
+            "instId": self._map_symbol(signal.symbol),
             "marginMode": signal.marginMode or "cross",
             "side": signal.side,
             "orderType": signal.orderType,
-            "size": str(signal.size),
+            "size": str(order_size),
             "lever": str(signal.leverage or 10),
         }
         
@@ -74,27 +88,33 @@ class BlofinAdapter(ExchangeAdapter):
             return OrderResult(
                 success=False,
                 status="rejected",
-                error_msg=f"Blofin returned {response.status_code}",
+                error_msg=f"Blofin returned {response.status_code}: {response.text}",
                 raw_response={"text": response.text}
             )
 
         data = response.json()
-        logger.debug(f"Blofin response: {data}")
+        logger.info(f"Blofin response: {data}")
 
         code = data.get("code")
+        # Extract fill price if available (Blofin may return it in the order response if filled)
+        fill_price = None
+        if data.get("data") and isinstance(data["data"], list) and len(data["data"]) > 0:
+            fill_price = data["data"][0].get("fillPrice")
+
         if str(code) in ["0", "200"]:
             return OrderResult(
                 success=True,
                 status="filled",
                 raw_response=data,
+                actual_fill_price=Decimal(fill_price) if fill_price else None
             )
         else:
             error = data.get("msg", "Unknown error")
-            logger.warning(f"Blofin order failed: {error}")
+            logger.warning(f"Blofin order failed: {data}")
             return OrderResult(
                 success=False,
                 status="rejected",
-                error_msg=error,
+                error_msg=f"{error} ({data})",
                 raw_response=data,
             )
 
@@ -109,11 +129,14 @@ class BlofinAdapter(ExchangeAdapter):
             return []
             
         data = response.json()
+        logger.info(f"Blofin positions response: {data}")
         raw_positions = data.get("data", [])
         
         mapped_positions = []
         for p in raw_positions:
-            size_val = float(p.get("positions", "0"))
+            # Blofin position structure: size is in "positions" or similar field. 
+            # Need to verify if 'positions' is the correct key based on Blofin API.
+            size_val = float(p.get("positions", 0))
             if size_val == 0:
                 continue
                 
@@ -121,10 +144,10 @@ class BlofinAdapter(ExchangeAdapter):
                 "symbol": p.get("instId"),
                 "side": "buy" if size_val > 0 else "sell",
                 "size": str(abs(size_val)),
-                "entryPx": p.get("averagePrice"),
-                "markPx": p.get("markPrice"),
-                "unrealizedPnl": p.get("unrealizedPnl"),
-                "liquidationPx": p.get("liquidationPrice") or None,
+                "entryPx": p.get("averagePrice", "0"),
+                "markPx": p.get("markPrice", "0"),
+                "unrealizedPnl": p.get("unrealizedPnl", "0"),
+                "liquidationPx": p.get("liquidationPrice") or "0",
                 "platform": "blofin"
             })
             
