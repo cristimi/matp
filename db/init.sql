@@ -76,6 +76,7 @@ CREATE TABLE IF NOT EXISTS strategies (
     interval    VARCHAR(10) NOT NULL,
     platform    VARCHAR(20) NOT NULL DEFAULT 'auto',
     enabled     BOOLEAN NOT NULL DEFAULT TRUE,
+    type        VARCHAR(20) NOT NULL DEFAULT 'internal' CHECK (type IN ('internal', 'tradingview')),
     config_yaml TEXT NOT NULL,
     created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()

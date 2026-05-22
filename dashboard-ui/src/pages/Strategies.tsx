@@ -89,7 +89,12 @@ export default function StrategiesPage() {
               return (
                 <tr key={s.id} className="table-row-hover">
                   <td className="px-4 py-3">
-                    <Link to={`/strategy/${s.id}`} className="font-semibold text-indigo-600 dark:text-indigo-400 hover:underline">{s.name}</Link>
+                    <div className="flex items-center gap-2">
+                      <Link to={`/strategy/${s.id}`} className="font-semibold text-indigo-600 dark:text-indigo-400 hover:underline">{s.name}</Link>
+                      <span className={`text-[10px] px-1.5 py-0.5 rounded uppercase font-bold ${s.type === 'tradingview' ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-700'}`}>
+                        {s.type === 'tradingview' ? 'TV' : 'Internal'}
+                      </span>
+                    </div>
                   </td>
                   <td className="px-4 py-3 text-gray-600 dark:text-gray-300 font-mono text-xs">{s.symbol}</td>
                   <td className="px-4 py-3 text-right font-mono">{s.trades_count || 0}</td>

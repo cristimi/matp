@@ -64,6 +64,7 @@ export interface Strategy {
   interval: string;
   platform: string;
   enabled: boolean;
+  type: 'internal' | 'tradingview';
   last_signal_time?: number;
   tags: string[];
   max_position_size: number;

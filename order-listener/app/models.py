@@ -9,7 +9,19 @@ from decimal import Decimal
 from typing import Literal, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
+
+
+class Strategy(BaseModel):
+    id:          str
+    name:        str
+    class_:      str = Field(..., alias="class")
+    symbol:      str
+    interval:    str
+    platform:    str
+    enabled:     bool
+    type:        Literal["internal", "tradingview"]
+    config_yaml: str
 
 
 class WebhookPayload(BaseModel):

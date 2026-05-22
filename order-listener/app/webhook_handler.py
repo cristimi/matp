@@ -14,7 +14,7 @@ from fastapi import APIRouter, HTTPException, Request, Header
 from fastapi.responses import JSONResponse
 
 from app.database import get_pool
-from app.models import WebhookPayload, OrderResponse
+from app.models import WebhookPayload, OrderResponse, OrderResult
 from app.redis_client import publish
 from app.router import route_order
 
