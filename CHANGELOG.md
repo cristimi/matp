@@ -2,15 +2,29 @@
 
 All notable changes to this project will be tracked in this file.
 
-## [2026-05-22] - 2.0.3
+## [2026-05-23] - 2.0.4
 
 ### Added
-- Positions Page: Added support for displaying closed positions.
-- Positions Page: Added Entry, Mark, and Close price columns for historical clarity.
+- Multi-Platform Tracking: The Positions API now aggregates live data from all exchanges where positions are held, ensuring accurate P&L updates regardless of the active platform setting.
+- Real-time P&L Display: Added support for displaying both Unrealized and Realized P&L in the Positions UI.
+- Position Deduplication: Implemented logic to merge live exchange positions with database records, automatically flagging stale or duplicate records.
 
 ### Changed
-- Order-Listener API: Enhanced `/positions` endpoint to merge historical database records with live exchange data, ensuring accurate real-time P&L display.
-- UI: Refactored `Positions.tsx` to include detailed pricing and fixed size formatting.
+- Positions UI: Refactored the P&L column to display 'Unrealized / Realized' for open positions.
+- API: Improved robust symbol normalization for better cross-exchange data merging.
+- Real-time Feed: Enabled Redis Pub/Sub events for order lifecycle updates, fixing the live feed visibility.
+- Platform Resolution: Moved 'auto' platform resolution to the initial webhook handler to enforce database integrity.
+
+### Fixed
+- Positions: Fixed '0.00' P&L values by ensuring numeric fields are consistently returned as strings from adapters.
+- Close Position: Fixed a bug where positions were incorrectly attempted to be closed on the active platform instead of the exchange where they were opened.
+- Real-time Feed: Fixed missing WebSocket updates by enabling Redis event publishing on order status transitions.
+- WebSocket Proxying: Corrected Nginx configuration for WebSocket path forwarding.
+
+### Tested
+- Verified multi-platform position tracking with live Blofin positions.
+- Verified real-time order feed via WebSocket integration tests.
+- Verified platform resolution for new webhook signals.
 
 
 

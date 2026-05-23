@@ -27,5 +27,6 @@ def get_redis() -> aioredis.Redis:
 async def publish(channel: str, data: dict):
     try:
         await get_redis().publish(channel, json.dumps(data))
+        logger.info(f"Published to Redis channel {channel}: {data['event']}")
     except Exception as e:
         logger.warning(f"Redis publish failed on channel {channel}: {e}")

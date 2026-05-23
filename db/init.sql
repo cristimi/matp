@@ -1,5 +1,5 @@
 -- MATP Database Schema
--- Version 1.0
+-- Version 1.1
 
 -- Orders: every webhook signal received
 CREATE TABLE IF NOT EXISTS orders (
@@ -23,6 +23,9 @@ CREATE TABLE IF NOT EXISTS orders (
     raw_webhook       JSONB NOT NULL,
     raw_response      JSONB,
     error_msg         TEXT,
+    signal_source     VARCHAR(50),
+    signal_metadata   JSONB,
+    indicator_price   NUMERIC,
     updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
@@ -60,7 +63,6 @@ CREATE TABLE IF NOT EXISTS config (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- Default configuration
 INSERT INTO config (key, value) VALUES
     ('active_platform', 'blofin'),
     ('max_order_size_btc', '1.0'),
@@ -69,18 +71,52 @@ ON CONFLICT (key) DO NOTHING;
 
 -- Strategies registry
 CREATE TABLE IF NOT EXISTS strategies (
-    id          VARCHAR(100) PRIMARY KEY,
-    name        VARCHAR(100) NOT NULL,
-    class       VARCHAR(100) NOT NULL,
-    symbol      VARCHAR(20) NOT NULL,
-    interval    VARCHAR(10) NOT NULL,
-    platform    VARCHAR(20) NOT NULL DEFAULT 'auto',
-    enabled     BOOLEAN NOT NULL DEFAULT TRUE,
-    type        VARCHAR(20) NOT NULL DEFAULT 'internal' CHECK (type IN ('internal', 'tradingview')),
-    config_yaml TEXT NOT NULL,
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    id                VARCHAR(100) PRIMARY KEY,
+    name              VARCHAR(100) NOT NULL,
+    class             VARCHAR(100) NOT NULL,
+    symbol            VARCHAR(20) NOT NULL,
+    interval          VARCHAR(10) NOT NULL,
+    platform          VARCHAR(20) NOT NULL DEFAULT 'auto',
+    enabled           BOOLEAN NOT NULL DEFAULT TRUE,
+    type              VARCHAR(20) NOT NULL DEFAULT 'internal' CHECK (type IN ('internal', 'tradingview')),
+    config_yaml       TEXT NOT NULL,
+    webhook_secret    VARCHAR(255),
+    webhook_enabled   BOOLEAN NOT NULL DEFAULT TRUE,
+    max_daily_signals INTEGER NOT NULL DEFAULT 1000,
+    platform_override VARCHAR(20),
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+-- Strategy webhook log
+CREATE TABLE IF NOT EXISTS strategy_webhook_calls (
+    id              BIGSERIAL PRIMARY KEY,
+    strategy_id     VARCHAR(100) NOT NULL,
+    received_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    http_status     INTEGER NOT NULL,
+    error_message   TEXT
+);
+CREATE INDEX IF NOT EXISTS swc_strategy_id_idx ON strategy_webhook_calls (strategy_id);
+CREATE INDEX IF NOT EXISTS swc_received_at_idx ON strategy_webhook_calls (received_at DESC);
+
+-- Strategy positions
+CREATE TABLE IF NOT EXISTS strategy_positions (
+    id               BIGSERIAL PRIMARY KEY,
+    strategy_id      VARCHAR(100) NOT NULL,
+    exchange         VARCHAR(20) NOT NULL,
+    symbol           VARCHAR(20) NOT NULL,
+    side             VARCHAR(10) NOT NULL,
+    entry_price      NUMERIC NOT NULL,
+    size             NUMERIC NOT NULL,
+    leverage         INTEGER,
+    margin_mode      VARCHAR(10),
+    opening_order_id UUID REFERENCES orders(id),
+    status           VARCHAR(20) NOT NULL DEFAULT 'open',
+    opened_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    closed_at        TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS sp_strategy_id_idx ON strategy_positions (strategy_id);
+CREATE INDEX IF NOT EXISTS sp_status_idx ON strategy_positions (status);
 
 -- Function to auto-update updated_at timestamps
 CREATE OR REPLACE FUNCTION update_updated_at_column()

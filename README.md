@@ -1,94 +1,58 @@
 # Modular Automated Trading Platform (MATP)
 
-A locally-hosted, Docker-based system for automated cryptocurrency trading.
+MATP is a locally-hosted, Docker-based system designed for automated cryptocurrency trading. It provides a modular, strategy-centric architecture for signal generation, automated order routing to exchanges, and real-time monitoring and analytics.
 
-## Architecture
+## Key Features
 
-```
-TradingView Alerts ──┐
-                     ├──▶ Order Listener ──▶ Blofin Signal Bot
-Order Generator ─────┘    (webhook router)──▶ Hyperliquid
-                               │
-                           PostgreSQL
-                               │
-                          Dashboard UI
-```
+- **Strategy-Centric:** All trading activity (orders, positions, performance) is linked to specific, configurable trading strategies.
+- **Automated Order Routing:** Receives trade signals via webhooks, validates them, and routes them to exchanges (Blofin, Hyperliquid).
+- **Extensible Architecture:** Easily integrate new strategies or exchange adapters.
+- **Real-time Monitoring:** React-based dashboard with WebSocket-driven live feed, performance metrics, and order management.
+- **Secure by Design:** HMAC-SHA256 webhook authentication, AES-256-GCM encrypted credential storage, and internal-only service networking.
+- **Strategy Management:** Full lifecycle management including enabling/disabling strategies and performance tracking.
 
-## Services
+## Prerequisites
 
-| Service | Port | Description |
-|---------|------|-------------|
-| `nginx` | 80 | Reverse proxy — single entry point |
-| `order-listener` | 8001 (internal) | Webhook receiver & exchange router |
-| `order-generator` | 8002 (internal) | Strategy engine |
-| `dashboard-api` | 8003 (internal) | REST + WebSocket API |
-| `dashboard-ui` | 3000 (internal) | React frontend |
-| `postgres` | 5432 (internal) | Database |
-| `redis` | 6379 (internal) | Pub/Sub message bus |
+- **Docker & Docker Compose** (v2+)
+- **Node.js** (v20+) and **npm** (for local development)
+- **Python** (v3.12+) (for local development)
 
-## Quick Start
+## Installation & Setup
 
-### 1. Clone & configure
+1. **Clone the repository:**
+   ```bash
+   git clone <your-repo-url> matp
+   cd matp
+   ```
 
-```bash
-git clone <your-repo-url> matp
-cd matp
-cp .env.example .env
-# Edit .env with your credentials
-```
+2. **Configure environment:**
+   Copy the example environment file and set the required variables:
+   ```bash
+   cp .env.example .env
+   # Edit .env and provide your API keys and webhook secrets
+   ```
 
-### 2. Start all services
+3. **Start the platform:**
+   ```bash
+   docker compose up -d --build
+   ```
 
-```bash
-docker compose up -d --build
-```
+## Usage Guide
 
-### 3. Access
+- **Dashboard:** Access at `http://localhost`.
+- **Webhook endpoint:** `POST http://localhost/api/listener/webhook`.
+- **TradingView Setup:** Configure your alert URL as `http://<your-ip>/api/listener/webhook` and use the JSON payload format defined in `docs/tradingview.md`.
 
-- **Dashboard:** http://localhost (or `http://<your-local-ip>` from mobile)
-- **Webhook endpoint:** `POST http://localhost/api/listener/webhook`
+## Project Status & Roadmap
 
-## Development Phases
+MATP is under active development. Current focus includes platform stability, refining the strategy performance tracking engine, and adding new exchange adapters. Refer to `ACTION_PLAN.md` for the current development roadmap and `MATP.SDD.md` for detailed architectural information.
 
-- **Phase 1** — Core Infrastructure: webhook → DB → Blofin
-- **Phase 2** — Dashboard MVP: orders UI, live feed, stats
-- **Phase 3** — Hyperliquid integration
-- **Phase 4** — Full controls: positions, retry, mobile polish
-- **Phase 5** — Order Generator / Strategy Engine
+## Documentation
 
-See [`docs/SDD.md`](docs/SDD.md) for the full Software Design Document.
+- [`MATP.SDD.md`](MATP.SDD.md) - Comprehensive Software Design Document.
+- [`docs/setup.md`](docs/setup.md) - Detailed setup and installation instructions.
+- [`docs/tradingview.md`](docs/tradingview.md) - Guide for setting up TradingView alerts.
+- [`docs/sync.md`](docs/sync.md) - Documentation maintenance guide.
 
-## TradingView Alert Setup
-
-Set your TradingView alert webhook URL to:
-```
-http://<your-ip>/api/listener/webhook
-```
-
-Alert message JSON:
-```json
-{
-  "symbol": "{{ticker}}",
-  "side": "buy",
-  "signal": "open_long",
-  "orderType": "market",
-  "size": "0.01",
-  "leverage": 10,
-  "marginMode": "cross",
-  "platform": "auto",
-  "strategyId": "my-strategy",
-  "timestamp": "{{timenow}}",
-  "token": "your-webhook-secret"
-}
-```
-
-## Security Notes
-
-- Exchange API keys are stored AES-256-GCM encrypted in the database
-- Webhook authentication uses constant-time HMAC comparison
-- PostgreSQL and Redis are not exposed outside Docker
-- Never expose port 80 to the internet without additional auth (use VPN or Nginx basic auth)
-
-## Environment Variables
-
-See [`.env.example`](.env.example) for all required variables.
+---
+*Built with React, FastAPI, Node.js, PostgreSQL, and Redis.*

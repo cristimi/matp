@@ -98,7 +98,7 @@ async def _log_order(pool, payload: WebhookPayload, order_id: uuid.UUID, strateg
         )
 
 
-async def _update_order_status(pool, order_id: uuid.UUID, status: str, result=None) -> None:
+async def _update_order_status(pool, order_id: uuid.UUID, status: str, payload: WebhookPayload, result: OrderResult = None) -> None:
     async with pool.acquire() as conn:
         await conn.execute(
             """
@@ -116,6 +116,16 @@ async def _update_order_status(pool, order_id: uuid.UUID, status: str, result=No
             order_id,
             result.actual_fill_price if result else None,
         )
+    
+    # Publish status update to Redis
+    await publish(f"orders:{status}", {
+        "event": f"orders:{status}",
+        "order_id": str(order_id),
+        "status": status,
+        "symbol": payload.symbol,
+        "platform": payload.platform,
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    })
 
 
 @router.post("/webhook/{strategy_id}", response_model=OrderResponse)
@@ -166,8 +176,11 @@ async def receive_webhook(
 
     # Enrichment (Map TradingView field to MATP schema if needed)
     payload.strategy_id = strategy_id
-    if payload.platform == "auto" and strategy['platform_override']:
-        payload.platform = strategy['platform_override']
+    
+    # Resolve platform immediately (never persist 'auto')
+    if payload.platform == "auto":
+        from app.router import _get_active_platform
+        payload.platform = strategy.get('platform_override') or await _get_active_platform()
     
     # Map TV Action/Signal to MATP Side/Signal
     if payload.action and not payload.side:
@@ -187,9 +200,19 @@ async def receive_webhook(
     await _log_webhook_call(pool, strategy_id, 200)
     await _log_order(pool, payload, order_id, strategy_id)
 
+    # Publish initial 'received' status to Redis
+    await publish("orders:received", {
+        "event": "orders:received",
+        "order_id": str(order_id),
+        "status": "received",
+        "symbol": payload.symbol,
+        "platform": payload.platform,
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    })
+
     if lag_exceeded:
         # Mark as failed due to lag and stop
-        await _update_order_status(pool, order_id, "lag_failed", type('obj', (object,), {'error_msg': 'Max lag exceeded', 'exchange_order_id': None, 'raw_response': None}))
+        await _update_order_status(pool, order_id, "lag_failed", payload, type('obj', (object,), {'error_msg': 'Max lag exceeded', 'exchange_order_id': None, 'raw_response': None, 'actual_fill_price': None}))
         return OrderResponse(order_id=order_id, status="received", message="Lag exceeded, signal logged as failed")
 
     # Trigger processing
@@ -234,7 +257,7 @@ async def _process_order(pool, order_id: uuid.UUID, payload: WebhookPayload, str
         # Route
         result = await route_order(payload, strategy)
         final_status = "filled" if result.success else "route_failed"
-        await _update_order_status(pool, order_id, final_status, result)
+        await _update_order_status(pool, order_id, final_status, payload, result)
 
         logger.info(f"Order {order_id} processed for strategy {payload.strategy_id}: {final_status}")
 
@@ -275,4 +298,4 @@ async def _process_order(pool, order_id: uuid.UUID, payload: WebhookPayload, str
 
     except Exception as e:
         logger.exception(f"Error processing order {order_id}: {e}")
-        await _update_order_status(pool, order_id, "route_failed", None)
+        await _update_order_status(pool, order_id, "route_failed", payload, None)

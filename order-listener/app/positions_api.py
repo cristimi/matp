@@ -14,18 +14,7 @@ ADAPTERS = {
 async def list_positions():
     pool = get_pool()
     
-    async with pool.acquire() as conn:
-        row = await conn.fetchrow("SELECT value FROM config WHERE key = 'active_platform'")
-        platform = row["value"] if row else "blofin"
-
-    # 1. Fetch live data from exchange
-    adapter_class = ADAPTERS.get(platform)
-    live_positions = []
-    if adapter_class:
-        adapter = adapter_class()
-        live_positions = await adapter.get_open_positions()
-
-    # 2. Fetch history from DB
+    # 1. Fetch all positions from DB
     async with pool.acquire() as conn:
         positions_db = await conn.fetch(
             """
@@ -38,30 +27,76 @@ async def list_positions():
                 size::text,
                 COALESCE(entry_price, 0)::text as "entryPx",
                 COALESCE(current_price, 0)::text as "markPx",
-                COALESCE(closing_price, 0)::text as "closePx",
+                COALESCE(closed_at, NULL)::text as "closedAt",
                 COALESCE(pnl_unrealized, 0)::text as "unrealizedPnl",
-                COALESCE(liquidation_price, 0)::text as "liquidationPx",
+                COALESCE(pnl_realized, 0)::text as "realizedPnl",
                 status,
                 opened_at
             FROM strategy_positions
-            WHERE exchange = $1
             ORDER BY opened_at DESC
-            """,
-            platform
+            """
         )
 
-    # 3. Merge: If live data exists for a symbol, use its prices/P&L, else use DB
+    # 2. Identify unique platforms with open positions in DB
+    open_platforms_in_db = {p['platform'] for p in positions_db if p['status'] == 'open' and p['platform'] != 'auto'}
+    
+    # 3. Fetch live data from each involved exchange
+    live_data_by_platform = {}
+    for platform in open_platforms_in_db:
+        adapter_class = ADAPTERS.get(platform)
+        if adapter_class:
+            try:
+                adapter = adapter_class()
+                live_data_by_platform[platform] = await adapter.get_open_positions()
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).error(f"Failed to fetch live positions for {platform}: {e}")
+                live_data_by_platform[platform] = []
+
+    # 4. Merge and Deduplicate
     result = []
-    live_map = {p['symbol']: p for p in live_positions}
+    
+    def normalize(sym): 
+        if not sym: return ""
+        return sym.replace("-", "").replace(".P", "").replace(".p", "").replace("/", "").upper()
+    
+    # Create maps for each platform: platform -> symbol_norm -> live_data
+    live_maps = {
+        plat: {normalize(p['symbol']): p for p in live_positions}
+        for plat, live_positions in live_data_by_platform.items()
+    }
+    
+    # Track which live positions have been "claimed" by a DB record to prevent doubles
+    claimed_live_positions = set() # Set of (platform, normalized_symbol)
     
     for row in positions_db:
         pos = dict(row)
-        if pos['status'] == 'open' and pos['symbol'] in live_map:
-            live = live_map[pos['symbol']]
-            pos['entryPx'] = live['entryPx']
-            pos['markPx'] = live['markPx']
-            pos['unrealizedPnl'] = live['unrealizedPnl']
-            pos['liquidationPx'] = live['liquidationPx']
+        platform = pos['platform']
+        norm_sym = normalize(pos['symbol'])
+        
+        # If position is marked 'open' in DB
+        if pos['status'] == 'open':
+            # 1. Try to find matching live position on the same platform
+            live_key = (platform, norm_sym)
+            live_map = live_maps.get(platform, {})
+            
+            if norm_sym in live_map and live_key not in claimed_live_positions:
+                # This is the most recent DB record matching a live position
+                live = live_map[norm_sym]
+                pos['entryPx'] = str(live.get('entryPx', pos['entryPx']))
+                pos['markPx'] = str(live.get('markPx', pos['markPx']))
+                pos['unrealizedPnl'] = str(live.get('unrealizedPnl', pos['unrealizedPnl']))
+                pos['realizedPnl'] = str(live.get('realizedPnl', pos['realizedPnl']))
+                if 'liquidationPx' in live:
+                    pos['liquidationPx'] = str(live['liquidationPx'])
+                
+                claimed_live_positions.add(live_key)
+            else:
+                # This DB record says 'open', but:
+                # a) It's an older duplicate (newer one already claimed the live position)
+                # b) It's truly orphaned (not found on exchange)
+                pos['status'] = 'stale'
+        
         result.append(pos)
         
     return result
@@ -69,9 +104,13 @@ async def list_positions():
 @router.post("/{symbol}/close")
 async def close_position(symbol: str, request_data: dict):
     pool = get_pool()
-    async with pool.acquire() as conn:
-        row = await conn.fetchrow("SELECT value FROM config WHERE key = 'active_platform'")
-        platform = row["value"] if row else "blofin"
+    
+    # Prioritize platform from request, fallback to config
+    platform = request_data.get("platform")
+    if not platform:
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT value FROM config WHERE key = 'active_platform'")
+            platform = row["value"] if row else "blofin"
 
     adapter_class = ADAPTERS.get(platform)
     if not adapter_class:

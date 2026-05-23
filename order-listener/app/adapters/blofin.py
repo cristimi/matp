@@ -135,7 +135,6 @@ class BlofinAdapter(ExchangeAdapter):
         mapped_positions = []
         for p in raw_positions:
             # Blofin position structure: size is in "positions" or similar field. 
-            # Need to verify if 'positions' is the correct key based on Blofin API.
             size_val = float(p.get("positions", 0))
             if size_val == 0:
                 continue
@@ -144,10 +143,11 @@ class BlofinAdapter(ExchangeAdapter):
                 "symbol": p.get("instId"),
                 "side": "buy" if size_val > 0 else "sell",
                 "size": str(abs(size_val)),
-                "entryPx": p.get("averagePrice", "0"),
-                "markPx": p.get("markPrice", "0"),
-                "unrealizedPnl": p.get("unrealizedPnl", "0"),
-                "liquidationPx": p.get("liquidationPrice") or "0",
+                "entryPx": str(p.get("averagePrice", "0")),
+                "markPx": str(p.get("markPrice", "0")),
+                "unrealizedPnl": str(p.get("unrealizedPnl", "0")),
+                "realizedPnl": str(p.get("realizedPnl", "0")),
+                "liquidationPx": str(p.get("liquidationPrice") or "0"),
                 "platform": "blofin"
             })
             

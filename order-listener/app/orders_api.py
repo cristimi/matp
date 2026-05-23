@@ -111,10 +111,15 @@ async def retry_order(order_id: UUID):
     pool = get_pool()
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
-            "SELECT raw_webhook FROM orders WHERE id = $1", order_id
+            "SELECT raw_webhook, strategy_id FROM orders WHERE id = $1", order_id
         )
-    if not row:
-        raise HTTPException(status_code=404, detail="Order not found")
+        if not row:
+            raise HTTPException(status_code=404, detail="Order not found")
+        
+        strategy_row = await conn.fetchrow(
+            "SELECT * FROM strategies WHERE id = $1", row["strategy_id"]
+        )
+        strategy = dict(strategy_row) if strategy_row else {}
 
     import json
     from app.config import settings
@@ -124,7 +129,7 @@ async def retry_order(order_id: UUID):
     payload_data = json.loads(row["raw_webhook"])
     payload_data["token"] = settings.webhook_secret
     payload = WebhookPayload(**payload_data)
-    result = await route_order(payload)
+    result = await route_order(payload, strategy)
 
     async with pool.acquire() as conn:
         await conn.execute(

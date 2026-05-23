@@ -106,15 +106,16 @@ class HyperliquidAdapter(ExchangeAdapter):
                     size = float(p.get("s", "0"))
                     if size == 0:
                         continue
-                        
+
                     mapped_positions.append({
                         "symbol": f"{p.get('coin')}-USDT",
                         "side": "buy" if size > 0 else "sell",
                         "size": str(abs(size)),
-                        "entryPx": p.get("entryPx"),
-                        "markPx": p.get("markPx") or "0", 
-                        "unrealizedPnl": p.get("unrealizedPnl"),
-                        "liquidationPx": p.get("liquidationPx"),
+                        "entryPx": str(p.get("entryPx", "0")),
+                        "markPx": str(p.get("markPx") or "0"), 
+                        "unrealizedPnl": str(p.get("unrealizedPnl", "0")),
+                        "realizedPnl": "0", # HL doesn't return realized PNL in assetPositions usually
+                        "liquidationPx": str(p.get("liquidationPx") or "0"),
                         "platform": "hyperliquid"
                     })
                 return mapped_positions

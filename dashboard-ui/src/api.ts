@@ -136,7 +136,8 @@ export interface Position {
   markPx: string;
   closePx?: string;
   unrealizedPnl: string;
+  realizedPnl: string;
   liquidationPx?: string;
   platform: string;
-  status: 'open' | 'closed';
+  status: 'open' | 'closed' | 'stale';
 }

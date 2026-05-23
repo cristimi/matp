@@ -75,6 +75,18 @@ export default function OrdersPage() {
 
   const totalPages = Math.ceil(total / LIMIT);
 
+  function formatPrice(symbol: string, price: string | number | null | undefined) {
+    if (price === null || price === undefined) return '—';
+    const p = Number(price);
+    if (isNaN(p)) return String(price);
+    
+    if (symbol.includes('BTC') || symbol.includes('ETH')) return p.toFixed(2);
+    else if (symbol.includes('SOL')) return p.toFixed(3);
+    else if (symbol.includes('XRP') || symbol.includes('ADA') || symbol.includes('DOGE')) return p.toFixed(4);
+    else if (p < 1) return p.toFixed(6);
+    return p.toFixed(2);
+  }
+
   return (
     <div className="p-4 md:p-6 space-y-4">
       <div className="flex items-center justify-between">
@@ -135,14 +147,16 @@ export default function OrdersPage() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="text-xs text-gray-500 uppercase border-b border-gray-200 dark:border-gray-800">
-                  {['Time', 'Origin', 'Symbol', 'Side', 'Signal', 'Size', 'Strategy', 'Ind. Price', 'Platform', 'Status', 'P&L', ''].map((h) => (
+                  {['Time', 'Origin', 'Symbol', 'Side', 'Price', 'Size', 'Strategy', 'Platform', 'Status', 'P&L', ''].map((h) => (
                     <th key={h} className="px-4 py-3 text-left font-medium">{h}</th>
                   ))}
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
-                {orders.map((o) => (
-                  <>
+                {orders.map((o) => {
+                  const price = o.indicator_price;
+                  return (
+                    <>
                     <tr
                       key={o.id}
                       className="table-row-hover cursor-pointer"
@@ -156,12 +170,9 @@ export default function OrdersPage() {
                       </td>
                       <td className="px-4 py-3 font-mono font-semibold text-gray-900 dark:text-gray-200">{o.symbol}</td>
                       <td className="px-4 py-3"><SideBadge side={o.side} /></td>
-                      <td className="px-4 py-3 text-gray-500 dark:text-gray-400 text-xs">{o.signal}</td>
+                      <td className="px-4 py-3 font-mono text-gray-600 dark:text-gray-300">{formatPrice(o.symbol, price)}</td>
                       <td className="px-4 py-3 font-mono text-gray-600 dark:text-gray-300">{o.size}</td>
                       <td className="px-4 py-3 text-xs text-gray-500 dark:text-gray-400 font-medium">{o.strategy_id || '—'}</td>
-                      <td className="px-4 py-3 font-mono text-gray-500 dark:text-gray-400 text-xs">
-                        {o.indicator_price ? `$${parseFloat(o.indicator_price).toLocaleString()}` : '—'}
-                      </td>
                       <td className="px-4 py-3"><PlatformBadge platform={o.platform} /></td>
                       <td className="px-4 py-3"><StatusBadge status={o.status} /></td>
                       <td className="px-4 py-3 font-mono">
@@ -191,14 +202,14 @@ export default function OrdersPage() {
                             {o.exchange_order_id && <p><span className="text-gray-400 dark:text-gray-600">Exchange ID:</span> {o.exchange_order_id}</p>}
                             {o.strategy_id && <p><span className="text-gray-400 dark:text-gray-600">Strategy:</span> {o.strategy_id}</p>}
                             {o.signal_source && <p><span className="text-gray-400 dark:text-gray-600">Signal Source:</span> {o.signal_source}</p>}
-                            {o.indicator_price && <p><span className="text-gray-400 dark:text-gray-600">Indicator Price:</span> ${o.indicator_price}</p>}
                             {o.error_msg && <p className="text-red-600 dark:text-red-400"><span className="text-gray-400 dark:text-gray-600">Error:</span> {o.error_msg}</p>}
                           </div>
                         </td>
                       </tr>
                     )}
-                  </>
-                ))}
+                    </>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -206,39 +217,39 @@ export default function OrdersPage() {
           {/* Mobile cards */}
           <div className="md:hidden space-y-2">
             {orders.map((o) => (
-              <div key={o.id} className="stat-card space-y-2 text-sm shadow-sm transition-colors">
-                <div className="flex items-center justify-between">
+              <div key={o.id} className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-lg p-3 shadow-sm space-y-2">
+                <div className="flex justify-between items-center">
                   <div className="flex items-center gap-2">
-                    <SourceIcon source={o.signal_source} />
                     <span className="font-mono font-bold text-gray-900 dark:text-gray-200">{o.symbol}</span>
+                    <SourceIcon source={o.signal_source} />
                   </div>
                   <StatusBadge status={o.status} />
                 </div>
-                <div className="flex gap-2 items-center flex-wrap">
-                  <SideBadge side={o.side} />
-                  <PlatformBadge platform={o.platform} />
-                  <span className="text-gray-500 dark:text-gray-400 text-xs">{o.signal}</span>
-                  {o.indicator_price && (
-                    <span className="text-gray-400 dark:text-gray-500 text-xs font-mono ml-auto">
-                      ${parseFloat(o.indicator_price).toLocaleString()}
-                    </span>
-                  )}
+                
+                <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
+                  <div className="flex justify-between"><span className="text-gray-400">Price</span> <span className="font-mono">{formatPrice(o.symbol, o.indicator_price)}</span></div>
+                  <div className="flex justify-between"><span className="text-gray-400">Size</span> <span className="font-mono">{o.size}</span></div>
+                  <div className="flex justify-between"><span className="text-gray-400">Side</span> <SideBadge side={o.side} /></div>
+                  <div className="flex justify-between"><span className="text-gray-400">Strategy</span> {o.strategy_id ? <StrategyBadge strategyId={o.strategy_id} /> : '—'}</div>
                 </div>
-                <div className="flex justify-between items-center text-xs text-gray-500 dark:text-gray-400">
-                  <span>{new Date(o.received_at).toLocaleString()}</span>
-                  {o.pnl != null && (
-                    <span className={parseFloat(o.pnl) >= 0 ? 'text-emerald-600 dark:text-emerald-400 font-mono font-bold' : 'text-red-600 dark:text-red-400 font-mono font-bold'}>
+                
+                <div className="pt-2 border-t border-gray-100 dark:border-gray-800 flex justify-between items-center text-xs">
+                   <div className="font-mono text-gray-500 dark:text-gray-400">
+                    {new Date(o.received_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                  </div>
+                   {o.pnl != null && (
+                    <div className={parseFloat(o.pnl) >= 0 ? 'text-emerald-600 dark:text-emerald-400 font-mono font-bold' : 'text-red-600 dark:text-red-400 font-mono font-bold'}>
                       ${parseFloat(o.pnl).toFixed(2)}
-                    </span>
+                    </div>
                   )}
                 </div>
                 {(o.status === 'route_failed' || o.status === 'rejected') && (
                   <button
-                    className="btn-primary text-xs py-1 w-full"
+                    className="bg-red-50 hover:bg-red-100 dark:bg-red-900/20 text-red-600 px-3 py-1 rounded text-[10px] font-bold w-full"
                     disabled={retrying === o.id}
                     onClick={() => retry(o.id)}
                   >
-                    {retrying === o.id ? 'Retrying…' : 'Retry Order'}
+                    {retrying === o.id ? 'Retrying…' : 'RETRY ORDER'}
                   </button>
                 )}
               </div>
