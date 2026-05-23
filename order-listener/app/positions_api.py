@@ -120,7 +120,22 @@ async def close_position(symbol: str, request_data: dict):
     side = request_data.get("side", "buy")
     result = await adapter.close_position(symbol, side)
     
-    if not result.success:
-        raise HTTPException(status_code=400, detail=result.error_msg)
+    # Extract fill price if available in result
+    closing_price = result.actual_fill_price
+    
+    # Update position status to closed
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            UPDATE strategy_positions 
+            SET status = 'closed', 
+                closed_at = NOW(),
+                closing_price = $1
+            WHERE symbol = $2 
+              AND status = 'open'
+              AND exchange = $3
+            """,
+            closing_price, symbol, platform
+        )
         
     return {"status": "success", "result": result.model_dump(mode="json")}

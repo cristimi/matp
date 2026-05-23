@@ -26,8 +26,9 @@ class Strategy(BaseModel):
 
 class WebhookPayload(BaseModel):
     # Original MATP fields
-    symbol:     Optional[str] = None
-    side:       Optional[str] = None
+    base_asset:  Optional[str] = None
+    quote_asset: Optional[str] = None
+    side:       Optional[str] = None # Added back for side_to_lower validator
     orderType:  Literal["market", "limit"] = "market"
     size:       Optional[Decimal] = None
     price:      Optional[Decimal] = None
@@ -54,6 +55,10 @@ class WebhookPayload(BaseModel):
     investmentType:     Optional[str] = None
     amount:             Optional[Decimal] = None
     id:                 Optional[str] = None
+
+    @property
+    def pair_label(self) -> str:
+        return f"{self.base_asset}-{self.quote_asset}"
 
 
     @field_validator("side", mode="before")
@@ -98,6 +103,7 @@ class OrderResult(BaseModel):
     error_msg:         Optional[str] = None
     raw_response:      Optional[dict] = None
     actual_fill_price: Optional[Decimal] = None
+    pnl:               Optional[Decimal] = None
 
 
 class OrderResponse(BaseModel):

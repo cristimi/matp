@@ -46,7 +46,7 @@ export default function StrategyDetail() {
         <div>
           <h2 className="text-xl font-bold text-gray-900 dark:text-white">{strategy?.name}</h2>
           <p className="text-xs text-gray-500">
-            {strategy?.symbol} · {strategy?.interval} · {strategy?.platform} · Tags: {(strategy?.tags || []).join(', ')}
+            {strategy?.pair.label} · {strategy?.interval} · {strategy?.platform} · Tags: {(strategy?.tags || []).join(', ')}
           </p>
         </div>
       </div>
@@ -86,8 +86,8 @@ export default function StrategyDetail() {
                     <th className="text-left py-2">Symbol</th><th className="text-right py-2">Side</th><th className="text-right py-2">Size</th><th className="text-right py-2">Entry</th><th className="text-right py-2">P&L</th>
                 </tr></thead>
                 <tbody>{positions.map(p => (
-                    <tr key={p.symbol} className="border-t border-gray-800">
-                        <td className="py-2">{p.symbol}</td><td className="text-right"><SideBadge side={p.side} /></td><td className="text-right font-mono">{p.size}</td><td className="text-right font-mono">{p.entryPx}</td><td className="text-right font-mono">{p.unrealizedPnl}</td>
+                    <tr key={p.pair.label} className="border-t border-gray-800">
+                        <td className="py-2">{p.pair.label}</td><td className="text-right"><SideBadge side={p.side} /></td><td className="text-right font-mono">{p.size}</td><td className="text-right font-mono">{p.entryPx}</td><td className="text-right font-mono">{p.unrealizedPnl}</td>
                     </tr>
                 ))}</tbody>
             </table>

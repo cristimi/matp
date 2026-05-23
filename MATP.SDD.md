@@ -391,6 +391,10 @@ The Dashboard provides a web-based user interface for monitoring all orders, vie
 
 The Dashboard API acts as a backend for the UI, providing data and WebSocket services.
 
+**Note on Reconciliation**: The system includes a 'Reconcile' feature to synchronize database state with live exchange data. Future iterations should expand this to support:
+- **Option 1**: Full deletion of stale position records and their associated order history.
+- **Option 2**: Manual specification of closing price and date for historical accuracy.
+
 ##### Internal Architecture
 
 ```

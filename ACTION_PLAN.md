@@ -2,6 +2,9 @@
 **Version:** 2.0  **Date:** 2026-05-22
 **Current Phase:** P2-Dashboard + P2-StrategyUI (running in parallel)
 
+## Known Issues
+- **Order Retry Logic**: The "Retry" button on the Orders page sends an order to the exchange and it executes, but the order status in the UI/list does not update. This allows the same failed order to be sent repeatedly. *Task to fix: Implement state synchronization after retry.*
+
 ## Status Summary
 The core Docker stack is functional, with all 7 services running and initial smoke tests passing. Key infrastructure for webhook reception, logging, and Blofin routing is complete. Phase 1 validation is primarily done, and the system is ready to deepen Dashboard observability and begin the Strategy-centric UI refactor. Parallel efforts will focus on Hyperliquid integration.
 
@@ -36,6 +39,7 @@ This document outlines the planned tasks for the MATP project. Each task in the 
 | T14 | P2-StrategyUI | Add StrategyBadge component | Create a new React component `StrategyBadge` in `dashboard-ui/src/components/Badges.tsx`. This badge should display the strategy's name or ID and potentially a status indicator. It will be used across Orders and Positions pages. | Flash | AI Agent | Yes — use existing | 1h |
 | T15 | P2-StrategyUI | Rebuild Strategies.tsx | Refactor `dashboard-ui/src/pages/Strategies.tsx` into a comprehensive performance dashboard for strategies. Use the new API endpoints (T09, T10, T11, T12) to display comparative metrics, individual strategy stats, and position lists. Include the enable/disable toggle (T13). | Sonnet | AI Agent | Yes — use existing | 4h |
 | T16 | P2-StrategyUI | Create StrategyDetail.tsx page | Create a new page `dashboard-ui/src/pages/StrategyDetail.tsx` that provides a detailed view for a single strategy. This page should leverage the per-strategy stats, equity curve, and positions APIs (T10, T11, T12) to display comprehensive information for a selected strategy. | Sonnet | AI Agent | Yes — use existing | 4h | completed
+| T16a | P2-Dashboard | Enhance Reconcile function | The 'Reconcile' feature added to the Positions page should be further developed at a later stage to: Option 1: Allow position and its orders to be deleted fully; Option 2: Allow manual specification of the closing price and date for historical accuracy. | N/A | Human | No | TBD |
 | T17 | P2-StrategyUI | Add strategy column + filter | Modify `dashboard-ui/src/pages/Orders.tsx` to add a new column for `strategy_id` in the orders table. Also, add a filter dropdown to allow filtering orders by strategy. Use the `StrategyBadge` component (T14) for display. | Sonnet | AI Agent | Yes — use existing | 2h |
 | T18 | P2-StrategyUI | Update Dashboard.tsx summary | Modify `dashboard-ui/src/pages/Dashboard.tsx` to update the strategy summary section. Integrate relevant data from the new strategy comparison API (T09) to provide a high-level overview of strategy performance directly on the dashboard. | Sonnet | AI Agent | Yes — use existing | 1.5h |
 | T19 | P2-StrategyUI | Reorder nav, add /strategy route | Modify `dashboard-ui/src/App.tsx` to update the navigation bar, adding a link to the new `Strategies.tsx` dashboard and incorporating a dynamic route for `StrategyDetail.tsx` (e.g., `/strategy/:id`). Ensure proper navigation flow. | Flash | AI Agent | Yes — use existing | 1h |

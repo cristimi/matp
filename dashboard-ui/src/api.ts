@@ -25,11 +25,16 @@ export const api = {
     req<T>(path, { method: 'PUT', body: JSON.stringify(body) }),
 };
 
-// Types
+export interface TradingPair {
+  base: string;
+  quote: string;
+  label: string;
+}
+
 export interface Order {
   id: string;
   received_at: string;
-  symbol: string;
+  pair: TradingPair;
   side: 'buy' | 'sell';
   signal: string;
   size: string;
@@ -41,6 +46,22 @@ export interface Order {
   error_msg?: string;
   signal_source?: string;
   indicator_price?: string;
+}
+
+export interface Position {
+  id: string;
+  pair: TradingPair;
+  side: string;
+  size: string;
+  entryPx: string;
+  markPx: string;
+  closePx?: string;
+  closing_price?: string;
+  unrealizedPnl: string;
+  realizedPnl: string;
+  liquidationPx?: string;
+  platform: string;
+  status: 'open' | 'closed' | 'stale';
 }
 
 export interface Stats {
@@ -60,7 +81,7 @@ export interface Stats {
 export interface Strategy {
   id: string;
   name: string;
-  symbol: string;
+  pair: TradingPair;
   interval: string;
   platform: string;
   enabled: boolean;
@@ -115,7 +136,6 @@ export async function fetchStrategyStats(id: string, period: string): Promise<St
 }
 
 export async function fetchEquityCurve(id: string, days: number): Promise<EquityCurvePoint[]> {
-  // TODO: endpoint not yet implemented in dashboard-api
   return [];
 }
 
@@ -125,19 +145,4 @@ export async function fetchStrategyPositions(id: string): Promise<Position[]> {
 
 export async function fetchStrategyComparison(period: string): Promise<StrategyComparison[]> {
   return api.get<StrategyComparison[]>(`/strategies/comparison?period=${period}`);
-}
-
-export interface Position {
-  id: string;
-  symbol: string;
-  side: string;
-  size: string;
-  entryPx: string;
-  markPx: string;
-  closePx?: string;
-  unrealizedPnl: string;
-  realizedPnl: string;
-  liquidationPx?: string;
-  platform: string;
-  status: 'open' | 'closed' | 'stale';
 }

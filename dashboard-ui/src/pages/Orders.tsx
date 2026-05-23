@@ -75,14 +75,14 @@ export default function OrdersPage() {
 
   const totalPages = Math.ceil(total / LIMIT);
 
-  function formatPrice(symbol: string, price: string | number | null | undefined) {
+  function formatPrice(label: string, price: string | number | null | undefined) {
     if (price === null || price === undefined) return '—';
     const p = Number(price);
     if (isNaN(p)) return String(price);
     
-    if (symbol.includes('BTC') || symbol.includes('ETH')) return p.toFixed(2);
-    else if (symbol.includes('SOL')) return p.toFixed(3);
-    else if (symbol.includes('XRP') || symbol.includes('ADA') || symbol.includes('DOGE')) return p.toFixed(4);
+    if (label.includes('BTC') || label.includes('ETH')) return p.toFixed(2);
+    else if (label.includes('SOL')) return p.toFixed(3);
+    else if (label.includes('XRP') || label.includes('ADA') || label.includes('DOGE')) return p.toFixed(4);
     else if (p < 1) return p.toFixed(6);
     return p.toFixed(2);
   }
@@ -133,7 +133,6 @@ export default function OrdersPage() {
         </button>
       </div>
 
-      {/* Table — desktop */}
       {loading ? (
         <div className="space-y-2">
           {[...Array(8)].map((_, i) => (
@@ -142,7 +141,6 @@ export default function OrdersPage() {
         </div>
       ) : (
         <>
-          {/* Desktop table */}
           <div className="hidden md:block overflow-x-auto rounded-xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 transition-colors">
             <table className="w-full text-sm">
               <thead>
@@ -168,9 +166,9 @@ export default function OrdersPage() {
                       <td className="px-4 py-3 text-center">
                         <SourceIcon source={o.signal_source} />
                       </td>
-                      <td className="px-4 py-3 font-mono font-semibold text-gray-900 dark:text-gray-200">{o.symbol}</td>
+                      <td className="px-4 py-3 font-mono font-semibold text-gray-900 dark:text-gray-200">{o.pair.label}</td>
                       <td className="px-4 py-3"><SideBadge side={o.side} /></td>
-                      <td className="px-4 py-3 font-mono text-gray-600 dark:text-gray-300">{formatPrice(o.symbol, price)}</td>
+                      <td className="px-4 py-3 font-mono text-gray-600 dark:text-gray-300">{formatPrice(o.pair.label, price)}</td>
                       <td className="px-4 py-3 font-mono text-gray-600 dark:text-gray-300">{o.size}</td>
                       <td className="px-4 py-3 text-xs text-gray-500 dark:text-gray-400 font-medium">{o.strategy_id || '—'}</td>
                       <td className="px-4 py-3"><PlatformBadge platform={o.platform} /></td>
@@ -214,20 +212,19 @@ export default function OrdersPage() {
             </table>
           </div>
 
-          {/* Mobile cards */}
           <div className="md:hidden space-y-2">
             {orders.map((o) => (
               <div key={o.id} className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-lg p-3 shadow-sm space-y-2">
                 <div className="flex justify-between items-center">
                   <div className="flex items-center gap-2">
-                    <span className="font-mono font-bold text-gray-900 dark:text-gray-200">{o.symbol}</span>
+                    <span className="font-mono font-bold text-gray-900 dark:text-gray-200">{o.pair.label}</span>
                     <SourceIcon source={o.signal_source} />
                   </div>
                   <StatusBadge status={o.status} />
                 </div>
                 
                 <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
-                  <div className="flex justify-between"><span className="text-gray-400">Price</span> <span className="font-mono">{formatPrice(o.symbol, o.indicator_price)}</span></div>
+                  <div className="flex justify-between"><span className="text-gray-400">Price</span> <span className="font-mono">{formatPrice(o.pair.label, o.indicator_price)}</span></div>
                   <div className="flex justify-between"><span className="text-gray-400">Size</span> <span className="font-mono">{o.size}</span></div>
                   <div className="flex justify-between"><span className="text-gray-400">Side</span> <SideBadge side={o.side} /></div>
                   <div className="flex justify-between"><span className="text-gray-400">Strategy</span> {o.strategy_id ? <StrategyBadge strategyId={o.strategy_id} /> : '—'}</div>
@@ -256,7 +253,6 @@ export default function OrdersPage() {
             ))}
           </div>
 
-          {/* Pagination */}
           {totalPages > 1 && (
             <div className="flex items-center justify-center gap-2 pt-2">
               <button 

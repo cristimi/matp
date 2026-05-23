@@ -1,11 +1,28 @@
 -- MATP Database Schema
--- Version 1.1
+-- Version 1.2 (Normalized Pair Architecture)
+
+-- Assets Registry
+CREATE TABLE IF NOT EXISTS assets (
+    id     SERIAL PRIMARY KEY,
+    symbol VARCHAR(20) NOT NULL UNIQUE,
+    name   VARCHAR(100)
+);
+
+-- Trading Pairs Registry
+CREATE TABLE IF NOT EXISTS trading_pairs (
+    id               SERIAL PRIMARY KEY,
+    base_asset_id    INTEGER NOT NULL REFERENCES assets(id),
+    quote_asset_id   INTEGER NOT NULL REFERENCES assets(id),
+    exchange_meta    JSONB NOT NULL DEFAULT '{}',
+    UNIQUE(base_asset_id, quote_asset_id)
+);
 
 -- Orders: every webhook signal received
 CREATE TABLE IF NOT EXISTS orders (
     id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     received_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    symbol            VARCHAR(20) NOT NULL,
+    symbol            VARCHAR(20),  -- Deprecated: keep as nullable for rollback
+    pair_id           INTEGER REFERENCES trading_pairs(id),
     side              VARCHAR(10) NOT NULL,
     signal            VARCHAR(20) NOT NULL,
     order_type        VARCHAR(20) NOT NULL,
@@ -33,6 +50,7 @@ CREATE INDEX IF NOT EXISTS orders_received_at_idx ON orders (received_at DESC);
 CREATE INDEX IF NOT EXISTS orders_status_idx ON orders (status);
 CREATE INDEX IF NOT EXISTS orders_strategy_id_idx ON orders (strategy_id);
 CREATE INDEX IF NOT EXISTS orders_platform_idx ON orders (platform);
+CREATE INDEX IF NOT EXISTS orders_pair_id_idx ON orders (pair_id);
 
 -- Dead letter queue: failed / rejected orders
 CREATE TABLE IF NOT EXISTS dead_letter_orders (
@@ -74,7 +92,8 @@ CREATE TABLE IF NOT EXISTS strategies (
     id                VARCHAR(100) PRIMARY KEY,
     name              VARCHAR(100) NOT NULL,
     class             VARCHAR(100) NOT NULL,
-    symbol            VARCHAR(20) NOT NULL,
+    symbol            VARCHAR(20), -- Deprecated: keep as nullable
+    pair_id           INTEGER REFERENCES trading_pairs(id),
     interval          VARCHAR(10) NOT NULL,
     platform          VARCHAR(20) NOT NULL DEFAULT 'auto',
     enabled           BOOLEAN NOT NULL DEFAULT TRUE,
@@ -104,7 +123,8 @@ CREATE TABLE IF NOT EXISTS strategy_positions (
     id               BIGSERIAL PRIMARY KEY,
     strategy_id      VARCHAR(100) NOT NULL,
     exchange         VARCHAR(20) NOT NULL,
-    symbol           VARCHAR(20) NOT NULL,
+    symbol           VARCHAR(20),
+    pair_id          INTEGER REFERENCES trading_pairs(id),
     side             VARCHAR(10) NOT NULL,
     entry_price      NUMERIC NOT NULL,
     size             NUMERIC NOT NULL,
@@ -117,6 +137,7 @@ CREATE TABLE IF NOT EXISTS strategy_positions (
 );
 CREATE INDEX IF NOT EXISTS sp_strategy_id_idx ON strategy_positions (strategy_id);
 CREATE INDEX IF NOT EXISTS sp_status_idx ON strategy_positions (status);
+CREATE INDEX IF NOT EXISTS sp_pair_id_idx ON strategy_positions (pair_id);
 
 -- Function to auto-update updated_at timestamps
 CREATE OR REPLACE FUNCTION update_updated_at_column()

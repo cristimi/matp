@@ -62,24 +62,25 @@ async def _check_rate_limit(pool, strategy_id: str, max_signals: int) -> bool:
         return count < max_signals
 
 
-async def _log_order(pool, payload: WebhookPayload, order_id: uuid.UUID, strategy_id: str) -> None:
+async def _log_order(pool, payload: WebhookPayload, order_id: uuid.UUID, strategy_id: str, pair_id: int, symbol: str) -> None:
     """Write initial order record to PostgreSQL."""
     async with pool.acquire() as conn:
         await conn.execute(
             """
             INSERT INTO orders (
-                id, received_at, symbol, side, signal, order_type, size, price,
+                id, received_at, pair_id, symbol, side, signal, order_type, size, price,
                 leverage, margin_mode, tp_price, sl_price, platform, strategy_id,
                 status, raw_webhook, signal_source, signal_metadata, indicator_price
             ) VALUES (
                 $1, $2, $3, $4, $5, $6, $7, $8,
                 $9, $10, $11, $12, $13, $14,
-                'received', $15, $16, $17, $18
+                'received', $15, $16, $17, $18, $19
             )
             """,
             order_id,
             datetime.now(timezone.utc),
-            payload.symbol,
+            pair_id,
+            symbol,
             payload.side,
             payload.signal,
             payload.orderType,
@@ -97,7 +98,6 @@ async def _log_order(pool, payload: WebhookPayload, order_id: uuid.UUID, strateg
             payload.indicator_price
         )
 
-
 async def _update_order_status(pool, order_id: uuid.UUID, status: str, payload: WebhookPayload, result: OrderResult = None) -> None:
     async with pool.acquire() as conn:
         await conn.execute(
@@ -106,7 +106,8 @@ async def _update_order_status(pool, order_id: uuid.UUID, status: str, payload: 
                 exchange_order_id = $2,
                 raw_response = $3,
                 error_msg = $4,
-                actual_fill_price = $6
+                actual_fill_price = $6,
+                pnl = $7
             WHERE id = $5
             """,
             status,
@@ -115,14 +116,15 @@ async def _update_order_status(pool, order_id: uuid.UUID, status: str, payload: 
             result.error_msg if result else None,
             order_id,
             result.actual_fill_price if result else None,
+            result.pnl if hasattr(result, 'pnl') else None,
         )
-    
+
     # Publish status update to Redis
     await publish(f"orders:{status}", {
         "event": f"orders:{status}",
         "order_id": str(order_id),
         "status": status,
-        "symbol": payload.symbol,
+        "pair": payload.pair_label,
         "platform": payload.platform,
         "timestamp": datetime.now(timezone.utc).isoformat()
     })
@@ -135,7 +137,6 @@ async def receive_webhook(
     x_webhook_token: str = Header(None)
 ):
     body = await request.body()
-    logger.info(f"DEBUG: Received raw payload for {strategy_id}: {body.decode()}")
     payload = WebhookPayload(**json.loads(body))
     pool = get_pool()
     
@@ -174,7 +175,6 @@ async def receive_webhook(
         await _log_webhook_call(pool, strategy_id, 429, "Rate limit exceeded")
         raise HTTPException(status_code=429, detail="Rate limit exceeded")
 
-    # Enrichment (Map TradingView field to MATP schema if needed)
     payload.strategy_id = strategy_id
     
     # Resolve platform immediately (never persist 'auto')
@@ -188,9 +188,13 @@ async def receive_webhook(
     if not payload.signal and payload.action:
         payload.signal = payload.action
     
-    # Map TV Instrument/Amount to MATP Symbol/Size
-    if payload.instrument and not payload.symbol:
-        payload.symbol = payload.instrument
+    # Map TV Instrument/Amount to MATP Base/Quote and Size
+    if payload.instrument and not payload.base_asset:
+        # Expecting TV to send format "BTC-USDT"
+        parts = payload.instrument.split('-')
+        if len(parts) == 2:
+            payload.base_asset = parts[0]
+            payload.quote_asset = parts[1]
     if payload.amount and payload.size is None:
         payload.size = payload.amount
     
@@ -198,14 +202,26 @@ async def receive_webhook(
     
     # Persist initial record
     await _log_webhook_call(pool, strategy_id, 200)
-    await _log_order(pool, payload, order_id, strategy_id)
+    
+    # Lookup pair_id
+    async with pool.acquire() as conn:
+        pair = await conn.fetchrow(
+            "SELECT tp.id FROM trading_pairs tp JOIN assets b ON tp.base_asset_id = b.id JOIN assets q ON tp.quote_asset_id = q.id WHERE b.symbol = $1 AND q.symbol = $2",
+            payload.base_asset, payload.quote_asset
+        )
+    pair_id = pair['id'] if pair else None
+
+    
+    symbol_str = f"{payload.base_asset}-{payload.quote_asset}"
+    
+    await _log_order(pool, payload, order_id, strategy_id, pair_id, symbol_str)
 
     # Publish initial 'received' status to Redis
     await publish("orders:received", {
         "event": "orders:received",
         "order_id": str(order_id),
         "status": "received",
-        "symbol": payload.symbol,
+        "pair": payload.pair_label,
         "platform": payload.platform,
         "timestamp": datetime.now(timezone.utc).isoformat()
     })
@@ -225,26 +241,30 @@ async def _create_strategy_position(pool, payload: WebhookPayload, strategy: dic
     """Create a new strategy position record in the database."""
     async with pool.acquire() as conn:
         entry_price = result.actual_fill_price or payload.price or payload.indicator_price or 0
-        current_price = entry_price
         
-        logger.info(f"DEBUG: Creating position for strategy_id={payload.strategy_id} with entry_price={entry_price}")
+        # Look up pair_id
+        pair = await conn.fetchrow(
+            "SELECT tp.id FROM trading_pairs tp JOIN assets b ON tp.base_asset_id = b.id JOIN assets q ON tp.quote_asset_id = q.id WHERE b.symbol = $1 AND q.symbol = $2",
+            payload.base_asset, payload.quote_asset
+        )
+        pair_id = pair['id'] if pair else None
 
         await conn.execute(
             """
             INSERT INTO strategy_positions (
-                strategy_id, exchange, symbol, side, entry_price, current_price, size,
+                strategy_id, exchange, symbol, pair_id, side, entry_price, current_price, size,
                 leverage, margin_mode, opening_order_id, status, opened_at
             ) VALUES (
-                $1, $2, $3, $4, $5, $6, $7,
+                $1, $2, $3, $4, $5, $6, $6, $7,
                 $8, $9, $10, 'open', NOW()
             )
             """,
             payload.strategy_id,
             payload.platform,
-            payload.symbol,
+            payload.pair_label,
+            pair_id,
             payload.side,
             entry_price,
-            current_price,
             payload.size,
             payload.leverage,
             payload.marginMode,
@@ -261,15 +281,22 @@ async def _process_order(pool, order_id: uuid.UUID, payload: WebhookPayload, str
 
         logger.info(f"Order {order_id} processed for strategy {payload.strategy_id}: {final_status}")
 
-        if result.success and payload.symbol and payload.side and payload.size:
+        if result.success and payload.base_asset and payload.quote_asset and payload.side and payload.size:
             # Ensure strategy_id is correctly set on payload
             payload.strategy_id = strategy['id']
             
             async with pool.acquire() as conn:
+                # Lookup pair_id
+                pair = await conn.fetchrow(
+                    "SELECT tp.id FROM trading_pairs tp JOIN assets b ON tp.base_asset_id = b.id JOIN assets q ON tp.quote_asset_id = q.id WHERE b.symbol = $1 AND q.symbol = $2",
+                    payload.base_asset, payload.quote_asset
+                )
+                pair_id = pair['id'] if pair else None
+
                 # Check for existing open position
                 existing = await conn.fetchrow(
-                    "SELECT id, size FROM strategy_positions WHERE strategy_id = $1 AND symbol = $2 AND status = 'open'",
-                    payload.strategy_id, payload.symbol
+                    "SELECT sp.id, sp.size FROM strategy_positions sp WHERE strategy_id = $1 AND pair_id = $2 AND status = 'open'",
+                    payload.strategy_id, pair_id
                 )
                 
                 if existing:
@@ -292,8 +319,7 @@ async def _process_order(pool, order_id: uuid.UUID, payload: WebhookPayload, str
                         )
                         logger.info(f"Position {existing['id']} reduced by {order_size} for order {order_id}. New size: {new_size}")
                 else:
-                    # Only create a strategy position if the order was successful and
-                    # essential position-related fields are present.
+                    # Only create a strategy position if the order was successful
                     await _create_strategy_position(pool, payload, strategy, order_id, result)
 
     except Exception as e:

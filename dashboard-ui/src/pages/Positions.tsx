@@ -90,7 +90,7 @@ export default function PositionsPage() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="text-xs text-gray-500 uppercase border-b border-gray-200 dark:border-gray-800">
-                  {['Status', 'Symbol', 'Side', 'Size', 'Entry', 'Mark', 'P&L (Unrealized / Realized)', 'Platform', ''].map((h) => (
+                  {['Status', 'Symbol', 'Side', 'Size', 'Entry', 'Mark', 'Close Price', 'P&L (Unrealized / Realized)', 'Platform', ''].map((h) => (
                     <th key={h} className="px-4 py-3 text-left font-medium">{h}</th>
                   ))}
                 </tr>
@@ -107,11 +107,12 @@ export default function PositionsPage() {
                           {p.status.toUpperCase()}
                         </span>
                       </td>
-                      <td className="px-4 py-3 font-mono font-semibold text-gray-900 dark:text-gray-200">{p.symbol}</td>
+                      <td className="px-4 py-3 font-mono font-semibold text-gray-900 dark:text-gray-200">{p.pair.label}</td>
                       <td className="px-4 py-3"><SideBadge side={p.side} /></td>
-                      <td className="px-4 py-3 font-mono text-gray-600 dark:text-gray-300">{formatSize(p.symbol, p.size)}</td>
-                      <td className="px-4 py-3 font-mono text-gray-400 dark:text-gray-500">{formatPrice(p.symbol, p.entryPx)}</td>
-                      <td className="px-4 py-3 font-mono text-gray-600 dark:text-gray-300">{formatPrice(p.symbol, p.markPx)}</td>
+                      <td className="px-4 py-3 font-mono text-gray-600 dark:text-gray-300">{formatSize(p.pair.label, p.size)}</td>
+                      <td className="px-4 py-3 font-mono text-gray-400 dark:text-gray-500">{formatPrice(p.pair.label, p.entryPx)}</td>
+                      <td className="px-4 py-3 font-mono text-gray-600 dark:text-gray-300">{formatPrice(p.pair.label, p.markPx)}</td>
+                      <td className="px-4 py-3 font-mono text-gray-600 dark:text-gray-300">{formatPrice(p.pair.label, p.closing_price)}</td>
                       <td className="px-4 py-3 font-mono">
                         {isOpen ? (
                           <div className="flex items-center gap-1 font-semibold">
@@ -134,10 +135,18 @@ export default function PositionsPage() {
                         {isOpen && (
                           <button
                             className="btn-danger text-xs py-1 shadow-sm"
-                            disabled={closing === p.symbol}
-                            onClick={() => closePosition(p.symbol, p.side, p.platform)}
+                            disabled={closing === p.pair.label}
+                            onClick={() => closePosition(p.pair.label, p.side, p.platform)}
                           >
-                            {closing === p.symbol ? 'Closing…' : 'Close'}
+                            {closing === p.pair.label ? 'Closing…' : 'Close'}
+                          </button>
+                        )}
+                        {p.status === 'stale' && (
+                          <button
+                            className="text-[10px] bg-amber-100 text-amber-800 px-2 py-1 rounded font-bold hover:bg-amber-200"
+                            onClick={() => console.log('Reconcile triggered')}
+                          >
+                            RECONCILE
                           </button>
                         )}
                       </td>
@@ -155,49 +164,50 @@ export default function PositionsPage() {
               return (
                 <div key={p.id} className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-lg p-3 shadow-sm space-y-2">
                   <div className="flex justify-between items-center">
-                    <div className="flex items-center gap-2">
-                      <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold ${isOpen ? 'bg-emerald-100 text-emerald-800' : 'bg-gray-100 text-gray-600'}`}>
-                        {p.status.toUpperCase()}
-                      </span>
-                      <span className="font-mono font-bold text-gray-900 dark:text-gray-200">{p.symbol}</span>
-                    </div>
-                    <SideBadge side={p.side} />
+                  <div className="flex items-center gap-2">
+                  <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold ${isOpen ? 'bg-emerald-100 text-emerald-800' : 'bg-gray-100 text-gray-600'}`}>
+                  {p.status.toUpperCase()}
+                  </span>
+                  <span className="font-mono font-bold text-gray-900 dark:text-gray-200">{p.pair.label}</span>
                   </div>
-                  
+                  <SideBadge side={p.side} />
+                  </div>
+
                   <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
-                    <div className="flex justify-between"><span className="text-gray-400">Size</span> <span className="font-mono">{formatSize(p.symbol, p.size)}</span></div>
-                    <div className="flex justify-between"><span className="text-gray-400">Entry</span> <span className="font-mono">{formatPrice(p.symbol, p.entryPx)}</span></div>
-                    <div className="flex justify-between"><span className="text-gray-400">Mark</span> <span className="font-mono">{formatPrice(p.symbol, p.markPx)}</span></div>
-                    <div className="flex justify-between"><span className="text-gray-400">Platform</span> <PlatformBadge platform={p.platform} /></div>
+                  <div className="flex justify-between"><span className="text-gray-400">Size</span> <span className="font-mono">{formatSize(p.pair.label, p.size)}</span></div>
+                  <div className="flex justify-between"><span className="text-gray-400">Entry</span> <span className="font-mono">{formatPrice(p.pair.label, p.entryPx)}</span></div>
+                  <div className="flex justify-between"><span className="text-gray-400">Mark</span> <span className="font-mono">{formatPrice(p.pair.label, p.markPx)}</span></div>
+                  <div className="flex justify-between"><span className="text-gray-400">Platform</span> <PlatformBadge platform={p.platform} /></div>
                   </div>
-                  
+
                   <div className="pt-2 border-t border-gray-100 dark:border-gray-800 flex justify-between items-center">
-                     <div className="font-mono text-xs font-semibold">
-                      {isOpen ? (
-                        <div className="flex items-center gap-1">
-                          <span className={uPnl >= 0 ? 'text-emerald-600' : 'text-red-600'}>
-                            {uPnl >= 0 ? '+' : ''}{uPnl.toFixed(2)}
-                          </span>
-                          <span className="text-gray-300">/</span>
-                          <span className={rPnl >= 0 ? 'text-emerald-500/80' : 'text-red-500/80'}>
-                            {rPnl >= 0 ? '+' : ''}{rPnl.toFixed(2)}
-                          </span>
-                        </div>
-                      ) : (
-                        <span className={rPnl >= 0 ? 'text-emerald-600' : 'text-red-600'}>
-                          {rPnl >= 0 ? '+' : ''}{rPnl.toFixed(2)}
-                        </span>
-                      )}
-                    </div>
-                    {isOpen && (
-                      <button
-                        className="bg-red-50 hover:bg-red-100 dark:bg-red-900/20 text-red-600 px-3 py-1 rounded text-[10px] font-bold"
-                        onClick={() => closePosition(p.symbol, p.side, p.platform)}
-                      >
-                        CLOSE
-                      </button>
-                    )}
+                  <div className="font-mono text-xs font-semibold">
+                  {isOpen ? (
+                  <div className="flex items-center gap-1">
+                    <span className={uPnl >= 0 ? 'text-emerald-600' : 'text-red-600'}>
+                      {uPnl >= 0 ? '+' : ''}{uPnl.toFixed(2)}
+                    </span>
+                    <span className="text-gray-300">/</span>
+                    <span className={rPnl >= 0 ? 'text-emerald-500/80' : 'text-red-500/80'}>
+                      {rPnl >= 0 ? '+' : ''}{rPnl.toFixed(2)}
+                    </span>
                   </div>
+                  ) : (
+                  <span className={rPnl >= 0 ? 'text-emerald-600' : 'text-red-600'}>
+                    {rPnl >= 0 ? '+' : ''}{rPnl.toFixed(2)}
+                  </span>
+                  )}
+                  </div>
+                  {isOpen && (
+                  <button
+                  className="bg-red-50 hover:bg-red-100 dark:bg-red-900/20 text-red-600 px-3 py-1 rounded text-[10px] font-bold"
+                  onClick={() => closePosition(p.pair.label, p.side, p.platform)}
+                  >
+                  CLOSE
+                  </button>
+                  )}
+                  </div>
+
                 </div>
               );
             })}

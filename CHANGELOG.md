@@ -2,6 +2,27 @@
 
 All notable changes to this project will be tracked in this file.
 
+## [2026-05-23] - 2.0.5
+
+### Added
+- Precise P&L Tracking: Added `pnl` and `actual_fill_price` tracking for orders in the database.
+- Enhanced API responses: Updated `orders` endpoint to include `indicator_price` and `actual_fill_price`.
+
+### Changed
+- Webhook Handler: Standardized incoming signal fields and removed reliance on `symbol`, transitioning entirely to `pair_label` derived from `base_asset` and `quote_asset`.
+- Blofin Adapter: Updated order placement logic to use `pair_label` for instId and mapping.
+- Routing Engine: Updated `router.py` to use `pair_label` instead of `symbol` to avoid `AttributeError` on incoming webhooks.
+
+### Fixed
+- Price/PnL Display: Resolved issues where price and P&L were not appearing in the orders list due to column selection and mapping issues.
+- Webhook Reception: Fixed routing issues caused by trailing slashes in Nginx configuration.
+- Order Listener Stability: Fixed `NotNullViolationError` when inserting into `strategy_positions`.
+- UI Crash: Resolved an Orders page crash by properly mapping database `symbol` to the UI's expected `pair` object.
+
+### Tested
+- Verified full end-to-end webhook processing: TradingView signal -> Listener -> Blofin Execution -> DB Update -> Dashboard API -> UI display.
+- Verified successful processing of new signal format without `symbol`.
+
 ## [2026-05-23] - 2.0.4
 
 ### Added
@@ -48,73 +69,3 @@ All notable changes to this project will be tracked in this file.
 ...
 ### Enhancements: Theme Support & Monitoring UI
 - **Light Theme:** Implemented a full light theme and a theme switcher (sun/moon toggle) in the Dashboard. Preference is persisted to local storage.
-- **Monitoring Columns:** Added "Origin" (Signal Source) and "Ind. Price" (Indicator Price) columns to the Orders page.
-- **Visual Polish:** Refactored all components (`StatPanel`, `LiveFeed`, `PlatformSelector`) to be theme-aware with improved contrast and responsiveness.
-- **API Types:** Updated Dashboard UI's `Order` interface to support granular signal metadata.
-
-## [2026-05-19 15:45]
-
-### Enhancements: Granular Strategy Monitoring
-- Updated database schema (`orders` table) to track `signal_source`, `signal_metadata` (JSONB), and `indicator_price`.
-- Updated `order-listener` to ingest and persist these new signal attributes, allowing for precise origin tracking (TradingView vs Internal) and indicator-based analysis.
-
-## [2026-05-19 15:25]
-...
-
-### Testing Phase 1: Webhook Test D (Platform Switching)
-- Verified active platform switching.
-- Updated `active_platform` to `hyperliquid` via `/config/active_platform`.
-- Sent a valid webhook request with `platform: auto`.
-- Confirmed the system attempted to route to `hyperliquid` (evidenced by the `TypeError` in logs, confirming successful routing selection).
-
-## [2026-05-19 15:05]
-
-### Testing Phase 1: Webhook Test C (Malformed Payload)
-- Performed a negative integration test using curl for `strat-001` with a malformed payload (missing fields).
-- Verified HTTP 422 Unprocessable Entity response (correctly identified by Pydantic validation).
-- Confirmed that failed validation requests do not create logs in `strategy_webhook_calls` as intended.
-...
-
-
-### Testing Phase 1: Webhook Test B (Invalid Token)
-- Performed a negative integration test using curl for `strat-001` with an invalid token.
-- Verified HTTP 403 response (`{"detail":"Invalid token"}`).
-- Confirmed database table `strategy_webhook_calls` correctly logs the failure with `http_status=403` and `error_message='Invalid token'`.
-...
-
-### Testing Phase 1: Webhook Test A (Success)
-- Performed a valid webhook integration test using curl for `strat-001`.
-- Verified HTTP 200 response, database order logging, and correct execution flow (routing triggered).
-- Confirmed database table `strategy_webhook_calls` reflects the success (HTTP 200). Note: `route_failed` is expected due to missing Blofin credentials, confirming the order listener successfully processes webhooks and attempts to route them.
-...
-
-### Testing Phase 1: Health Check Smoke Tests
-- Executed health check smoke tests for all services via Nginx gateway.
-- Confirmed all services (`order-listener`, `order-generator`, `dashboard-api`) return `{"status":"ok"}`.
-
-## [2026-05-19 14:15]
-
-### Testing Phase 1: Service Startup
-- Successfully launched the Docker infrastructure with `docker compose up -d`.
-- Verified that all 7 services (dashboard-api, dashboard-ui, nginx, order-generator, order-listener, postgres, redis) are up and healthy.
-...
-
-## [2026-05-19 14:00]
-
-### Testing Phase 1: Environment Configuration
-- Configured `.env` file with essential environment variables (DB credentials and secrets).
-
-### Backend Architecture: Strategy-Centric Webhooks
-- **Database:** Implemented `db/migrations/001_add_strategy_webhooks.sql` to support strategy-specific webhook secrets, performance tracking, and call logging.
-- **Order Listener:**
-    - Rewrote `order-listener/app/webhook_handler.py` to route webhooks via `/webhook/{strategy_id}`, implementing per-strategy HMAC authentication and daily rate limiting.
-    - Updated `order-listener/app/models.py` to support dynamic payload structures.
-    - Updated `order-listener/app/router.py` to prioritize strategy-specific platform configurations.
-- **Order Generator:**
-    - Updated `order-generator/app/scheduler.py` to support strategy-specific webhook URLs, header-based HMAC authentication, and exponential backoff retry logic.
-- **Dashboard API:**
-    - Updated `dashboard-api/src/routes/strategies.ts` to expose strategy metrics, performance data, and webhook configuration management.
-
-
-
-

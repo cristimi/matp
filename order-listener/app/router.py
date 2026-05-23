@@ -58,8 +58,7 @@ async def route_order(payload: WebhookPayload, strategy: dict) -> OrderResult:
         )
 
     adapter = adapter_class()
-    logger.info(f"Routing {payload.symbol} {payload.signal} → {platform}")
-
+    logger.info(f"Routing {payload.pair_label} {payload.signal} → {platform}")
     try:
         # Pass the strategy record for token access
         result = await adapter.place_order(payload, strategy)

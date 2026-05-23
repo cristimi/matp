@@ -14,14 +14,21 @@ router.get('/', async (_req: Request, res: Response) => {
   try {
     const query = `
       SELECT s.*, 
-             (SELECT COUNT(*)::int FROM orders o WHERE o.strategy_id = s.id) as total_signals,
-             (SELECT COUNT(*)::int FROM orders o WHERE o.strategy_id = s.id AND o.status = 'filled') as filled_orders,
-             (SELECT AVG(total_pnl)::float FROM strategy_performance sp WHERE sp.strategy_id = s.id AND period_type = 'all_time') as avg_pnl,
-             (SELECT win_rate::float FROM strategy_performance sp WHERE sp.strategy_id = s.id AND period_type = 'all_time') as win_rate
+             b.symbol as base_asset, 
+             q.symbol as quote_asset,
+             (SELECT COUNT(*)::int FROM orders o WHERE o.pair_id = s.pair_id) as total_signals,
+             (SELECT COUNT(*)::int FROM orders o WHERE o.pair_id = s.pair_id AND o.status = 'filled') as filled_orders
       FROM strategies s
+      JOIN trading_pairs tp ON s.pair_id = tp.id
+      JOIN assets b ON tp.base_asset_id = b.id
+      JOIN assets q ON tp.quote_asset_id = q.id
     `;
     const { rows } = await getPool().query(query);
-    res.json(rows);
+    const strategies = rows.map(r => ({
+      ...r,
+      pair: { base: r.base_asset, quote: r.quote_asset, label: `${r.base_asset}/${r.quote_asset}` }
+    }));
+    res.json(strategies);
   } catch (err) {
     console.error('Error fetching strategies:', err);
     res.status(500).json({ error: 'Database error fetching strategies' });
@@ -182,18 +189,24 @@ router.get('/:id/positions', async (req: Request, res: Response) => {
   try {
     const query = `
       SELECT 
-        symbol,
-        side,
-        size::text as size,
-        entry_price::text as "entryPx",
-        current_price::text as "markPx",
-        pnl_unrealized::text as "unrealizedPnl",
-        exchange as platform
-      FROM strategy_positions 
-      WHERE strategy_id = $1 AND status = $2
+        sp.*,
+        b.symbol as base_asset, 
+        q.symbol as quote_asset
+      FROM strategy_positions sp
+      JOIN trading_pairs tp ON sp.pair_id = tp.id
+      JOIN assets b ON tp.base_asset_id = b.id
+      JOIN assets q ON tp.quote_asset_id = q.id
+      WHERE sp.strategy_id = $1 AND sp.status = 'open'
     `;
-    const { rows } = await getPool().query(query, [req.params.id, 'open']);
-    res.json(rows);
+    const { rows } = await getPool().query(query, [req.params.id]);
+    const positions = rows.map(r => ({
+      ...r,
+      pair: { base: r.base_asset, quote: r.quote_asset, label: `${r.base_asset}/${r.quote_asset}` },
+      entryPx: r.entry_price,
+      markPx: r.current_price,
+      unrealizedPnl: r.pnl_unrealized
+    }));
+    res.json(positions);
   } catch (err) {
     console.error(`Error fetching positions for strategy ${req.params.id}:`, err);
     res.status(500).json({ error: 'Database error' });
@@ -201,3 +214,4 @@ router.get('/:id/positions', async (req: Request, res: Response) => {
 });
 
 export default router;
+

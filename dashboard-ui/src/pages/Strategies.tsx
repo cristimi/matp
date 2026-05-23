@@ -96,7 +96,7 @@ export default function StrategiesPage() {
                       </span>
                     </div>
                   </td>
-                  <td className="px-4 py-3 text-gray-600 dark:text-gray-300 font-mono text-xs">{s.symbol}</td>
+                  <td className="px-4 py-3 text-gray-600 dark:text-gray-300 font-mono text-xs">{s.pair.label}</td>
                   <td className="px-4 py-3 text-right font-mono">{s.trades_count || 0}</td>
                   <td className="px-4 py-3 text-right font-mono">{Number(s.win_rate || 0).toFixed(0)}%</td>
                   <td className={`px-4 py-3 text-right font-mono font-semibold ${pnl >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
@@ -123,7 +123,7 @@ export default function StrategiesPage() {
               <Link to={`/strategy/${s.id}`} className="font-bold text-gray-900 dark:text-gray-200">{s.name}</Link>
               <span className={`inline-block w-2 h-2 rounded-full ${s.enabled ? 'bg-emerald-500' : 'bg-red-500'}`} />
             </div>
-            <p className="text-xs text-gray-400 font-mono mb-3">{s.symbol} · {s.platform}</p>
+            <p className="text-xs text-gray-400 font-mono mb-3">{s.pair.label} · {s.platform}</p>
             <div className="flex justify-between text-sm">
               <p>{s.trades_count || 0} trades</p>
               <p className="font-bold">{Number(s.pnl_total || 0).toFixed(0)} P&L</p>

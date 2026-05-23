@@ -56,11 +56,11 @@ class BlofinAdapter(ExchangeAdapter):
         order_size = float(signal.size) * 1000.0
         
         # Enforce minimum size and round to the nearest increment (lotSize = 0.1)
-        if signal.symbol in ["BTCUSDT.P", "BTC-USDT"]:
+        if signal.pair_label in ["BTCUSDT.P", "BTC-USDT"]:
             order_size = max(0.1, round(order_size, 1))
 
         body_data = {
-            "instId": self._map_symbol(signal.symbol),
+            "instId": self._map_symbol(signal.pair_label),
             "marginMode": signal.marginMode or "cross",
             "side": signal.side,
             "orderType": signal.orderType,
@@ -106,7 +106,8 @@ class BlofinAdapter(ExchangeAdapter):
                 success=True,
                 status="filled",
                 raw_response=data,
-                actual_fill_price=Decimal(fill_price) if fill_price else None
+                actual_fill_price=Decimal(fill_price) if fill_price else None,
+                pnl=None
             )
         else:
             error = data.get("msg", "Unknown error")
@@ -201,11 +202,18 @@ class BlofinAdapter(ExchangeAdapter):
 
         data = response.json()
         code = data.get("code")
+        
+        # Extract closing fill price from data if available
+        fill_price = None
+        if data.get("data") and isinstance(data["data"], list) and len(data["data"]) > 0:
+             fill_price = data["data"][0].get("fillPrice")
+
         if str(code) in ["0", "200"]:
             return OrderResult(
                 success=True,
                 status="closed",
                 raw_response=data,
+                actual_fill_price=Decimal(fill_price) if fill_price else None
             )
         else:
             error = data.get("msg", "Unknown error")
