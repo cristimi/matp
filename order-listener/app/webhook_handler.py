@@ -73,8 +73,8 @@ async def _log_order(pool, payload: WebhookPayload, order_id: uuid.UUID, strateg
                 status, raw_webhook, signal_source, signal_metadata, indicator_price
             ) VALUES (
                 $1, $2, $3, $4, $5, $6, $7, $8,
-                $9, $10, $11, $12, $13, $14,
-                'received', $15, $16, $17, $18, $19
+                $9, $10, $11, $12, $13, $14, $15,
+                'received', $16, $17, $18, $19
             )
             """,
             order_id,
@@ -188,13 +188,16 @@ async def receive_webhook(
     if not payload.signal and payload.action:
         payload.signal = payload.action
     
-    # Map TV Instrument/Amount to MATP Base/Quote and Size
-    if payload.instrument and not payload.base_asset:
-        # Expecting TV to send format "BTC-USDT"
-        parts = payload.instrument.split('-')
-        if len(parts) == 2:
-            payload.base_asset = parts[0]
-            payload.quote_asset = parts[1]
+    # Map TV Instrument/Amount or internal symbol to MATP Base/Quote and Size
+    from app.symbol_factory import SymbolFactory
+    
+    target_symbol = payload.symbol or payload.instrument
+    if target_symbol and not payload.base_asset:
+        try:
+            payload.base_asset, payload.quote_asset = SymbolFactory.split(target_symbol)
+        except Exception as e:
+            logger.warning(f"Failed to split symbol {target_symbol}: {e}")
+
     if payload.amount and payload.size is None:
         payload.size = payload.amount
     

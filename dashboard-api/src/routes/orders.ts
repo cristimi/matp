@@ -52,7 +52,7 @@ router.get('/', async (req: Request, res: Response) => {
 
 router.get('/:id', async (req: Request, res: Response) => {
   const pool = getPool();
-  const { rows } = await pool.query('SELECT * FROM orders WHERE id = ', [req.params.id]);
+  const { rows } = await pool.query('SELECT * FROM orders WHERE id = $1', [req.params.id]);
   if (!rows.length) return res.status(404).json({ error: 'Order not found' });
   const row = rows[0];
   res.json({ ...row, pair: { label: row.symbol } });

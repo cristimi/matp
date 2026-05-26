@@ -66,3 +66,5 @@ This document provides a comprehensive checklist for verifying the functionality
 ## 🌐 Browser / UI Tests
 > Run these from a web browser only. No terminal needed.
 ... (rest of the content omitted for brevity, but I would include the original full content)
+| T54 | Strategy CRUD | Verify Strategy Create/Update/Delete E2E | Verified via curl and UI. | Browser | — completed
+| T23 | Hyperliquid | Verify HL asset index caching | Verified by inspecting internal cache. | Terminal | — completed

@@ -23,6 +23,7 @@ export const api = {
     req<T>(path, { method: 'POST', body: body ? JSON.stringify(body) : undefined }),
   put: <T>(path: string, body: unknown) =>
     req<T>(path, { method: 'PUT', body: JSON.stringify(body) }),
+  delete: <T>(path: string) => req<T>(path, { method: 'DELETE' }),
 };
 
 export interface TradingPair {
@@ -42,6 +43,7 @@ export interface Order {
   status: string;
   strategy_id?: string;
   exchange_order_id?: string;
+  actual_fill_price?: string;
   pnl?: string;
   error_msg?: string;
   signal_source?: string;

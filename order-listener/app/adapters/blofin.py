@@ -4,6 +4,7 @@ import hmac
 import json
 import logging
 import time
+import asyncio
 from typing import List
 
 import httpx
@@ -43,24 +44,42 @@ class BlofinAdapter(ExchangeAdapter):
             "Content-Type": "application/json",
         }
 
-    def _map_symbol(self, symbol: str) -> str:
-        # Simple mapping for BTCUSDT.P -> BTC-USDT
-        mapping = {"BTCUSDT.P": "BTC-USDT", "ETHUSDT.P": "ETH-USDT"}
-        return mapping.get(symbol, symbol)
+    async def _get_order_details(self, symbol: str, order_id: str) -> dict:
+        path = "/api/v1/trade/order"
+        params = f"instId={symbol}&orderId={order_id}"
+        full_path = f"{path}?{params}"
+        headers = self._headers("GET", full_path, "")
+        
+        async with httpx.AsyncClient(base_url=BLOFIN_BASE_URL, timeout=10) as client:
+            response = await client.get(full_path, headers=headers)
+            
+        if response.status_code != 200:
+            logger.warning(f"Failed to fetch Blofin order details: {response.text}")
+            return {}
+            
+        data = response.json()
+        logger.info(f"DEBUG: Blofin order details for {order_id}: {data}")
+        # Blofin GET /api/v1/trade/order returns data as a list or single object
+        details = data.get("data", [])
+        if isinstance(details, list) and len(details) > 0:
+            return details[0]
+        return details if isinstance(details, dict) else {}
 
     async def place_order(self, signal: WebhookPayload, strategy: dict) -> OrderResult:
         path = "/api/v1/trade/order"
+        from app.symbol_factory import SymbolFactory
         
         # Blofin requires order size to be a multiple of lotSize (0.1) and >= minSize (0.1) for BTC-USDT.
         # Conversion: [API Contract Amount] = [BTC Volume] / 0.001 = [BTC Volume] * 1000
         order_size = float(signal.size) * 1000.0
         
         # Enforce minimum size and round to the nearest increment (lotSize = 0.1)
-        if signal.pair_label in ["BTCUSDT.P", "BTC-USDT"]:
+        if signal.base_asset == "BTC":
             order_size = max(0.1, round(order_size, 1))
 
+        inst_id = SymbolFactory.format(signal.base_asset, signal.quote_asset, "blofin")
         body_data = {
-            "instId": self._map_symbol(signal.pair_label),
+            "instId": inst_id,
             "marginMode": signal.marginMode or "cross",
             "side": signal.side,
             "orderType": signal.orderType,
@@ -96,17 +115,32 @@ class BlofinAdapter(ExchangeAdapter):
         logger.info(f"Blofin response: {data}")
 
         code = data.get("code")
-        # Extract fill price if available (Blofin may return it in the order response if filled)
-        fill_price = None
-        if data.get("data") and isinstance(data["data"], list) and len(data["data"]) > 0:
-            fill_price = data["data"][0].get("fillPrice")
+        if str(code) in ["0", "200"] and data.get("data") and isinstance(data["data"], list) and len(data["data"]) > 0:
+            order_info = data["data"][0]
+            exchange_order_id = order_info.get("orderId")
+            
+            # For market orders, wait a bit and fetch details to get fill price and P&L
+            if signal.orderType == "market":
+                await asyncio.sleep(0.5)
+                details = await self._get_order_details(inst_id, exchange_order_id)
+                if details:
+                    fill_price = details.get("avgPrice") or details.get("fillPrice")
+                    pnl = details.get("realizedPnl")
+                    return OrderResult(
+                        success=True,
+                        status="filled",
+                        exchange_order_id=exchange_order_id,
+                        raw_response=data,
+                        actual_fill_price=Decimal(fill_price) if fill_price else None,
+                        pnl=Decimal(pnl) if pnl else None
+                    )
 
-        if str(code) in ["0", "200"]:
             return OrderResult(
                 success=True,
                 status="filled",
+                exchange_order_id=exchange_order_id,
                 raw_response=data,
-                actual_fill_price=Decimal(fill_price) if fill_price else None,
+                actual_fill_price=None,
                 pnl=None
             )
         else:
@@ -157,15 +191,13 @@ class BlofinAdapter(ExchangeAdapter):
     async def close_position(self, symbol: str, side: str) -> OrderResult:
         # BloFin provides a specific endpoint for closing entire positions via market order.
         path = "/api/v1/trade/close-position"
+        from app.symbol_factory import SymbolFactory
+        import asyncio
         
         # side is "buy" (Short) or "sell" (Long) as passed from positions view
         # BloFin close-position needs positionSide: "long", "short", or "net"
         # Based on side (current position side), we map to positionSide
         pos_side = "long" if side == "buy" else "short" 
-        # Wait, if side="buy", it means the position was SHORT, so we BUY to close it.
-        # But wait, side in close_position parameters is usually the side of the OPEN position.
-        # Let check how positions.ts calls it:
-        # router.post("/:symbol/close", ... body: { side: position.side })
         
         position_side_map = {
             "long": "long",
@@ -174,8 +206,15 @@ class BlofinAdapter(ExchangeAdapter):
             "sell": "short"
         }
         
+        # If the symbol is like BTC-USDT, we use it directly, but let's be safe and re-format it if it was normalized
+        try:
+            base, quote = SymbolFactory.split(symbol)
+            target_symbol = SymbolFactory.format(base, quote, "blofin")
+        except:
+            target_symbol = symbol
+
         body_data = {
-            "instId": symbol,
+            "instId": target_symbol,
             "marginMode": "cross", 
             "positionSide": position_side_map.get(side.lower(), "net")
         }
@@ -203,17 +242,31 @@ class BlofinAdapter(ExchangeAdapter):
         data = response.json()
         code = data.get("code")
         
-        # Extract closing fill price from data if available
-        fill_price = None
-        if data.get("data") and isinstance(data["data"], list) and len(data["data"]) > 0:
-             fill_price = data["data"][0].get("fillPrice")
+        if str(code) in ["0", "200"] and data.get("data") and isinstance(data["data"], list) and len(data["data"]) > 0:
+            order_info = data["data"][0]
+            exchange_order_id = order_info.get("orderId")
+            
+            # Market orders fill immediately, fetch details for P&L
+            await asyncio.sleep(0.5)
+            details = await self._get_order_details(target_symbol, exchange_order_id)
+            
+            fill_price = None
+            realized_pnl = None
+            if details:
+                fill_price = details.get("avgPrice") or details.get("fillPrice")
+                realized_pnl = details.get("realizedPnl")
+            else:
+                 # Fallback to response data if details failed
+                 fill_price = order_info.get("fillPrice")
+                 realized_pnl = order_info.get("realizedPnl")
 
-        if str(code) in ["0", "200"]:
             return OrderResult(
                 success=True,
                 status="closed",
+                exchange_order_id=exchange_order_id,
                 raw_response=data,
-                actual_fill_price=Decimal(fill_price) if fill_price else None
+                actual_fill_price=Decimal(fill_price) if fill_price else None,
+                pnl=Decimal(realized_pnl) if realized_pnl else None
             )
         else:
             error = data.get("msg", "Unknown error")

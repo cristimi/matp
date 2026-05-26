@@ -131,10 +131,23 @@ async def retry_order(order_id: UUID):
     payload = WebhookPayload(**payload_data)
     result = await route_order(payload, strategy)
 
+    # Update the original order status and dead letter log
+    status = "filled" if result.success else "route_failed"
     async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            UPDATE orders 
+            SET status = $1, 
+                exchange_order_id = $2, 
+                error_msg = $3,
+                actual_fill_price = $4
+            WHERE id = $5
+            """,
+            status, result.exchange_order_id, result.error_msg, result.actual_fill_price, order_id
+        )
         await conn.execute(
             "UPDATE dead_letter_orders SET retry_count = retry_count + 1, last_retry = NOW() WHERE order_id = $1",
             order_id,
         )
 
-    return {"order_id": str(order_id), "retry_result": result.model_dump()}
+    return {"order_id": str(order_id), "status": status, "retry_result": result.model_dump()}

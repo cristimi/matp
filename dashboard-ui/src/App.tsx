@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Routes, Route, NavLink, useNavigate } from 'react-router-dom';
+import StrategyForm from './pages/StrategyForm';
 import DashboardPage from './pages/Dashboard';
 import OrdersPage from './pages/Orders';
 import PositionsPage from './pages/Positions';
@@ -153,6 +154,8 @@ export default function App() {
           <Route path="/orders"     element={<OrdersPage />} />
           <Route path="/positions"  element={<PositionsPage />} />
           <Route path="/strategies" element={<StrategiesPage />} />
+          <Route path="/strategies/new" element={<StrategyForm />} />
+          <Route path="/strategies/:id/edit" element={<StrategyForm />} />
           <Route path="/strategy/:id" element={<StrategyDetail />} />
           <Route path="/settings"   element={<SettingsPage />} />
         </Routes>

@@ -55,18 +55,21 @@ export default function StrategiesPage() {
 
   return (
     <div className="p-4 md:p-6 space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
         <h2 className="text-xl font-bold text-gray-900 dark:text-white">Strategies</h2>
-        <div className="flex gap-1 bg-gray-100 dark:bg-gray-800 p-1 rounded-lg">
-          {PERIODS.map((p) => (
-            <button
-              key={p}
-              onClick={() => setPeriod(p)}
-              className={`px-3 py-1 rounded-md text-xs font-medium transition-all ${period === p ? 'bg-white dark:bg-gray-700 text-indigo-600 dark:text-indigo-400 shadow-sm' : 'text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'}`}
-            >
-              {p}
-            </button>
-          ))}
+        <div className="flex gap-2 items-center w-full sm:w-auto">
+          <Link to="/strategies/new" className="flex-1 sm:flex-none text-center px-4 py-2 bg-indigo-600 text-white text-xs font-bold rounded-lg hover:bg-indigo-700">Create Strategy</Link>
+          <div className="flex gap-1 bg-gray-100 dark:bg-gray-800 p-1 rounded-lg">
+            {PERIODS.map((p) => (
+              <button
+                key={p}
+                onClick={() => setPeriod(p)}
+                className={`px-3 py-1 rounded-md text-xs font-medium transition-all ${period === p ? 'bg-white dark:bg-gray-700 text-indigo-600 dark:text-indigo-400 shadow-sm' : 'text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'}`}
+              >
+                {p}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
 
@@ -81,6 +84,7 @@ export default function StrategiesPage() {
               <th className="px-4 py-3 text-right">P&L</th>
               <th className="px-4 py-3 text-right">Open Pos</th>
               <th className="px-4 py-3 text-center">Status</th>
+              <th className="px-4 py-3 text-center">Actions</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
@@ -109,6 +113,9 @@ export default function StrategiesPage() {
                       <span className="text-xs">{s.enabled ? 'Enabled' : 'Disabled'}</span>
                     </button>
                   </td>
+                  <td className="px-4 py-3 text-center">
+                    <Link to={`/strategies/${s.id}/edit`} className="text-indigo-600 dark:text-indigo-400 hover:underline text-xs font-bold">Edit</Link>
+                  </td>
                 </tr>
               );
             })}
@@ -118,10 +125,13 @@ export default function StrategiesPage() {
 
       <div className="md:hidden space-y-3">
         {strategies.map(s => (
-          <div key={s.id} className="stat-card shadow-sm">
+          <div key={s.id} className="stat-card shadow-sm p-4 rounded-xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900">
             <div className="flex justify-between items-center mb-2">
               <Link to={`/strategy/${s.id}`} className="font-bold text-gray-900 dark:text-gray-200">{s.name}</Link>
-              <span className={`inline-block w-2 h-2 rounded-full ${s.enabled ? 'bg-emerald-500' : 'bg-red-500'}`} />
+              <div className="flex items-center gap-3">
+                <Link to={`/strategies/${s.id}/edit`} className="text-indigo-600 dark:text-indigo-400 text-xs font-bold">Edit</Link>
+                <span className={`inline-block w-2 h-2 rounded-full ${s.enabled ? 'bg-emerald-500' : 'bg-red-500'}`} />
+              </div>
             </div>
             <p className="text-xs text-gray-400 font-mono mb-3">{s.pair.label} · {s.platform}</p>
             <div className="flex justify-between text-sm">

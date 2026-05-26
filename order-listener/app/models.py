@@ -38,6 +38,7 @@ class WebhookPayload(BaseModel):
     slPrice:    Optional[Decimal] = None
     platform:   str = "auto"
     strategy_id: Optional[str] = None
+    symbol:     Optional[str] = None
     signal:     Optional[str] = None
     timestamp:  datetime
     token:      Optional[str] = None

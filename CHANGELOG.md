@@ -1,71 +1,74 @@
+## [2026-05-25] - 2.0.10
+
+### Added
+- Hyperliquid Integration: Implemented `_fetch_asset_meta` in `order-listener/app/adapters/hyperliquid.py` to fetch and cache asset indices from Hyperliquid `/info` endpoint.
+
+## [2026-05-25] - 2.0.9
+
+### Added
+- Dependencies: Added  (v0.13.7) to  to support ECDSA signing for upcoming Hyperliquid integration.
 # Project Changelog
 
 All notable changes to this project will be tracked in this file.
 
-## [2026-05-23] - 2.0.5
+## [2026-05-25] - 2.0.10
 
 ### Added
-- Precise P&L Tracking: Added `pnl` and `actual_fill_price` tracking for orders in the database.
-- Enhanced API responses: Updated `orders` endpoint to include `indicator_price` and `actual_fill_price`.
+- Hyperliquid Integration: Implemented `_fetch_asset_meta` in `order-listener/app/adapters/hyperliquid.py` to fetch and cache asset indices from Hyperliquid `/info` endpoint.
 
-### Changed
-- Webhook Handler: Standardized incoming signal fields and removed reliance on `symbol`, transitioning entirely to `pair_label` derived from `base_asset` and `quote_asset`.
-- Blofin Adapter: Updated order placement logic to use `pair_label` for instId and mapping.
-- Routing Engine: Updated `router.py` to use `pair_label` instead of `symbol` to avoid `AttributeError` on incoming webhooks.
-
-### Fixed
-- Price/PnL Display: Resolved issues where price and P&L were not appearing in the orders list due to column selection and mapping issues.
-- Webhook Reception: Fixed routing issues caused by trailing slashes in Nginx configuration.
-- Order Listener Stability: Fixed `NotNullViolationError` when inserting into `strategy_positions`.
-- UI Crash: Resolved an Orders page crash by properly mapping database `symbol` to the UI's expected `pair` object.
-
-### Tested
-- Verified full end-to-end webhook processing: TradingView signal -> Listener -> Blofin Execution -> DB Update -> Dashboard API -> UI display.
-- Verified successful processing of new signal format without `symbol`.
-
-## [2026-05-23] - 2.0.4
+## [2026-05-25] - 2.0.9
 
 ### Added
-- Multi-Platform Tracking: The Positions API now aggregates live data from all exchanges where positions are held, ensuring accurate P&L updates regardless of the active platform setting.
-- Real-time P&L Display: Added support for displaying both Unrealized and Realized P&L in the Positions UI.
-- Position Deduplication: Implemented logic to merge live exchange positions with database records, automatically flagging stale or duplicate records.
+- Dependencies: Added `eth-account` to `order-listener/requirements.txt` to support ECDSA signing for upcoming Hyperliquid integration.
 
-### Changed
-- Positions UI: Refactored the P&L column to display 'Unrealized / Realized' for open positions.
-- API: Improved robust symbol normalization for better cross-exchange data merging.
-- Real-time Feed: Enabled Redis Pub/Sub events for order lifecycle updates, fixing the live feed visibility.
-- Platform Resolution: Moved 'auto' platform resolution to the initial webhook handler to enforce database integrity.
+## [2026-05-25] - 2.0.8
+
+### Added
+- Strategy CRUD: Implemented POST, GET by ID, PUT, DELETE endpoints in `dashboard-api/src/routes/strategies.ts`.
+- Strategy Form UI: Completed `StrategyForm.tsx` functionality with full CRUD integration.
+- Hyperliquid Integration: Added `eth-account` dependency to `order-listener/requirements.txt` to prepare for ECDSA signing.
 
 ### Fixed
-- Positions: Fixed '0.00' P&L values by ensuring numeric fields are consistently returned as strings from adapters.
-- Close Position: Fixed a bug where positions were incorrectly attempted to be closed on the active platform instead of the exchange where they were opened.
-- Real-time Feed: Fixed missing WebSocket updates by enabling Redis event publishing on order status transitions.
-- WebSocket Proxying: Corrected Nginx configuration for WebSocket path forwarding.
+- Close Position: Resolved 404 on close endpoint by rebuilding UI; patched `order-listener/app/adapters/blofin.py` to fix `KeyError` on rejected orders.
+- Order Retry: Implemented local state synchronization in `dashboard-ui/src/pages/Orders.tsx` to reflect retry results immediately.
+- SQL Bug: Fixed missing `$1` parameter in `dashboard-api/src/routes/orders.ts` (GET order by ID).
 
 ### Tested
-- Verified multi-platform position tracking with live Blofin positions.
-- Verified real-time order feed via WebSocket integration tests.
-- Verified platform resolution for new webhook signals.
+- Verified Strategy CRUD lifecycle (Create/Update/Delete).
+- Verified 'Close Position' request routing and backend error handling.
+- Verified Order Retry state sync and API response handling.
 
+### Added
+- Strategy Management: Added 'Create Strategy' page (`dashboard-ui/src/pages/StrategyForm.tsx`) with cascading type-class dropdown and YAML configuration support.
+- Strategies UI: Added 'Create New Strategy' button and 'Edit' actions to `Strategies.tsx` for improved management workflows.
+- Routing: Configured React Router paths for new strategy management routes.
 
+### Changed
+- UI Responsiveness: Refactored Strategies page layout for better mobile experience (responsive button placement, hidden edit column).
 
+### Tested
+- Verified navigation to/from Strategy Management UI.
+- Verified mobile responsiveness of the Strategies page.
+- Verified successful build of UI container and Nginx proxy communication.
 
-## [2026-05-20 14:25]
+## [2026-05-24] - 2.0.6
 
-### Live Position Tracking
-- **Blofin Position Mapping:** Implemented standard mapping for Blofin positions, enabling correct display of Symbol, Side, Size, Entry, and P&L in the Dashboard.
-- **Hyperliquid Position Mapping:** Added initial implementation for fetching and mapping Hyperliquid positions.
-- **UI Consistency:** Verified data flow from exchange adapters through `order-listener` and `dashboard-api` to the React frontend.
+### Added
+- Symbol Factory: Implemented `SymbolFactory` to normalize across `BTC/USDT`, `BTC-USDT`, and `BTCUSDT` formats.
+- Realized P&L: Integrated realized P&L fetching from Blofin when closing positions.
+- API Endpoint: Added `/api/v1/trade/order` for order details fetching.
 
-## [2026-05-20 14:15]
+### Fixed
+- UI Positions: Fixed breakage by adding missing `pair` object.
+- Price Rendering: UI now prioritizes `actual_fill_price` over `indicator_price`.
+- P&L Rendering: UI now renders '—' instead of '0.00' for null P&L values.
+- NameError: Fixed NameError in `order-listener/app/positions_api.py` during close position requests.
+- Retry Logic: Fixed missing order status synchronization after retry.
+- SQL Bug: Fixed mismatch between `strategy_id` and `status` columns in `orders` logging.
+- Missing Import: Fixed NameError in Blofin adapter due to missing `asyncio` import.
 
-### Blofin Adapter & TradingView Integration
-- **Fixed Blofin Authentication:** Implemented the exact Hex-to-Base64 HMAC-SHA256 signature method required by Blofin.
-- **Improved Position Closing:** Implemented `close_position` using the dedicated `/api/v1/trade/close-position` endpoint for reliable market exits.
-- **Enhanced Documentation:** Updated `docs/tradingview.md` with strategy-specific webhook URLs, `signalToken` authentication, and indicator metadata support.
-- **End-to-End Verification:** Successfully tested the full signal lifecycle (TradingView Webhook -> MATP Router -> Blofin Execution) on a live demo account.
-
-## [2026-05-20 12:55]
+### Tested
+- Verified manual position closing and realized P&L reporting.
+- Verified orders page retry logic and status sync.
+- Verified UI pair object mappings and P&L null-handling.
 ...
-### Enhancements: Theme Support & Monitoring UI
-- **Light Theme:** Implemented a full light theme and a theme switcher (sun/moon toggle) in the Dashboard. Preference is persisted to local storage.

@@ -43,26 +43,22 @@ class HyperliquidAdapter(ExchangeAdapter):
         try:
             async with httpx.AsyncClient(base_url=HL_BASE_URL, timeout=10) as client:
                 response = await client.post("/info", json={"type": "meta"})
-                response.raise_for_status() # Raise an exception for bad status codes
+                response.raise_for_status()
                 data = response.json()
-                
-                # The 'universe' key contains a list of asset objects
+
                 if "universe" in data:
-                    for asset_info in data["universe"]:
-                        # Assuming 'name' is like "BTC" and 'i' is the asset index
-                        if "name" in asset_info and "i" in asset_info:
-                            # Map full symbol "BTC-USDT" to its asset index "i"
-                            # This assumes a standard "BASE-USDT" naming convention for now
-                            self._asset_indices[f"{asset_info['name']}-USDT"] = asset_info["i"]
-                            logger.info(f"Cached Hyperliquid asset: {asset_info['name']}-USDT -> index {asset_info['i']}")
+                    # Hyperliquid uses the index in the universe list as the asset index
+                    for i, asset_info in enumerate(data["universe"]):
+                        name = asset_info.get("name")
+                        if name:
+                            # Map full symbol "NAME-USDT" to its asset index (position in universe)
+                            self._asset_indices[f"{name}-USDT"] = i
+                            logger.info(f"Cached Hyperliquid asset: {name}-USDT -> index {i}")
                 else:
                     logger.error("Hyperliquid /info meta response missing 'universe' key.")
-        except httpx.HTTPStatusError as e:
-            logger.error(f"HTTP error fetching Hyperliquid asset meta: {e.response.status_code} - {e.response.text}")
-        except httpx.RequestError as e:
-            logger.error(f"Network error fetching Hyperliquid asset meta: {e}")
         except Exception as e:
-            logger.error(f"Unexpected error fetching Hyperliquid asset meta: {e}")
+            logger.error(f"Error fetching Hyperliquid asset meta: {e}")
+
 
     async def _get_asset_index(self, symbol: str) -> Optional[int]:
         """Retrieves asset index for a given symbol, fetching and caching if necessary."""

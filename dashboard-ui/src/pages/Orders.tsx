@@ -66,8 +66,21 @@ export default function OrdersPage() {
   async function retry(orderId: string) {
     setRetrying(orderId);
     try {
-      await api.post(`/orders/${orderId}/retry`);
-      await load();
+      const res = await api.post<{ status: string; retry_result: any }>(`/orders/${orderId}/retry`);
+      // Update local state for immediate feedback
+      setOrders(current => current.map(o => 
+        o.id === orderId 
+          ? { 
+              ...o, 
+              status: res.status, 
+              error_msg: res.retry_result?.error_msg || o.error_msg,
+              exchange_order_id: res.retry_result?.exchange_order_id || o.exchange_order_id,
+              actual_fill_price: res.retry_result?.actual_fill_price || o.actual_fill_price
+            } 
+          : o
+      ));
+    } catch (e: any) {
+      alert(`Retry failed: ${e.message}`);
     } finally {
       setRetrying(null);
     }
@@ -152,7 +165,7 @@ export default function OrdersPage() {
               </thead>
               <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
                 {orders.map((o) => {
-                  const price = o.indicator_price;
+                  const price = o.actual_fill_price || o.indicator_price;
                   return (
                     <>
                     <tr
@@ -173,12 +186,14 @@ export default function OrdersPage() {
                       <td className="px-4 py-3 text-xs text-gray-500 dark:text-gray-400 font-medium">{o.strategy_id || '—'}</td>
                       <td className="px-4 py-3"><PlatformBadge platform={o.platform} /></td>
                       <td className="px-4 py-3"><StatusBadge status={o.status} /></td>
-                      <td className="px-4 py-3 font-mono">
+                      <td className="px-4 py-3 font-mono text-xs">
                         {o.pnl != null ? (
-                          <span className={parseFloat(o.pnl) >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'}>
+                          <span className={parseFloat(o.pnl) >= 0 ? 'text-emerald-600 dark:text-emerald-400 font-bold' : 'text-red-600 dark:text-red-400 font-bold'}>
                             ${parseFloat(o.pnl).toFixed(2)}
                           </span>
-                        ) : '—'}
+                        ) : (
+                          <span className="text-gray-400">—</span>
+                        )}
                       </td>
                       <td className="px-4 py-3">
                         {(o.status === 'route_failed' || o.status === 'rejected') && (
@@ -224,7 +239,7 @@ export default function OrdersPage() {
                 </div>
                 
                 <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
-                  <div className="flex justify-between"><span className="text-gray-400">Price</span> <span className="font-mono">{formatPrice(o.pair.label, o.indicator_price)}</span></div>
+                  <div className="flex justify-between"><span className="text-gray-400">Price</span> <span className="font-mono">{formatPrice(o.pair.label, o.actual_fill_price || o.indicator_price)}</span></div>
                   <div className="flex justify-between"><span className="text-gray-400">Size</span> <span className="font-mono">{o.size}</span></div>
                   <div className="flex justify-between"><span className="text-gray-400">Side</span> <SideBadge side={o.side} /></div>
                   <div className="flex justify-between"><span className="text-gray-400">Strategy</span> {o.strategy_id ? <StrategyBadge strategyId={o.strategy_id} /> : '—'}</div>
@@ -235,11 +250,13 @@ export default function OrdersPage() {
                     {new Date(o.received_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                   </div>
                    {o.pnl != null && (
-                    <div className={parseFloat(o.pnl) >= 0 ? 'text-emerald-600 dark:text-emerald-400 font-mono font-bold' : 'text-red-600 dark:text-red-400 font-mono font-bold'}>
-                      ${parseFloat(o.pnl).toFixed(2)}
-                    </div>
-                  )}
-                </div>
+                     <div className={parseFloat(o.pnl) >= 0 ? 'text-emerald-600 dark:text-emerald-400 font-mono font-bold' : 'text-red-600 dark:text-red-400 font-mono font-bold'}>
+                       ${parseFloat(o.pnl).toFixed(2)}
+                     </div>
+                   )}
+                   {o.pnl == null && (
+                     <div className="text-gray-400 font-mono">—</div>
+                   )}                </div>
                 {(o.status === 'route_failed' || o.status === 'rejected') && (
                   <button
                     className="bg-red-50 hover:bg-red-100 dark:bg-red-900/20 text-red-600 px-3 py-1 rounded text-[10px] font-bold w-full"
