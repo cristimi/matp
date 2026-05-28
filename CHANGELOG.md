@@ -11,6 +11,16 @@
 
 All notable changes to this project will be tracked in this file.
 
+## [2026-05-28] - 2.0.11
+
+### Added
+- Integration Testing: Created `run_integration_test.py` and `test_blofin_e2e.py` for automated webhook verification.
+
+### Tested
+- Verified E2E signal flow from simulated TradingView webhooks to Blofin Demo API.
+- Verified successful authentication, payload validation, and order routing.
+- Verified capture of exchange error responses (e.g., "Insufficient margin") in the database.
+
 ## [2026-05-25] - 2.0.10
 
 ### Added

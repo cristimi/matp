@@ -34,7 +34,7 @@ This document provides a comprehensive checklist for verifying the functionality
 | TT-T38.1 | Verify Nginx Basic Auth config | `docker compose exec -T nginx cat /etc/nginx/conf.d/default.conf` | Output should contain `auth_basic` and `auth_basic_user_file` directives for the dashboard location. |
 | TT-T40.1 | Verify RSI strategy loaded in order-generator | `docker compose logs order-generator | grep "RSI strategy"` | Logs should indicate "RSI strategy" being loaded or scheduled. |
 | TT-T41.1 | Verify CCXT OHLCV fetch | `docker compose logs order-generator | grep "Fetching OHLCV"` | Logs should show regular "Fetching OHLCV" messages for the strategy's symbol and interval. |
-| TT-T42.1 | Verify strategy signal in DB | `docker compose exec -T postgres psql -U matp -d matp -c "SELECT symbol, strategy_id, status FROM orders ORDER BY received_at DESC LIMIT 1;"` | Should show the symbol, `strategy_id` (e.g., `rsi-btc-5m`), and `filled` status. |
+| TT-T42.1 | Verify strategy signal in DB | `docker compose exec -T postgres psql -U matp -d matp -c "SELECT symbol, strategy_id, status FROM orders ORDER BY received_at DESC LIMIT 1;"` | Should show the symbol, `strategy_id` (e.g., `rsi-btc-5m`), and `filled` status. | — completed
 | TT-T43.1 | Verify strategy scheduler logs (disabled) | `docker compose logs order-generator | grep "Removing job for strategy"` | Should show a log message indicating the strategy's scheduler job was removed. |
 | TT-T43.2 | Verify strategy scheduler logs (enabled) | `docker compose logs order-generator | grep "Adding job for strategy"` | Should show a log message indicating the strategy's scheduler job was added. |
 | TT-T44.1 | Verify MA strategy loaded in order-generator | `docker compose logs order-generator | grep "MA strategy"` | Logs should indicate "MA strategy" being loaded or scheduled. |
@@ -49,7 +49,7 @@ This document provides a comprehensive checklist for verifying the functionality
 ### P4-Hardening
 | Test ID | What it verifies | Exact command(s) | Expected output |
 |---------|------------------|------------------|-----------------|
-| TT-T36.1 | Blofin error message captured | `docker compose exec -T postgres psql -U matp -d matp -c "SELECT error_msg FROM orders WHERE status = 'route_failed' AND platform = 'blofin' ORDER BY received_at DESC LIMIT 1;"` | Output should contain the specific error message from Blofin (e.g., "Insufficient Margin"). |
+| TT-T36.1 | Blofin error message captured | `docker compose exec -T postgres psql -U matp -d matp -c "SELECT error_msg FROM orders WHERE status = 'route_failed' AND platform = 'blofin' ORDER BY received_at DESC LIMIT 1;"` | Output should contain the specific error message from Blofin (e.g., "Insufficient Margin"). | — completed
 | TT-T37.1 | Nginx HTTPS config | `docker compose exec -T nginx cat /etc/nginx/conf.d/default.conf` | Output should contain `listen 443 ssl;` and `ssl_certificate` directives. |
 | TT-T38.1 | Nginx Basic Auth config | `docker compose exec -T nginx cat /etc/nginx/conf.d/default.conf` | Output should contain `auth_basic` and `auth_basic_user_file` directives for the dashboard location. |
 
@@ -57,7 +57,7 @@ This document provides a comprehensive checklist for verifying the functionality
 | Test ID | What it verifies | Exact command(s) | Expected output |
 |---------|------------------|------------------|-----------------|
 | TT-T41.1 | CCXT OHLCV fetch logs | `docker compose logs order-generator | grep "Fetching OHLCV"` | Logs should show regular "Fetching OHLCV" messages for the strategy's symbol and interval. |
-| TT-T42.1 | Strategy signal in DB | `docker compose exec -T postgres psql -U matp -d matp -c "SELECT symbol, strategy_id, status FROM orders ORDER BY received_at DESC LIMIT 1;"` | Should show the symbol, `strategy_id` (e.g., `rsi-btc-5m`), and `filled` status. |
+| TT-T42.1 | Strategy signal in DB | `docker compose exec -T postgres psql -U matp -d matp -c "SELECT symbol, strategy_id, status FROM orders ORDER BY received_at DESC LIMIT 1;"` | Should show the symbol, `strategy_id` (e.g., `rsi-btc-5m`), and `filled` status. | — completed
 | TT-T43.1 | Strategy scheduler job removal log | `docker compose logs order-generator | grep "Removing job for strategy"` | Should show a log message indicating the strategy's scheduler job was removed. |
 | TT-T43.2 | Strategy scheduler job addition log | `docker compose logs order-generator | grep "Adding job for strategy"` | Should show a log message indicating the strategy's scheduler job was added. |
 
