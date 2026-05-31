@@ -62,6 +62,7 @@ services:
     environment:
       DATABASE_URL: postgresql://matp:matp@postgres:5432/matp
       REDIS_URL: redis://redis:6379
+      EXECUTOR_URL: http://order-executor:8004
       WEBHOOK_SECRET: ${WEBHOOK_SECRET}
       MASTER_KEY: ${MASTER_KEY}
       BLOFIN_API_KEY: ${BLOFIN_API_KEY}
@@ -72,6 +73,8 @@ services:
       postgres:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      order-executor:
         condition: service_healthy
     networks: [matp_net]
     restart: unless-stopped
@@ -100,6 +103,25 @@ services:
     networks: [matp_net]
     restart: unless-stopped
 
+  order-executor:
+    build: ./order-executor
+    environment:
+      DATABASE_URL: postgresql://matp:matp@postgres:5432/matp
+      REDIS_URL: redis://redis:6379
+      MASTER_KEY: ${MASTER_KEY}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks: [matp_net]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8004/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   dashboard-api:
     build: ./dashboard-api
     environment:
@@ -107,6 +129,7 @@ services:
       REDIS_URL: redis://redis:6379
       GENERATOR_URL: http://order-generator:8002
       LISTENER_URL: http://order-listener:8001
+      EXECUTOR_URL: http://order-executor:8004
     depends_on:
       postgres:
         condition: service_healthy

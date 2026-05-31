@@ -1,0 +1,129 @@
+MATP — Session 1 of 20
+You are implementing the MATP (Modular Automated Trading Platform) codebase. This is Session 1. There is no previous session log.
+READ FIRST — do this before writing any code
+Read these files in full before touching anything:
+MATP.SDD.md — the software design document, source of truth for all architecture decisions
+db/init.sql — current database schema
+docker-compose.yml — current service layout
+.env.example — current environment variables
+YOUR GOAL THIS SESSION
+Two deliverables:
+Task 1 (hard — do this first): Create the session infrastructure files that every future session will use.
+Task 2 (mechanical): Write the database migration SQL file to introduce exchange_accounts and migrate strategies from platform to account_id.
+TASK 1 — Session Infrastructure
+Create the following files. Write them exactly as specified.
+.gemini/CHECKPOINT.md — tracks task state within a session:
+# MATP Checkpoint
+session: 1
+task: [TASK NAME]
+status: [pending|in-progress|done|interrupted]
+files_modified: []
+notes:
+.gemini/SESSION_LOG.md — append-only session history:
+# MATP Session Log
+
+## Session 1 — [DATE]
+### Tasks completed
+### Tasks interrupted
+### Files created/modified
+### Decisions made (not in the plan)
+### Deviations from plan
+### Errors encountered and resolution
+### Confidence levels (high/medium/low per deliverable)
+.gemini/NEXT_SESSION.md — handoff note to the next session:
+# Next Session Context
+## What was done in Session 1
+## State of the codebase right now
+## What Session 2 must do
+## Important decisions already made
+## Do NOT redo these (already done)
+## Warnings / things that need attention
+.gemini/REPORT_FOR_HUMAN.md — report for the human to paste to Claude:
+# Session 1 Report
+
+## Status
+[COMPLETE | PARTIAL | INTERRUPTED]
+
+## Tasks
+| Task | Status | Confidence |
+|------|--------|------------|
+
+## Files Created
+| File | Lines | Notes |
+|------|-------|-------|
+
+## Files Modified
+| File | Change summary |
+|------|----------------|
+
+## Deviations from plan
+[any decisions made that were not in the prompt]
+
+## Errors encountered
+[what went wrong and how it was resolved]
+
+## Needs human attention
+[anything requiring a decision or manual action]
+
+## Next session prerequisites
+[anything that must be true before Session 2 starts]
+After creating these files, update CHECKPOINT.md to mark Task 1 as done.
+TASK 2 — Database Migration
+Create db/migrations/001_exchange_accounts.sql.
+This migration must:
+Create the exchange_accounts table exactly as in MATP.SDD.md §5.1:
+CREATE TABLE IF NOT EXISTS exchange_accounts (
+    id          VARCHAR(100) PRIMARY KEY,
+    exchange    VARCHAR(30) NOT NULL,
+    mode        VARCHAR(10) NOT NULL CHECK (mode IN ('live', 'demo')),
+    label       VARCHAR(100) NOT NULL,
+    credentials BYTEA NOT NULL,
+    is_active   BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+Add account_id column to orders (nullable, no FK yet — safe migration):
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS account_id VARCHAR(100);
+Add account_id column to strategies (nullable for now):
+ALTER TABLE strategies ADD COLUMN IF NOT EXISTS account_id VARCHAR(100);
+Add the updated_at trigger for exchange_accounts — copy the pattern from init.sql.
+Add an index:
+CREATE INDEX IF NOT EXISTS orders_account_id_idx ON orders (account_id);
+Insert a seed row for the default Blofin demo account using a placeholder credential:
+-- Seed: default account for migration. Credentials must be updated via Dashboard.
+INSERT INTO exchange_accounts (id, exchange, mode, label, credentials)
+VALUES (
+    'acc_blofin_demo_default',
+    'blofin',
+    'demo',
+    'Blofin Demo (default)',
+    '\x00'::bytea   -- placeholder; real credentials set via Dashboard
+) ON CONFLICT (id) DO NOTHING;
+Backfill: set account_id on all existing strategies that have platform = 'blofin':
+UPDATE strategies
+SET account_id = 'acc_blofin_demo_default'
+WHERE account_id IS NULL AND platform IN ('blofin', 'auto');
+Do NOT drop platform column — it must remain for backward compatibility. Do NOT alter init.sql — the migration is additive only.
+After writing the file, verify it is valid SQL by checking for:
+Balanced parentheses on every CREATE/ALTER statement
+Semicolons on every statement
+No references to columns that don't exist in init.sql
+CHECKPOINT PROTOCOL
+Before starting each task, update .gemini/CHECKPOINT.md:
+status: in-progress
+current_task: [task name]
+After completing each task, update:
+status: done
+files_modified: [list]
+If you are interrupted or run out of context, write to CHECKPOINT.md:
+status: interrupted
+interrupted_at: [describe exactly where you stopped]
+next_step: [exactly what the next prompt should do to resume]
+SESSION CLOSE PROTOCOL
+When all tasks are done (or you are stopping for any reason):
+Fill in .gemini/SESSION_LOG.md completely — every section.
+Fill in .gemini/NEXT_SESSION.md — tell the next session exactly what it needs to know.
+Fill in .gemini/REPORT_FOR_HUMAN.md — this is what the human will paste to Claude.
+The human cannot see your work unless REPORT_FOR_HUMAN.md is complete.
+FLASH LITE FALLBACK
+If you are running on a reduced-capability model, Task 2 is safe to complete mechanically — it is pure SQL with no architectural decisions. Copy the exact SQL blocks from this prompt. Do not attempt to redesign the schema.

@@ -1,0 +1,99 @@
+MATP — Session 2 of 20
+READ FIRST
+Read these files before doing anything:
+.gemini/NEXT_SESSION.md — handoff from Session 1
+.gemini/CHECKPOINT.md — last known task state
+db/migrations/001_exchange_accounts.sql — the migration you are about to apply
+docker-compose.yml — current service layout
+CONTEXT
+Session 1 created the session infrastructure files and the migration SQL. This session applies that migration and verifies the database is in the correct state.
+TASK 1 — Apply the migration
+Run the migration against the running PostgreSQL container:
+docker compose exec postgres psql -U matp -d matp \
+  -f /dev/stdin < db/migrations/001_exchange_accounts.sql
+If the stack is not running, start it first:
+docker compose up -d postgres
+sleep 5
+docker compose exec postgres psql -U matp -d matp \
+  -f /dev/stdin < db/migrations/001_exchange_accounts.sql
+Capture the output. If any statement errors (other than "already exists" type notices), stop and record the error in CHECKPOINT.md.
+TASK 2 — Verify the migration
+Run these verification queries and record all output in REPORT_FOR_HUMAN.md:
+-- Check table exists
+SELECT table_name FROM information_schema.tables
+WHERE table_schema = 'public' AND table_name = 'exchange_accounts';
+
+-- Check columns on orders
+SELECT column_name, data_type FROM information_schema.columns
+WHERE table_name = 'orders' AND column_name = 'account_id';
+
+-- Check columns on strategies
+SELECT column_name, data_type FROM information_schema.columns
+WHERE table_name = 'strategies' AND column_name = 'account_id';
+
+-- Check seed row
+SELECT id, exchange, mode, label, is_active FROM exchange_accounts;
+
+-- Check backfill
+SELECT COUNT(*) as strategies_with_account_id FROM strategies WHERE account_id IS NOT NULL;
+Run them as:
+docker compose exec postgres psql -U matp -d matp -c "[QUERY]"
+TASK 3 — Update docker-compose.yml
+Add the order-executor service stub to docker-compose.yml. Insert it after the order-generator service block:
+order-executor:
+    build: ./order-executor
+    environment:
+      DATABASE_URL: postgresql://matp:matp@postgres:5432/matp
+      REDIS_URL: redis://redis:6379
+      MASTER_KEY: ${MASTER_KEY}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks: [matp_net]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8004/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+Also add order-executor to the order-listener depends_on block:
+order-listener:
+    ...
+    depends_on:
+      ...
+      order-executor:
+        condition: service_healthy
+And add the executor URL to order-listener environment:
+EXECUTOR_URL: http://order-executor:8004
+Do NOT start the executor yet — the container does not exist. Temporarily comment out the order-executor dependency in order-listener so the stack still starts:
+# order-executor:          # uncomment when executor is built (Session 5)
+      #   condition: service_healthy
+TASK 4 — Create order-executor directory skeleton
+Create these empty placeholder files so the directory exists:
+order-executor/
+  Dockerfile          (copy from order-listener/Dockerfile, change port to 8004)
+  requirements.txt    (copy from order-listener/requirements.txt)
+  app/
+    __init__.py       (empty)
+    main.py           (single /health endpoint only — no other logic yet)
+app/main.py content:
+"""
+Order Executor Service — placeholder.
+Full implementation in Session 3.
+"""
+from fastapi import FastAPI
+
+app = FastAPI(title="MATP Order Executor", version="0.1.0-stub")
+
+@app.get("/health")
+async def health():
+    return {"status": "ok", "service": "order-executor", "note": "stub"}
+Verify the stub builds:
+docker compose build order-executor
+docker compose up -d order-executor
+curl http://localhost:8004/health
+Record the curl output in REPORT_FOR_HUMAN.md.
+CHECKPOINT / CLOSE PROTOCOL
+Same as Session 1. Fill all three .gemini/ files before finishing. REPORT_FOR_HUMAN.md must include the SQL verification output from Task 2 and the curl health check output from Task 4.

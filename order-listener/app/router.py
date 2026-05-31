@@ -1,4 +1,11 @@
 """
+DEPRECATED — Session 5 (2026-05-31)
+Exchange routing has been moved to order-executor.
+The order-listener now calls order-executor via executor_client.py.
+This file is retained for reference and will be deleted in Session 20.
+Do not add new logic here.
+"""
+"""
 Routing logic: determines which exchange adapter to use based on webhook platform field
 and the system active_platform config (cached in Redis).
 """

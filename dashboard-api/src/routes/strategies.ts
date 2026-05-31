@@ -17,12 +17,17 @@ router.get('/', async (_req: Request, res: Response) => {
       SELECT s.*, 
              b.symbol as base_asset, 
              q.symbol as quote_asset,
+             ea.exchange AS account_exchange,
+             ea.mode AS account_mode,
+             ea.label AS account_label,
              (SELECT COUNT(*)::int FROM orders o WHERE o.pair_id = s.pair_id) as total_signals,
              (SELECT COUNT(*)::int FROM orders o WHERE o.pair_id = s.pair_id AND o.status = 'filled') as filled_orders
       FROM strategies s
       LEFT JOIN trading_pairs tp ON s.pair_id = tp.id
       LEFT JOIN assets b ON tp.base_asset_id = b.id
       LEFT JOIN assets q ON tp.quote_asset_id = q.id
+      LEFT JOIN exchange_accounts ea ON ea.id = s.account_id
+      ORDER BY s.created_at DESC
     `;
     const { rows } = await getPool().query(query);
     const strategies = rows.map(r => ({

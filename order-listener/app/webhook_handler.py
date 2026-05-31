@@ -17,7 +17,6 @@ from fastapi.responses import JSONResponse
 from app.database import get_pool
 from app.models import WebhookPayload, OrderResponse, OrderResult
 from app.redis_client import publish
-from app.router import route_order
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -277,9 +276,31 @@ async def _create_strategy_position(pool, payload: WebhookPayload, strategy: dic
 
 async def _process_order(pool, order_id: uuid.UUID, payload: WebhookPayload, strategy: dict):
     try:
-        # Route
-        result = await route_order(payload, strategy)
-        final_status = "filled" if result.success else "route_failed"
+        # ── Resolve account_id from strategy record ──────────────────────────
+        account_id = strategy.get("account_id") or "acc_blofin_demo_default"
+
+        # ── Build OrderRequest for executor ──────────────────────────────────
+        order_request = {
+            "order_id":    str(order_id),
+            "account_id":  account_id,
+            "symbol":      payload.symbol,
+            "side":        payload.side,
+            "signal":      payload.signal,
+            "order_type":  payload.orderType,
+            "size":        str(payload.size),
+            "price":       str(payload.price)    if payload.price    else None,
+            "leverage":    payload.leverage,
+            "margin_mode": payload.marginMode,
+            "tp_price":    str(payload.tpPrice)  if payload.tpPrice  else None,
+            "sl_price":    str(payload.slPrice)  if payload.slPrice  else None,
+        }
+
+        # ── Call executor ─────────────────────────────────────────────────────
+        from app.executor_client import call_executor
+        exec_result = await call_executor(order_request)
+        result      = OrderResult(**exec_result)
+        final_status = result.status
+        
         await _update_order_status(pool, order_id, final_status, payload, result)
 
         logger.info(f"Order {order_id} processed for strategy {payload.strategy_id}: {final_status}")
