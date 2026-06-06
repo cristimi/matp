@@ -706,6 +706,40 @@ CREATE TABLE strategy_webhook_calls (
     source_ip     INET
 );
 
+-- Signal / execution audit trail (migration 005_signal_log.sql)
+CREATE TABLE signal_log (
+    id          BIGSERIAL PRIMARY KEY,
+    received_at TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    strategy_id VARCHAR(100) REFERENCES strategies(id) ON DELETE SET NULL,
+    source_ip   INET,
+    raw_body    JSONB,
+    http_status INTEGER,
+    outcome     VARCHAR(30),  -- 'filled' | 'guard_rejected' | 'validation_failed' | 'symbol_rejected' | 'auth_failed' | 'route_failed'
+    error_detail TEXT,
+    duration_ms INTEGER
+);
+CREATE INDEX ON signal_log (received_at DESC);
+CREATE INDEX ON signal_log (strategy_id, received_at DESC);
+
+CREATE TABLE order_execution_log (
+    id                BIGSERIAL PRIMARY KEY,
+    signal_log_id     BIGINT REFERENCES signal_log(id) ON DELETE SET NULL,
+    order_id          UUID REFERENCES orders(id) ON DELETE SET NULL,
+    attempted_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    placed_at         TIMESTAMPTZ,
+    exchange          VARCHAR(50),
+    exchange_order_id VARCHAR(255),
+    client_order_id   UUID,
+    symbol            VARCHAR(30),
+    side              VARCHAR(10),
+    order_type        VARCHAR(20),
+    requested_size    NUMERIC,
+    status            VARCHAR(30),  -- 'filled' | 'pending' | 'rejected' | 'route_failed'
+    error_message     TEXT
+);
+CREATE INDEX ON order_execution_log (signal_log_id);
+CREATE INDEX ON order_execution_log (order_id);
+
 -- updated_at triggers
 CREATE OR REPLACE FUNCTION update_updated_at_column()
 RETURNS TRIGGER AS $$
@@ -793,7 +827,8 @@ class OrderRequest(BaseModel):
     margin_mode: Optional[str]
     tp_price:    Optional[Decimal]    # None if loose coupling was applied
     sl_price:    Optional[Decimal]    # None if loose coupling was applied
-    config:      Optional[dict]       # forwarded from strategies.config (e.g. slippage_pct)
+    config:         Optional[dict]       # forwarded from strategies.config (e.g. slippage_pct)
+    signal_log_id:  Optional[int]        # links executor attempt to originating signal_log row
 
 class OrderResult(BaseModel):
     success:           bool
@@ -920,6 +955,48 @@ class TradingStats(BaseModel):
 ### 6.9 WebSocket /ws/orders
 
 `ws://host/ws/orders` — JSON messages on every order status change. See §5.4.
+
+### 6.10 GET /api/dashboard/signals
+
+Paginated signal log with one joined execution-log row per signal. Filters: `strategy_id`, `outcome`, `from` (ISO timestamp), `to` (ISO timestamp). Pagination: `page`, `limit` (max 200).
+
+**Response 200:**
+```json
+{
+  "total": 142,
+  "page": 1,
+  "limit": 50,
+  "items": [{
+    "id": 1,
+    "received_at": "2026-06-06T12:00:00Z",
+    "source_ip": "1.2.3.4",
+    "strategy_id": "hl_eth_long",
+    "http_status": 200,
+    "outcome": "filled",
+    "error_detail": null,
+    "raw_body": { "base_asset": "ETH", "side": "buy", "size": "0.02" },
+    "duration_ms": 312,
+    "oel_id": 7,
+    "exchange": "hyperliquid",
+    "exchange_order_id": "54506983576",
+    "client_order_id": "uuid",
+    "oel_symbol": "ETH-USDT",
+    "oel_side": "buy",
+    "oel_order_type": "market",
+    "requested_size": "0.02",
+    "oel_status": "filled",
+    "oel_error_message": null
+  }]
+}
+```
+
+Outcome values: `filled`, `guard_rejected`, `validation_failed`, `symbol_rejected`, `auth_failed`, `route_failed`.
+
+### 6.11 GET /api/dashboard/signals/strategies
+
+Returns distinct `strategy_id` values present in `signal_log`, used to populate the filter dropdown.
+
+**Response 200:** `["hl_eth_long", "blofin_btc_01"]`
 
 ---
 

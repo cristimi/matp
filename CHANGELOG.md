@@ -1,3 +1,17 @@
+## [2026-06-06] - 2.2.0
+
+### Added
+- DB migration `005_signal_log.sql`: new tables `signal_log` and `order_execution_log` for full request/execution audit trail.
+- `signal_log`: every inbound webhook request is recorded before any validation or processing, capturing `strategy_id`, `source_ip`, `raw_body` (JSONB), `http_status`, `outcome`, `error_detail`, and `duration_ms`.
+- `order_execution_log`: one row per order execution attempt in the executor, capturing `exchange`, `exchange_order_id`, `client_order_id` (UUID), `symbol`, `side`, `order_type`, `requested_size`, `status`, and `error_message`.
+- `dashboard-api`: new routes `GET /api/dashboard/signals` (paginated, filterable by `strategy_id`, `outcome`, `from`, `to`) and `GET /api/dashboard/signals/strategies` (distinct strategy IDs for filter dropdown).
+- Dashboard UI: `/signals` page with outcome badges, expandable rows showing `raw_body` JSON + execution log grid, filter bar, Load More pagination, and 15 s auto-refresh.
+- `OrderRequest` (internal): added `signal_log_id: Optional[int]` field; webhook handler sets this so executor can link execution log rows back to the originating signal.
+
+### Changed
+- `order-listener/app/webhook_handler.py`: `receive_webhook` now accepts a raw `Request` and parses the body manually before Pydantic validation so every outcome (including schema errors) is logged to `signal_log`.
+- `order-executor/app/executor.py`: each attempt generates a fresh `client_order_id` (UUID) and writes/updates an `order_execution_log` row.
+
 ## [2026-06-06] - 2.1.0
 
 ### Added

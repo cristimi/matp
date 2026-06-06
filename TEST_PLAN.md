@@ -52,6 +52,14 @@ This document provides a comprehensive checklist for verifying the functionality
 | TT-T22.1 | `eth-account` installed in listener | `docker compose exec -T order-listener pip show eth-account` | Output showing package details, including `Version: X.Y.Z`. |
 | TT-T28.1 | Hyperliquid order in MATP DB | `docker compose exec -T postgres psql -U matp -d matp -c "SELECT symbol, exchange_order_id, status FROM orders WHERE platform = 'hyperliquid' ORDER BY received_at DESC LIMIT 1;"` | Should show the symbol, a non-null `exchange_order_id`, and `filled` status if successful. |
 
+### P6-SignalLog
+| Test ID | What it verifies | Exact command(s) | Expected output |
+|---------|------------------|------------------|-----------------|
+| TT-SL.1 | signal_log row created for every webhook | `docker compose exec -T postgres psql -U matp -d matp -c "SELECT id, strategy_id, outcome, http_status FROM signal_log ORDER BY received_at DESC LIMIT 5;"` | Rows for recent webhooks with correct outcome and http_status. |
+| TT-SL.2 | order_execution_log row linked to signal | `docker compose exec -T postgres psql -U matp -d matp -c "SELECT oel.status, oel.exchange_order_id, sl.outcome FROM order_execution_log oel JOIN signal_log sl ON sl.id = oel.signal_log_id ORDER BY oel.attempted_at DESC LIMIT 3;"` | Rows showing matching outcome between signal and execution logs. |
+| TT-SL.3 | Signals API returns paginated data | `curl -s 'http://localhost:80/api/dashboard/signals?limit=5' \| python3 -m json.tool` | JSON with `total`, `page`, `limit`, `items` array; each item has `outcome`, `raw_body`, `oel_symbol`. |
+| TT-SL.4 | Signals UI page loads | Open `http://localhost:80/signals` in browser | Page shows signal rows with outcome badges; expandable rows reveal raw JSON and execution log. |
+
 ### P4-Hardening
 | Test ID | What it verifies | Exact command(s) | Expected output |
 |---------|------------------|------------------|-----------------|
