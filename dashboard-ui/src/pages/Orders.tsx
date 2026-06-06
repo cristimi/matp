@@ -94,7 +94,7 @@ function OrderCard({
     switch (uiStatus) {
       case 'lag-fail':
         return [
-          { label: '✕ Delete Log', color: 'red' as const,
+          { label: '✕ Delete', color: 'red' as const,
             onClick: () => onDelete(order.id), fullWidth: true },
         ];
       case 'route-fail':
