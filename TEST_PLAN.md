@@ -60,6 +60,15 @@ This document provides a comprehensive checklist for verifying the functionality
 | TT-SL.3 | Signals API returns paginated data | `curl -s 'http://localhost:80/api/dashboard/signals?limit=5' \| python3 -m json.tool` | JSON with `total`, `page`, `limit`, `items` array; each item has `outcome`, `raw_body`, `oel_symbol`. |
 | TT-SL.4 | Signals UI page loads | Open `http://localhost:80/signals` in browser | Page shows signal rows with outcome badges; expandable rows reveal raw JSON and execution log. |
 
+### P7-BugFixes
+| Test ID | What it verifies | Exact command(s) | Expected output |
+|---------|------------------|------------------|-----------------|
+| TT-BF.1 | Positions show `long`/`short` side | `docker compose exec -T postgres psql -U matp -d matp -c "SELECT side FROM strategy_positions WHERE status = 'open' LIMIT 5;"` | Values are `long` or `short`, not `buy` or `sell`. ✅ Passed 2026-06-06 |
+| TT-BF.2 | Open position not stale after fix | Open `http://localhost:80/positions` in browser | Live ETH position shows status `open` with correct `entry_price` and `mark_price`. ✅ Passed 2026-06-06 |
+| TT-BF.3 | Entry price populated from fill | `docker compose exec -T postgres psql -U matp -d matp -c "SELECT actual_fill_price FROM orders WHERE status = 'filled' ORDER BY received_at DESC LIMIT 3;"` | Non-null numeric values for market orders. |
+| TT-BF.4 | Delete order removes it from list | Delete a `route_failed` order in the UI Orders page | Order disappears instantly; does not reappear as `pending` on next refresh. ✅ Passed 2026-06-06 |
+| TT-BF.5 | Deleted orders excluded from API | `curl -s 'http://localhost:80/api/dashboard/orders?limit=200' \| python3 -c "import sys,json; orders=json.load(sys.stdin)['items']; print([o['status'] for o in orders if o['status']=='deleted'])"` | Empty list `[]`. ✅ Passed 2026-06-06 |
+
 ### P4-Hardening
 | Test ID | What it verifies | Exact command(s) | Expected output |
 |---------|------------------|------------------|-----------------|

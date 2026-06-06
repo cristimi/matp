@@ -1,3 +1,15 @@
+## [2026-06-06] - 2.3.0
+
+### Fixed
+- **Position side convention**: `strategy_positions.side` now stores `long`/`short` (position convention) instead of `buy`/`sell` (order convention), matching Blofin's native format. This fixed the stale-position bug where the `account_id:symbol:side` lookup key in the positions API never matched the executor's real-time data, causing every open position to show as stale.
+- **Entry price populated from fill**: `OrderResult` in the executor was missing `actual_fill_price` as a Pydantic field, so the adapter's value was silently dropped. Added the field, wrote it to `orders.actual_fill_price` in `_update_order_record`, and added a UI fallback to use `realPos.entry_price` when the DB value is 0.
+- **Delete order shows as pending**: `GET /orders` now excludes `status = 'deleted'` by default, so soft-deleted orders no longer reappear after deletion. `handleDelete` in the UI optimistically removes the order from local state on success instead of re-fetching (which caused a flash of the unmapped `deleted` status rendering as `pending`).
+
+### Changed
+- `order-listener/app/webhook_handler.py`: `_create_strategy_position()` converts `buy`→`long` / `sell`→`short` before writing `strategy_positions.side`.
+- `order-listener/app/adapters/blofin.py`: `close_position` now accepts `long`/`short` natively; backward-compat map retained for `buy`/`sell`.
+- `dashboard-api/src/routes/positions.ts`: removed buy/sell normalisation (no longer needed); entry_price falls back to `realPos.entry_price` when DB value is 0.
+
 ## [2026-06-06] - 2.2.0
 
 ### Added

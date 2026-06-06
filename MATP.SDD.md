@@ -836,7 +836,10 @@ class OrderResult(BaseModel):
     status:            Literal["filled", "pending", "rejected", "route_failed"]
     error_msg:         Optional[str]
     raw_response:      Optional[dict]
+    actual_fill_price: Optional[Decimal]   # populated by adapter after market-order fill fetch
 ```
+
+**Convention note:** `strategy_positions.side` stores `long`/`short` (position convention). `orders.side` stores `buy`/`sell` (order convention). These are distinct and must not be conflated.
 
 ### 5.4 WebSocket Event Format
 
@@ -885,6 +888,8 @@ class TradingStats(BaseModel):
 ### 6.3 GET /api/dashboard/orders
 
 **Query Parameters:** `page`, `limit`, `symbol`, `account_id`, `status`, `strategy_id`, `from`, `to`
+
+> Orders with `status = 'deleted'` are excluded from results unless `status=deleted` is passed explicitly. Soft-delete via `DELETE /api/dashboard/orders/:id`.
 
 **Response 200:**
 ```json
