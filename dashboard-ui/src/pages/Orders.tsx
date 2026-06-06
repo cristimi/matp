@@ -24,7 +24,7 @@ interface Order {
   error_msg?:       string;
 }
 
-type ChipStatus = 'filled' | 'lag-fail' | 'route-fail' | 'pending' | 'rejected';
+type ChipStatus = 'filled' | 'lag-fail' | 'route-fail' | 'pending' | 'rejected' | 'cancelled';
 
 const CHIP_STYLES: Record<ChipStatus, React.CSSProperties> = {
   'filled':     { background:'var(--green-a)',         color:'var(--green)',        borderColor:'var(--green-b)' },
@@ -32,6 +32,7 @@ const CHIP_STYLES: Record<ChipStatus, React.CSSProperties> = {
   'route-fail': { background:'var(--failed-color-a)',  color:'var(--failed-color)', borderColor:'var(--failed-color-b)' },
   'pending':    { background:'var(--blue-a)',           color:'var(--blue)',         borderColor:'var(--blue-b)' },
   'rejected':   { background:'var(--red-a)',            color:'var(--red)',          borderColor:'var(--red-b)' },
+  'cancelled':  { background:'var(--yellow-a)',         color:'var(--yellow)',       borderColor:'var(--yellow-b)' },
 };
 
 function StatusChip({ status }: { status: ChipStatus }) {
@@ -70,6 +71,7 @@ function OrderCard({
   else if (order.status === 'route_failed') uiStatus = 'route-fail';
   else if (order.status === 'lag_failed' || order.status === 'lag-fail') uiStatus = 'lag-fail';
   else if (order.status === 'rejected') uiStatus = 'rejected';
+  else if (order.status === 'cancelled') uiStatus = 'cancelled';
   else if (['received', 'routing', 'pending'].includes(order.status)) uiStatus = 'pending';
 
   const isFailed = uiStatus === 'lag-fail' || uiStatus === 'route-fail' || uiStatus === 'rejected';
@@ -105,6 +107,11 @@ function OrderCard({
         return [
           { label: '✕ Cancel Order', color: 'red' as const,
             onClick: () => onCancel(order.id), fullWidth: true },
+        ];
+      case 'cancelled':
+        return [
+          { label: '✕ Delete', color: 'red' as const,
+            onClick: () => onDelete(order.id), fullWidth: true },
         ];
       default:
         return [];
@@ -327,8 +334,10 @@ export default function Orders() {
   const handleCancel = async (id: string) => {
     if (!confirm('Cancel this pending order?')) return;
     try {
-      await fetch(`/api/dashboard/orders/${id}/cancel`, { method: 'POST' });
-      fetchOrders();
+      const res = await fetch(`/api/dashboard/orders/${id}/cancel`, { method: 'POST' });
+      if (res.ok) {
+        setOrders(prev => prev.map(o => o.id === id ? { ...o, status: 'cancelled' } : o));
+      }
     } catch {}
   };
 
@@ -399,6 +408,7 @@ export default function Orders() {
             <option value="route_failed">Route Fail</option>
             <option value="lag_failed">Lag Fail</option>
             <option value="pending">Pending</option>
+            <option value="cancelled">Cancelled</option>
           </select>
 
           <select

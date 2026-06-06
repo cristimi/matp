@@ -22,6 +22,9 @@
   --blue:            #2563eb;
   --blue-a:          rgba(37,99,235,.08);
   --blue-b:          rgba(37,99,235,.22);
+  --yellow:          #ca8a04;
+  --yellow-a:        rgba(202,138,4,.08);
+  --yellow-b:        rgba(202,138,4,.22);
   --r:               14px;
   --pill-r:          6px;
 }
