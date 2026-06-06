@@ -20,6 +20,7 @@ router.get('/', async (req: Request, res: Response) => {
   if (symbol) { filters.push("o.symbol = $" + idx++); params.push(symbol); }
   if (platform) { filters.push("o.platform = $" + idx++); params.push(platform); }
   if (status) { filters.push("o.status = $" + idx++); params.push(status); }
+  else { filters.push("o.status != 'deleted'"); }
   if (strategy_id) { filters.push("o.strategy_id = $" + idx++); params.push(strategy_id); }
   if (account_id) { filters.push("o.account_id = $" + idx++); params.push(account_id); }
   if (from) { filters.push("o.received_at >= $" + idx++); params.push(new Date(from)); }

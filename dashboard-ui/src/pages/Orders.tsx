@@ -316,8 +316,11 @@ export default function Orders() {
   const handleDelete = async (id: string) => {
     if (!confirm('Delete this order log?')) return;
     try {
-      await fetch(`/api/dashboard/orders/${id}`, { method: 'DELETE' });
-      fetchOrders();
+      const res = await fetch(`/api/dashboard/orders/${id}`, { method: 'DELETE' });
+      if (res.ok) {
+        setOrders(prev => prev.filter(o => o.id !== id));
+        setTotal(prev => Math.max(0, prev - 1));
+      }
     } catch {}
   };
 
