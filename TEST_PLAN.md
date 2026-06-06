@@ -68,6 +68,9 @@ This document provides a comprehensive checklist for verifying the functionality
 | TT-BF.3 | Entry price populated from fill | `docker compose exec -T postgres psql -U matp -d matp -c "SELECT actual_fill_price FROM orders WHERE status = 'filled' ORDER BY received_at DESC LIMIT 3;"` | Non-null numeric values for market orders. |
 | TT-BF.4 | Delete order removes it from list | Delete a `route_failed` order in the UI Orders page | Order disappears instantly; does not reappear as `pending` on next refresh. ✅ Passed 2026-06-06 |
 | TT-BF.5 | Deleted orders excluded from API | `curl -s 'http://localhost:80/api/dashboard/orders?limit=200' \| python3 -c "import sys,json; orders=json.load(sys.stdin)['items']; print([o['status'] for o in orders if o['status']=='deleted'])"` | Empty list `[]`. ✅ Passed 2026-06-06 |
+| TT-BF.6 | Blofin available balance correct | `curl -s http://localhost:80/api/dashboard/accounts/acc_blofin_demo_default/balance` | `available_balance` is non-zero and less than `total_balance`; `used_margin` equals `total_balance − available_balance`. ✅ Passed 2026-06-06 |
+| TT-BF.7 | Cancel order shows amber badge + Delete | Cancel a pending order in the UI Orders page | Order badge turns amber "cancelled"; footer shows "✕ Delete" button only. ✅ Passed 2026-06-06 |
+| TT-BF.8 | Delete account removes card | Click Delete on an account card | Card disappears immediately; account is soft-deleted (`is_active = false`) in DB. ✅ Passed 2026-06-06 |
 
 ### P4-Hardening
 | Test ID | What it verifies | Exact command(s) | Expected output |

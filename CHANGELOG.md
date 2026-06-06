@@ -1,3 +1,16 @@
+## [2026-06-06] - 2.4.0
+
+### Fixed
+- **Blofin available balance and used margin**: `get_balance` was reading `available` from the top-level `data[0]` object; the field is actually nested inside `data[0].details[0].available`. Used margin is now correctly `totalEquity − available` instead of the full equity.
+- **Cancelled orders did not visually respond**: `'cancelled'` was missing from `ChipStatus`; it fell through to the `pending` default (blue badge, Cancel button still shown). Added yellow token (`--yellow`), amber chip for `cancelled`, "✕ Delete" footer button, optimistic local-state update in `handleCancel`.
+- **All bad-outcome statuses now share amber colour**: `route-fail`, `lag-fail`, `rejected`, and `cancelled` use `--failed-color` for both the left bar and the status pill. Previously `rejected` was red and `cancelled` was yellow.
+- **lag-fail button label**: renamed "Delete Log" → "Delete" for consistency.
+- **Account delete button missing**: "Deactivate" button (hidden for inactive accounts) replaced by a "Delete" button shown for all accounts. On success, removes the card from local state immediately.
+
+### Changed
+- `order-executor/app/adapters/blofin.py`: `get_balance` now parses `data[0].details[0]` for `available` / `availableEquity`; `totalEquity` is still read from `data[0]`.
+- `dashboard-ui/src/styles/tokens.css`: added `--yellow`, `--yellow-a`, `--yellow-b` tokens (reserved for future use; cancelled chip uses `--failed-color`).
+
 ## [2026-06-06] - 2.3.0
 
 ### Fixed
