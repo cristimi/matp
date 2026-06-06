@@ -18,9 +18,10 @@ class OrderRequest(BaseModel):
     price:       Optional[Decimal] = None
     leverage:    Optional[int] = None
     margin_mode: Optional[str] = None
-    tp_price:    Optional[Decimal] = None
-    sl_price:    Optional[Decimal] = None
-    config:      Optional[dict] = None
+    tp_price:       Optional[Decimal] = None
+    sl_price:       Optional[Decimal] = None
+    config:         Optional[dict] = None
+    signal_log_id:  Optional[int] = None
 
 
 class OrderResult(BaseModel):
