@@ -31,8 +31,8 @@ const CHIP_STYLES: Record<ChipStatus, React.CSSProperties> = {
   'lag-fail':   { background:'var(--failed-color-a)',  color:'var(--failed-color)', borderColor:'var(--failed-color-b)' },
   'route-fail': { background:'var(--failed-color-a)',  color:'var(--failed-color)', borderColor:'var(--failed-color-b)' },
   'pending':    { background:'var(--blue-a)',           color:'var(--blue)',         borderColor:'var(--blue-b)' },
-  'rejected':   { background:'var(--red-a)',            color:'var(--red)',          borderColor:'var(--red-b)' },
-  'cancelled':  { background:'var(--yellow-a)',         color:'var(--yellow)',       borderColor:'var(--yellow-b)' },
+  'rejected':   { background:'var(--failed-color-a)',  color:'var(--failed-color)', borderColor:'var(--failed-color-b)' },
+  'cancelled':  { background:'var(--failed-color-a)',  color:'var(--failed-color)', borderColor:'var(--failed-color-b)' },
 };
 
 function StatusChip({ status }: { status: ChipStatus }) {
@@ -74,7 +74,7 @@ function OrderCard({
   else if (order.status === 'cancelled') uiStatus = 'cancelled';
   else if (['received', 'routing', 'pending'].includes(order.status)) uiStatus = 'pending';
 
-  const isFailed = uiStatus === 'lag-fail' || uiStatus === 'route-fail' || uiStatus === 'rejected';
+  const isFailed = uiStatus === 'lag-fail' || uiStatus === 'route-fail' || uiStatus === 'rejected' || uiStatus === 'cancelled';
 
   // Left bar: failed orders always use failed-color regardless of side
   const barColor = isFailed
