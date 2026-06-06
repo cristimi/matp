@@ -123,10 +123,14 @@ export default function Accounts() {
     } catch (e: any) { setCredStatus(`Error: ${e.message}`); }
   };
 
-  const handleDeactivate = async (id: string) => {
-    if (!confirm(`Deactivate account ${id}?`)) return;
-    await fetch(`${API}/accounts/${id}`, { method: 'DELETE' });
-    fetchAccounts();
+  const handleDelete = async (id: string, label: string) => {
+    if (!confirm(`Delete account "${label}"? This cannot be undone.`)) return;
+    const res = await fetch(`${API}/accounts/${id}`, { method: 'DELETE' });
+    if (res.ok) {
+      setAccounts(prev => prev.filter(a => a.id !== id));
+      setBalances(prev => { const n = {...prev}; delete n[id]; return n; });
+      setMetas(prev =>    { const n = {...prev}; delete n[id]; return n; });
+    }
   };
 
   return (
@@ -325,17 +329,15 @@ export default function Accounts() {
                     Update Credentials
                   </button>
                   <div style={{ flex:1 }} />
-                  {acc.is_active && (
-                    <button
-                      onClick={() => handleDeactivate(acc.id)}
-                      style={{
-                        background:'none', border:'1px solid var(--border)',
-                        borderRadius:'4px', padding:'4px 10px', color:'var(--red)',
-                        fontSize:'11px', fontWeight:600, cursor:'pointer',
-                      }}>
-                      Deactivate
-                    </button>
-                  )}
+                  <button
+                    onClick={() => handleDelete(acc.id, acc.label)}
+                    style={{
+                      background:'none', border:'1px solid var(--border)',
+                      borderRadius:'4px', padding:'4px 10px', color:'var(--red)',
+                      fontSize:'11px', fontWeight:600, cursor:'pointer',
+                    }}>
+                    Delete
+                  </button>
                 </div>
               </div>
             );

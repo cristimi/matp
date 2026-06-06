@@ -262,13 +262,19 @@ class BlofinAdapter(ExchangeAdapter):
                 resp.raise_for_status()
                 data = resp.json()
 
-            # Parse Blofin response structure
-            details = data.get("data", [{}])
-            if isinstance(details, list):
-                details = details[0] if details else {}
+            # Blofin balance structure:
+            # data[0].totalEquity       — account-level equity
+            # data[0].details[0].available — per-currency available margin
+            data_item = data.get("data", [{}])
+            if isinstance(data_item, list):
+                data_item = data_item[0] if data_item else {}
 
-            total     = float(details.get("totalEquity",     details.get("balance", 0)))
-            available = float(details.get("availableBalance",details.get("available", 0)))
+            total = float(data_item.get("totalEquity", 0))
+
+            per_ccy = data_item.get("details", [{}])
+            if isinstance(per_ccy, list):
+                per_ccy = per_ccy[0] if per_ccy else {}
+            available = float(per_ccy.get("available", per_ccy.get("availableEquity", 0)))
             used      = total - available
 
             return {
