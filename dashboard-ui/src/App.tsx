@@ -8,6 +8,7 @@ import StrategiesPage from './pages/Strategies';
 import AccountsPage from './pages/Accounts';
 import StrategyDetail from './pages/StrategyDetail';
 import SettingsPage from './pages/Settings';
+import SignalLogPage from './pages/SignalLog';
 import { useNavCounts } from './hooks/useNavCounts';
 
 const NAV = [
@@ -15,6 +16,7 @@ const NAV = [
   { to: '/accounts',   label: 'Accounts',   icon: '🔑' },
   { to: '/positions',  label: 'Positions',  icon: '📈' },
   { to: '/orders',     label: 'Orders',     icon: '📋' },
+  { to: '/signals',    label: 'Signals',    icon: '📡' },
   { to: '/settings',   label: 'Settings',   icon: '🔧' },
 ];
 
@@ -189,6 +191,7 @@ export default function App() {
           <Route path="/strategies/new" element={<StrategyForm />} />
           <Route path="/strategies/:id/edit" element={<StrategyForm />} />
           <Route path="/accounts"   element={<AccountsPage />} />
+          <Route path="/signals"    element={<SignalLogPage />} />
           <Route path="/strategy/:id" element={<StrategyDetail />} />
           <Route path="/settings"   element={<SettingsPage />} />
         </Routes>
