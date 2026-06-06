@@ -37,7 +37,7 @@ router.get('/', async (_req: Request, res: Response) => {
           const positions = await resp.json();
           if (Array.isArray(positions)) {
             positions.forEach(p => {
-              // Key by account_id:symbol:side
+              // Positions use long/short; key must match strategy_positions.side
               const key = `${acc.id}:${p.symbol}:${p.side}`;
               executorPositionsMap.set(key, p);
             });
@@ -66,7 +66,7 @@ router.get('/', async (_req: Request, res: Response) => {
         account_exchange:  dbPos.account_exchange,
         opened_at:         dbPos.opened_at,
         closed_at:         dbPos.closed_at,
-        entry_price:       Number(dbPos.entry_price),
+        entry_price:       Number(dbPos.entry_price) || (realPos ? Number(realPos.entry_price) : 0),
         mark_price:        realPos ? Number(realPos.mark_price || realPos.entry_price) : Number(dbPos.current_price),
         close_price:       Number(dbPos.close_price || dbPos.closing_price),
         size:              Number(dbPos.size),

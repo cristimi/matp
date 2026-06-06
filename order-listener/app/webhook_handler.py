@@ -373,6 +373,9 @@ async def _create_strategy_position(pool, payload: WebhookPayload, strategy: dic
         )
         pair_id = pair['id'] if pair else None
 
+        # Positions use long/short; orders use buy/sell
+        pos_side = "long" if payload.side == "buy" else "short"
+
         await conn.execute(
             """
             INSERT INTO strategy_positions (
@@ -387,7 +390,7 @@ async def _create_strategy_position(pool, payload: WebhookPayload, strategy: dic
             strategy.get('exchange', 'auto'),
             f"{payload.base_asset}-{payload.quote_asset}",
             pair_id,
-            payload.side,
+            pos_side,
             entry_price,
             payload.size,
             effective_leverage,

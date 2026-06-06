@@ -194,10 +194,9 @@ class BlofinAdapter(ExchangeAdapter):
         from app.symbol_factory import SymbolFactory
         import asyncio
         
-        # side is "buy" (Short) or "sell" (Long) as passed from positions view
+        # side is "long" or "short" (position convention, not order convention)
         # BloFin close-position needs positionSide: "long", "short", or "net"
-        # Based on side (current position side), we map to positionSide
-        pos_side = "long" if side == "buy" else "short" 
+        pos_side = side if side in ("long", "short") else ("long" if side == "buy" else "short")
         
         position_side_map = {
             "long": "long",

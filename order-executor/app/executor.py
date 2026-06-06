@@ -95,17 +95,19 @@ async def _update_order_record(order_id: str, result: OrderResult):
             await conn.execute(
                 """
                 UPDATE orders SET
-                    status            = $1,
-                    exchange_order_id = $2,
-                    raw_response      = $3::jsonb,
-                    error_msg         = $4,
-                    updated_at        = NOW()
-                WHERE id = $5
+                    status             = $1,
+                    exchange_order_id  = $2,
+                    raw_response       = $3::jsonb,
+                    error_msg          = $4,
+                    actual_fill_price  = $5,
+                    updated_at         = NOW()
+                WHERE id = $6
                 """,
                 result.status,
                 result.exchange_order_id,
                 json.dumps(result.raw_response) if result.raw_response else None,
                 result.error_msg,
+                float(result.actual_fill_price) if result.actual_fill_price else None,
                 order_id,
             )
     except Exception as e:

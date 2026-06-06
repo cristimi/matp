@@ -30,6 +30,7 @@ class OrderResult(BaseModel):
     status:            Literal["filled", "pending", "rejected", "route_failed"]
     error_msg:         Optional[str] = None
     raw_response:      Optional[dict] = None
+    actual_fill_price: Optional[Decimal] = None
 
 
 class AccountRecord(BaseModel):
