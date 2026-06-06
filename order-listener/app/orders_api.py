@@ -107,11 +107,11 @@ async def get_order(order_id: UUID):
 
 @router.post("/{order_id}/retry")
 async def retry_order(order_id: UUID):
-    """Re-dispatch a dead-letter order through the webhook handler."""
+    """Re-dispatch a dead-letter order through the executor client."""
     pool = get_pool()
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
-            "SELECT raw_webhook, strategy_id FROM orders WHERE id = $1", order_id
+            "SELECT raw_webhook, strategy_id, symbol FROM orders WHERE id = $1", order_id
         )
         if not row:
             raise HTTPException(status_code=404, detail="Order not found")
@@ -122,17 +122,34 @@ async def retry_order(order_id: UUID):
         strategy = dict(strategy_row) if strategy_row else {}
 
     import json
-    from app.config import settings
     from app.models import WebhookPayload
-    from app.router import route_order
+    from app.executor_client import call_executor
 
     payload_data = json.loads(row["raw_webhook"])
-    payload_data["token"] = settings.webhook_secret
-    payload = WebhookPayload(**payload_data)
-    result = await route_order(payload, strategy)
+    # Note: token is not needed for internal retry since we already authenticated the original order
+    payload = WebhookPayload(**payload_data, token="internal_retry")
+    
+    # Build OrderRequest for executor
+    account_id = strategy.get("account_id") or "acc_blofin_demo_default"
+    order_request = {
+        "order_id":    str(order_id),
+        "account_id":  account_id,
+        "symbol":      row["symbol"],
+        "side":        payload.side,
+        "signal":      payload.signal,
+        "order_type":  payload.order_type,
+        "size":        str(payload.size),
+        "price":       str(payload.price)    if payload.price    else None,
+        "leverage":    payload.leverage,
+        "margin_mode": payload.margin_mode,
+        "tp_price":    str(payload.tp_price) if payload.tp_price else None,
+        "sl_price":    str(payload.sl_price) if payload.sl_price else None,
+    }
 
+    result_dict = await call_executor(order_request)
+    
     # Update the original order status and dead letter log
-    status = "filled" if result.success else "route_failed"
+    status = result_dict.get("status", "route_failed")
     async with pool.acquire() as conn:
         await conn.execute(
             """
@@ -140,14 +157,20 @@ async def retry_order(order_id: UUID):
             SET status = $1, 
                 exchange_order_id = $2, 
                 error_msg = $3,
-                actual_fill_price = $4
-            WHERE id = $5
+                actual_fill_price = $4,
+                raw_response = $5
+            WHERE id = $6
             """,
-            status, result.exchange_order_id, result.error_msg, result.actual_fill_price, order_id
+            status, 
+            result_dict.get("exchange_order_id"), 
+            result_dict.get("error_msg"), 
+            result_dict.get("actual_fill_price"),
+            json.dumps(result_dict.get("raw_response")),
+            order_id
         )
         await conn.execute(
             "UPDATE dead_letter_orders SET retry_count = retry_count + 1, last_retry = NOW() WHERE order_id = $1",
             order_id,
         )
 
-    return {"order_id": str(order_id), "status": status, "retry_result": result.model_dump()}
+    return {"order_id": str(order_id), "status": status, "retry_result": result_dict}

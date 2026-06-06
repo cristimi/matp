@@ -19,6 +19,12 @@ This document provides a comprehensive checklist for verifying the functionality
 |---------|------------------|------------------|-----------------|
 | TT-T.FillPrice.1 | Verify fill price stored in DB | `docker compose exec -T postgres psql -U matp -d matp -c "SELECT actual_fill_price FROM orders WHERE platform = 'blofin' AND status = 'filled' ORDER BY received_at DESC LIMIT 1;"` | Should show a valid numeric fill price. |
 
+### P3-Hyperliquid
+| Test ID | What it verifies | Exact command(s) | Expected output |
+|---------|------------------|------------------|-----------------|
+| TT-HL.MarketBuy.1 | Market buy routes to HL testnet and fills | `curl -X POST http://localhost:8001/webhook/test_hl_demo_01 -H "Content-Type: application/json" -d '{"base_asset":"ETH","quote_asset":"USDT","side":"buy","order_type":"market","size":"0.02","signal":"open_long","timestamp":"2026-06-06T12:00:00Z","token":"test-secret-hl-01"}'` | `{"status":"received"}` from listener; DB shows `status=filled`, `exchange_order_id` populated. ✅ Passed 2026-06-06 (oid=54506983576) |
+| TT-HL.Slippage.1 | Configurable slippage read from strategies.config | Set `strategies.config = '{"slippage_pct": 1.0}'` then place market order; check executor logs for no error | Executor applies 1% slippage cap; order fills. ✅ Passed 2026-06-06 |
+
 ### P2-Dashboard
 | Test ID | What it verifies | Exact command(s) | Expected output |
 |---------|------------------|------------------|-----------------|

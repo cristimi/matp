@@ -242,3 +242,64 @@ class BlofinAdapter(ExchangeAdapter):
                 error_msg=error,
                 raw_response=data,
             )
+
+    async def get_balance(self) -> dict:
+        """Fetch USDT perpetual futures account balance from Blofin."""
+        try:
+            # Blofin balance endpoint for futures
+            # GET /api/v1/account/balance?accountType=futures
+            endpoint = "/api/v1/account/balance"
+            params   = "accountType=futures"
+            full_path = f"{endpoint}?{params}"
+
+            # Use the existing signing pattern already in the adapter
+            # to make an authenticated GET request
+            headers  = self._headers("GET", full_path, "")
+            url      = f"{self.base_url}{full_path}"
+
+            async with httpx.AsyncClient(timeout=10) as client:
+                resp = await client.get(url, headers=headers)
+                resp.raise_for_status()
+                data = resp.json()
+
+            # Parse Blofin response structure
+            details = data.get("data", [{}])
+            if isinstance(details, list):
+                details = details[0] if details else {}
+
+            total     = float(details.get("totalEquity",     details.get("balance", 0)))
+            available = float(details.get("availableBalance",details.get("available", 0)))
+            used      = total - available
+
+            return {
+                "total_balance":     total,
+                "available_balance": available,
+                "used_margin":       max(used, 0),
+                "currency":          "USDT",
+            }
+        except Exception as e:
+            logger.error(f"BlofinAdapter.get_balance failed: {e}")
+            return {
+                "total_balance":     0.0,
+                "available_balance": 0.0,
+                "used_margin":       0.0,
+                "currency":          "USDT",
+                "error":             str(e),
+            }
+
+    async def get_account_meta(self) -> dict:
+        """Return masked api_key preview — safe to display in UI."""
+        try:
+            key = self.api_key
+            if len(key) >= 7:
+                preview = f"{key[:3]}...{key[-4:]}"
+            else:
+                preview = "***"
+            return {
+                "api_key_preview": preview,
+                "account_type":    "futures",
+                "exchange":        "blofin",
+            }
+        except Exception as e:
+            logger.error(f"BlofinAdapter.get_account_meta failed: {e}")
+            return {}

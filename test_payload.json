@@ -1,0 +1,10 @@
+{
+  "base_asset": "BTC",
+  "quote_asset": "USDT",
+  "side": "buy",
+  "order_type": "market",
+  "size": 0.001,
+  "signal": "open_long",
+  "timestamp": "2026-06-03T10:00:00Z",
+  "token": "manual-test-secret-12345"
+}

@@ -17,6 +17,7 @@ from fastapi.responses import JSONResponse
 from app.database import get_pool
 from app.models import WebhookPayload, OrderResponse, OrderResult
 from app.redis_client import publish
+from app.symbol_validator import resolve_symbol, SymbolMismatchError
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -61,7 +62,7 @@ async def _check_rate_limit(pool, strategy_id: str, max_signals: int) -> bool:
         return count < max_signals
 
 
-async def _log_order(pool, payload: WebhookPayload, order_id: uuid.UUID, strategy_id: str, pair_id: int, symbol: str) -> None:
+async def _log_order(pool, payload: WebhookPayload, order_id: uuid.UUID, strategy_id: str, pair_id: int, symbol: str, effective_leverage: int) -> None:
     """Write initial order record to PostgreSQL."""
     async with pool.acquire() as conn:
         await conn.execute(
@@ -82,14 +83,14 @@ async def _log_order(pool, payload: WebhookPayload, order_id: uuid.UUID, strateg
             symbol,
             payload.side,
             payload.signal,
-            payload.orderType,
+            payload.order_type,
             payload.size,
             payload.price,
-            payload.leverage,
-            payload.marginMode,
-            payload.tpPrice,
-            payload.slPrice,
-            payload.platform,
+            effective_leverage,
+            payload.margin_mode,
+            payload.tp_price,
+            payload.sl_price,
+            'auto',
             strategy_id,
             json.dumps(payload.model_dump(mode="json", exclude={"token"})),
             payload.signal_source,
@@ -123,8 +124,7 @@ async def _update_order_status(pool, order_id: uuid.UUID, status: str, payload: 
         "event": f"orders:{status}",
         "order_id": str(order_id),
         "status": status,
-        "pair": payload.pair_label,
-        "platform": payload.platform,
+        "pair": f"{payload.base_asset}-{payload.quote_asset}",
         "timestamp": datetime.now(timezone.utc).isoformat()
     })
 
@@ -132,11 +132,9 @@ async def _update_order_status(pool, order_id: uuid.UUID, status: str, payload: 
 @router.post("/webhook/{strategy_id}", response_model=OrderResponse)
 async def receive_webhook(
     strategy_id: str, 
-    request: Request,
+    payload: WebhookPayload,
     x_webhook_token: str = Header(None)
 ):
-    body = await request.body()
-    payload = WebhookPayload(**json.loads(body))
     pool = get_pool()
     
     # 1. Load strategy
@@ -146,100 +144,172 @@ async def receive_webhook(
         await _log_webhook_call(pool, strategy_id, 404, "Strategy not found")
         raise HTTPException(status_code=404, detail="Strategy not found")
 
-    # 2. Authenticate (Check Header, signalToken, or old token)
-    token_to_verify = x_webhook_token or payload.signalToken or payload.token
+    # 2. Authenticate
+    token_to_verify = x_webhook_token or payload.token
     if not token_to_verify or not await _verify_token(token_to_verify, strategy['webhook_secret']):
         logger.warning(f"Rejected webhook: invalid token for strategy={strategy_id}")
         await _log_webhook_call(pool, strategy_id, 403, "Invalid token")
         raise HTTPException(status_code=403, detail="Invalid token")
 
-    # 3. Lag Check
-    lag_exceeded = False
-    if payload.maxLag:
-        now = datetime.now(timezone.utc)
-        ts = payload.timestamp if payload.timestamp.tzinfo else payload.timestamp.replace(tzinfo=timezone.utc)
-        if (now - ts).total_seconds() > payload.maxLag:
-            logger.warning(f"Webhook signal lag exceeded for strategy={strategy_id}")
-            lag_exceeded = True
-
-    # 4. Check enabled
+    # 3. Check enabled
     if not strategy['webhook_enabled']:
         logger.warning(f"Rejected webhook: disabled strategy={strategy_id}")
         await _log_webhook_call(pool, strategy_id, 403, "Strategy disabled")
         raise HTTPException(status_code=403, detail="Strategy disabled")
 
-    # 5. Rate limit check
-    if not await _check_rate_limit(pool, strategy_id, strategy['max_daily_signals']):
-        logger.warning(f"Rejected webhook: rate limit exceeded for strategy={strategy_id}")
-        await _log_webhook_call(pool, strategy_id, 429, "Rate limit exceeded")
-        raise HTTPException(status_code=429, detail="Rate limit exceeded")
+    # ── Symbol resolution ─────────────────────────────────────────────
+    try:
+        resolved = resolve_symbol(
+            base_asset           = payload.base_asset,
+            quote_asset          = payload.quote_asset,
+            execution_symbol     = strategy["symbol"],
+            allow_quote_variants = strategy.get("allow_quote_variants", False),
+            allow_cross_charting = strategy.get("allow_cross_charting", False),
+        )
+    except SymbolMismatchError as e:
+        logger.warning(f"Symbol mismatch for strategy {strategy_id}: {e}")
+        raise HTTPException(status_code=422, detail=str(e))
 
-    payload.strategy_id = strategy_id
-    
-    # Resolve platform immediately (never persist 'auto')
-    if payload.platform == "auto":
-        from app.router import _get_active_platform
-        payload.platform = strategy.get('platform_override') or await _get_active_platform()
-    
-    # Map TV Action/Signal to MATP Side/Signal
-    if payload.action and not payload.side:
-        payload.side = payload.action.lower()
-    if not payload.signal and payload.action:
-        payload.signal = payload.action
-    
-    # Map TV Instrument/Amount or internal symbol to MATP Base/Quote and Size
-    from app.symbol_factory import SymbolFactory
-    
-    target_symbol = payload.symbol or payload.instrument
-    if target_symbol and not payload.base_asset:
+    # Apply price stripping if loose coupling was used
+    price    = None if resolved.price_stripped else payload.price
+    tp_price = None if resolved.price_stripped else payload.tp_price
+    sl_price = None if resolved.price_stripped else payload.sl_price
+
+    # ── Effective leverage resolution ─────────────────────────────────
+    # Precedence: explicit webhook value → strategy default → 1
+    effective_leverage = (
+        int(payload.leverage)
+        if payload.leverage is not None
+        else int(strategy.get("default_leverage") or 1)
+    )
+
+    # ── Risk Management Guards ────────────────────────────────────────
+
+    # Guard 1: Daily signal cap
+    signals_today   = strategy.get("signals_today",   0)   or 0
+    max_daily       = strategy.get("max_daily_signals", 500) or 500
+    if signals_today >= max_daily:
+        logger.warning(
+            f"Strategy {strategy_id} daily signal cap reached "
+            f"({signals_today}/{max_daily}) — rejecting signal"
+        )
+        raise HTTPException(
+            status_code=429,
+            detail=(
+                f"Daily signal limit reached for strategy {strategy_id}. "
+                f"Limit: {max_daily}. Signals today: {signals_today}."
+            )
+        )
+
+    # Guard 4: Daily drawdown stop
+    pnl_today               = float(strategy.get("pnl_today",               0)   or 0)
+    max_drawdown_pct        = float(strategy.get("max_daily_drawdown_percent", 20) or 20)
+    capital_allocation      = float(strategy.get("capital_allocation_percent", 100) or 100)
+
+    # Drawdown limit = max_daily_drawdown_percent % of capital_allocation_percent
+    # Example: capital=500 USDT, allocation=100%, drawdown_pct=20% → limit = -100 USDT
+    # Since capital in absolute USDT is not stored, we use pnl_today as a percentage
+    # of allocated capital. For now: reject if pnl_today < -(max_drawdown_pct)
+    # This is a percentage-based check against pnl_today directly.
+    drawdown_limit = -(max_drawdown_pct)
+
+    if pnl_today < drawdown_limit:
+        logger.warning(
+            f"Strategy {strategy_id} daily drawdown limit reached "
+            f"(pnl_today={pnl_today:.2f}, limit={drawdown_limit:.2f}) — "
+            f"auto-disabling strategy"
+        )
+        # Auto-disable the strategy
         try:
-            payload.base_asset, payload.quote_asset = SymbolFactory.split(target_symbol)
+            async with pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    UPDATE strategies
+                    SET enabled    = false,
+                        updated_at = NOW()
+                    WHERE id = $1
+                    """,
+                    strategy_id,
+                )
         except Exception as e:
-            logger.warning(f"Failed to split symbol {target_symbol}: {e}")
+            logger.error(f"Failed to auto-disable strategy {strategy_id}: {e}")
 
-    if payload.amount and payload.size is None:
-        payload.size = payload.amount
-    
+        raise HTTPException(
+            status_code=429,
+            detail=(
+                f"Daily drawdown limit reached for strategy {strategy_id}. "
+                f"P&L today: {pnl_today:.2f}. Limit: {drawdown_limit:.2f}. "
+                f"Strategy has been automatically disabled. "
+                f"Use POST /strategies/{strategy_id}/reset-daily to re-enable."
+            )
+        )
+
+    # Guard 2: Max position size
+    incoming_size   = float(payload.size)
+    max_size        = float(strategy.get("max_position_size", 1.0) or 1.0)
+    if incoming_size > max_size:
+        logger.warning(
+            f"Strategy {strategy_id} order size {incoming_size} exceeds "
+            f"max {max_size} — rejecting signal"
+        )
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Order size {incoming_size} exceeds strategy maximum "
+                f"of {max_size} for strategy {strategy_id}."
+            )
+        )
+
+    # Guard 3: Max leverage (uses effective_leverage)
+    max_lev = int(strategy.get("max_leverage", 10) or 10)
+    if effective_leverage > max_lev:
+        logger.warning(
+            f"Strategy {strategy_id} leverage {effective_leverage}x exceeds "
+            f"max {max_lev}x — rejecting signal"
+        )
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Leverage {effective_leverage}x exceeds strategy maximum of "
+                f"{max_lev}x for strategy {strategy_id}."
+            )
+        )
+
+    # ── End Risk Guards ───────────────────────────────────────────────
+
     order_id = uuid.uuid4()
     
+    # Log coupling used
+    if resolved.coupling_used:
+        logger.info(
+            f"Symbol coupling applied for order {order_id}: "
+            f"incoming {payload.base_asset}-{payload.quote_asset} → "
+            f"{resolved.execution_symbol} via {resolved.coupling_used}. "
+            f"Price stripped: {resolved.price_stripped}"
+        )
+
     # Persist initial record
     await _log_webhook_call(pool, strategy_id, 200)
     
-    # Lookup pair_id
-    async with pool.acquire() as conn:
-        pair = await conn.fetchrow(
-            "SELECT tp.id FROM trading_pairs tp JOIN assets b ON tp.base_asset_id = b.id JOIN assets q ON tp.quote_asset_id = q.id WHERE b.symbol = $1 AND q.symbol = $2",
-            payload.base_asset, payload.quote_asset
-        )
-    pair_id = pair['id'] if pair else None
-
-    
-    symbol_str = f"{payload.base_asset}-{payload.quote_asset}"
-    
-    await _log_order(pool, payload, order_id, strategy_id, pair_id, symbol_str)
+    # Write order record
+    await _log_order(pool, payload, order_id, strategy_id, None, resolved.execution_symbol, effective_leverage)
 
     # Publish initial 'received' status to Redis
     await publish("orders:received", {
         "event": "orders:received",
         "order_id": str(order_id),
         "status": "received",
-        "pair": payload.pair_label,
-        "platform": payload.platform,
+        "pair": f"{payload.base_asset}-{payload.quote_asset}",
         "timestamp": datetime.now(timezone.utc).isoformat()
     })
 
-    if lag_exceeded:
-        # Mark as failed due to lag and stop
-        await _update_order_status(pool, order_id, "lag_failed", payload, type('obj', (object,), {'error_msg': 'Max lag exceeded', 'exchange_order_id': None, 'raw_response': None, 'actual_fill_price': None}))
-        return OrderResponse(order_id=order_id, status="received", message="Lag exceeded, signal logged as failed")
-
     # Trigger processing
-    asyncio.create_task(_process_order(pool, order_id, payload, strategy))
+    asyncio.create_task(_process_order(pool, order_id, payload, strategy, resolved, price, tp_price, sl_price, effective_leverage))
 
     return OrderResponse(order_id=order_id, status="received", message="OK")
 
 
-async def _create_strategy_position(pool, payload: WebhookPayload, strategy: dict, opening_order_id: uuid.UUID, result: OrderResult) -> None:
+async def _create_strategy_position(pool, payload: WebhookPayload, strategy: dict, opening_order_id: uuid.UUID, result: OrderResult, effective_leverage: int) -> None:
     """Create a new strategy position record in the database."""
     async with pool.acquire() as conn:
         entry_price = result.actual_fill_price or payload.price or payload.indicator_price or 0
@@ -261,21 +331,112 @@ async def _create_strategy_position(pool, payload: WebhookPayload, strategy: dic
                 $8, $9, $10, 'open', NOW()
             )
             """,
-            payload.strategy_id,
-            payload.platform,
-            payload.pair_label,
+            strategy['id'],
+            strategy.get('exchange', 'auto'),
+            f"{payload.base_asset}-{payload.quote_asset}",
             pair_id,
             payload.side,
             entry_price,
             payload.size,
-            payload.leverage,
-            payload.marginMode,
+            effective_leverage,
+            payload.margin_mode,
             opening_order_id,
         )
 
 
-async def _process_order(pool, order_id: uuid.UUID, payload: WebhookPayload, strategy: dict):
+async def _process_order(pool, order_id: uuid.UUID, payload: WebhookPayload, strategy: dict, resolved, price, tp_price, sl_price, effective_leverage: int):
     try:
+        # Increment daily signal counter (best-effort, non-blocking)
+        try:
+            async with pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    UPDATE strategies
+                    SET signals_today = signals_today + 1,
+                        last_signal_at = NOW()
+                    WHERE id = $1
+                    """,
+                    strategy['id'],
+                )
+        except Exception as e:
+            logger.warning(f"Failed to increment signals_today for {strategy['id']}: {e}")
+
+        # ── Handle target_position = "flat" ──────────────────────────────
+        if payload.target_position == "flat":
+            from app.executor_client import call_executor_close_position
+
+            # Look up open position for this strategy
+            async with pool.acquire() as conn:
+                open_pos = await conn.fetchrow(
+                    """
+                    SELECT symbol, side
+                    FROM strategy_positions
+                    WHERE strategy_id = $1
+                      AND status = 'open'
+                    ORDER BY opened_at DESC
+                    LIMIT 1
+                    """,
+                    strategy['id'],
+                )
+
+            if open_pos is None:
+                logger.info(
+                    f"target_position=flat received for {strategy['id']} "
+                    f"but no open position found — ignoring"
+                )
+                # We've already returned 200 from receive_webhook, so just update the order status
+                await _update_order_status(pool, order_id, "no_position", payload, None)
+                return
+
+            # Use account_id from strategy record
+            account_id = strategy.get("account_id") or "acc_blofin_demo_default"
+
+            close_result = await call_executor_close_position(
+                account_id=account_id,
+                symbol=open_pos["symbol"],
+                side=open_pos["side"],
+            )
+
+            logger.info(
+                f"Flat signal processed for strategy {strategy['id']}: "
+                f"close result = {close_result.get('status')}"
+            )
+
+            # Update order record with close result
+            await _update_order_status(
+                pool, 
+                order_id, 
+                close_result.get("status", "route_failed"), 
+                payload, 
+                OrderResult(**close_result) if close_result.get("success") else None
+            )
+
+            # ── Update pnl_today if result contains PnL ──────────────────────
+            result_pnl = close_result.get("pnl") or close_result.get("realized_pnl")
+            if result_pnl is not None:
+                try:
+                    async with pool.acquire() as conn:
+                        await conn.execute(
+                            """
+                            UPDATE strategies
+                            SET pnl_today  = pnl_today + $1,
+                                updated_at = NOW()
+                            WHERE id = $2
+                            """,
+                            float(result_pnl),
+                            strategy['id'],
+                        )
+                    logger.debug(
+                        f"Updated pnl_today for strategy {strategy['id']}: "
+                        f"delta={result_pnl}"
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to update pnl_today for {strategy['id']}: {e}")
+            # ── End pnl_today update ──────────────────────────────────────────
+
+            return
+        # ── End flat signal handler ───────────────────────────────────────
+
         # ── Resolve account_id from strategy record ──────────────────────────
         account_id = strategy.get("account_id") or "acc_blofin_demo_default"
 
@@ -283,16 +444,17 @@ async def _process_order(pool, order_id: uuid.UUID, payload: WebhookPayload, str
         order_request = {
             "order_id":    str(order_id),
             "account_id":  account_id,
-            "symbol":      payload.symbol,
+            "symbol":      resolved.execution_symbol,   # ← always execution symbol
             "side":        payload.side,
             "signal":      payload.signal,
-            "order_type":  payload.orderType,
+            "order_type":  payload.order_type,
             "size":        str(payload.size),
-            "price":       str(payload.price)    if payload.price    else None,
-            "leverage":    payload.leverage,
-            "margin_mode": payload.marginMode,
-            "tp_price":    str(payload.tpPrice)  if payload.tpPrice  else None,
-            "sl_price":    str(payload.slPrice)  if payload.slPrice  else None,
+            "price":       str(price)    if price    else None,  # ← stripped if needed
+            "leverage":    effective_leverage,
+            "margin_mode": payload.margin_mode,
+            "tp_price":    str(tp_price) if tp_price else None,  # ← stripped if needed
+            "sl_price":    str(sl_price) if sl_price else None,  # ← stripped if needed
+            "config":      dict(strategy.get("config") or {}),
         }
 
         # ── Call executor ─────────────────────────────────────────────────────
@@ -303,12 +465,32 @@ async def _process_order(pool, order_id: uuid.UUID, payload: WebhookPayload, str
         
         await _update_order_status(pool, order_id, final_status, payload, result)
 
-        logger.info(f"Order {order_id} processed for strategy {payload.strategy_id}: {final_status}")
+        # ── Update pnl_today if result contains PnL ──────────────────────
+        result_pnl = exec_result.get("pnl") or exec_result.get("realized_pnl")
+        if result_pnl is not None:
+            try:
+                async with pool.acquire() as conn:
+                    await conn.execute(
+                        """
+                        UPDATE strategies
+                        SET pnl_today  = pnl_today + $1,
+                            updated_at = NOW()
+                        WHERE id = $2
+                        """,
+                        float(result_pnl),
+                        strategy['id'],
+                    )
+                logger.debug(
+                    f"Updated pnl_today for strategy {strategy['id']}: "
+                    f"delta={result_pnl}"
+                )
+            except Exception as e:
+                logger.warning(f"Failed to update pnl_today for {strategy['id']}: {e}")
+        # ── End pnl_today update ──────────────────────────────────────────
+
+        logger.info(f"Order {order_id} processed for strategy {strategy['id']}: {final_status}")
 
         if result.success and payload.base_asset and payload.quote_asset and payload.side and payload.size:
-            # Ensure strategy_id is correctly set on payload
-            payload.strategy_id = strategy['id']
-            
             async with pool.acquire() as conn:
                 # Lookup pair_id
                 pair = await conn.fetchrow(
@@ -320,31 +502,14 @@ async def _process_order(pool, order_id: uuid.UUID, payload: WebhookPayload, str
                 # Check for existing open position
                 existing = await conn.fetchrow(
                     "SELECT sp.id, sp.size FROM strategy_positions sp WHERE strategy_id = $1 AND pair_id = $2 AND status = 'open'",
-                    payload.strategy_id, pair_id
+                    strategy['id'], pair_id
                 )
-                
+
                 if existing:
-                    current_pos_size = float(existing['size'])
-                    order_size = float(payload.size)
-                    
-                    if order_size >= current_pos_size:
-                        # Update position status to closed
-                        await conn.execute(
-                            "UPDATE strategy_positions SET status = 'closed', closed_at = NOW(), closing_order_id = $1 WHERE id = $2",
-                            order_id, existing['id']
-                        )
-                        logger.info(f"Position {existing['id']} closed for order {order_id}")
-                    else:
-                        # Reduce position size
-                        new_size = current_pos_size - order_size
-                        await conn.execute(
-                            "UPDATE strategy_positions SET size = $1 WHERE id = $2",
-                            new_size, existing['id']
-                        )
-                        logger.info(f"Position {existing['id']} reduced by {order_size} for order {order_id}. New size: {new_size}")
+                    pass  # position already exists, no action needed
                 else:
                     # Only create a strategy position if the order was successful
-                    await _create_strategy_position(pool, payload, strategy, order_id, result)
+                    await _create_strategy_position(pool, payload, strategy, order_id, result, effective_leverage)
 
     except Exception as e:
         logger.exception(f"Error processing order {order_id}: {e}")

@@ -16,24 +16,38 @@ Replace `<strategy_id>` with the ID of your strategy as configured in the MATP D
 
 ## Alert Message Format
 
-Paste this JSON into the TradingView alert **Message** field. It is recommended to use the `signalToken` field for authentication.
+Paste this JSON into the TradingView alert **Message** field.
 
 ```json
 {
-  "symbol": "{{ticker}}",
-  "side": "buy",
-  "signal": "open_long",
-  "orderType": "market",
-  "size": "0.01",
-  "leverage": 10,
-  "marginMode": "cross",
-  "platform": "auto",
-  "indicator_price": "{{close}}",
-  "signal_source": "tradingview",
-  "timestamp": "{{timenow}}",
-  "signalToken": "YOUR_STRATEGY_WEBHOOK_SECRET"
+  "base_asset":  "{{syminfo.basecurrency}}",
+  "quote_asset": "{{syminfo.currency}}",
+  "side":        "buy",
+  "signal":      "open_long",
+  "order_type":  "market",
+  "size":        "0.01",
+  "leverage":    10,
+  "margin_mode": "cross",
+  "timestamp":   "{{timenow}}",
+  "token":       "YOUR_STRATEGY_WEBHOOK_SECRET"
 }
 ```
+
+## Symbol Coupling
+
+MATP can accept signals from chart symbols that differ from the execution symbol configured on the strategy.
+
+### Allow Quote Variants
+Enable this flag on a strategy to accept signals where the quote currency differs but is economically equivalent:
+- Acceptable variants: USD, USDC, USDT, PERP
+- Example: BTC-USDC signal → executes as BTC-USDT
+- **Price parameters are automatically stripped** — order executes as market order
+
+### Allow Cross-Charting
+Enable this flag to accept signals from any chart with the same base asset, regardless of quote currency:
+- Example: BTC-EUR chart signal → executes as BTC-USDT
+- ⚠️ Price parameters are always stripped when this flag is active
+- Use with caution — enable only when trading index charts
 
 ## Signal Values
 
@@ -43,6 +57,12 @@ Paste this JSON into the TradingView alert **Message** field. It is recommended 
 | `close_long` | `sell` | Close an existing long |
 | `open_short` | `sell` | Enter a short position |
 | `close_short` | `buy` | Close an existing short |
+
+## Target Position
+
+| `target_position` | Description |
+|-------------------|-------------|
+| `flat` | Closes any open position for the strategy regardless of side |
 
 ## Platform Routing
 
@@ -59,29 +79,29 @@ Create two separate TradingView alerts — one for entry, one for exit:
 **Open Long alert:**
 ```json
 {
-  "symbol": "{{ticker}}",
-  "side": "buy",
-  "signal": "open_long",
-  "orderType": "market",
-  "size": "0.01",
-  "leverage": 10,
-  "indicator_price": "{{close}}",
-  "timestamp": "{{timenow}}",
-  "signalToken": "YOUR_STRATEGY_WEBHOOK_SECRET"
+  "base_asset":  "{{syminfo.basecurrency}}",
+  "quote_asset": "{{syminfo.currency}}",
+  "side":        "buy",
+  "signal":      "open_long",
+  "order_type":  "market",
+  "size":        "0.01",
+  "leverage":    10,
+  "timestamp":   "{{timenow}}",
+  "token":       "YOUR_STRATEGY_WEBHOOK_SECRET"
 }
 ```
 
 **Close Long alert:**
 ```json
 {
-  "symbol": "{{ticker}}",
-  "side": "sell",
-  "signal": "close_long",
-  "orderType": "market",
-  "size": "0.01",
-  "indicator_price": "{{close}}",
-  "timestamp": "{{timenow}}",
-  "signalToken": "YOUR_STRATEGY_WEBHOOK_SECRET"
+  "base_asset":  "{{syminfo.basecurrency}}",
+  "quote_asset": "{{syminfo.currency}}",
+  "side":        "sell",
+  "signal":      "close_long",
+  "order_type":  "market",
+  "size":        "0.01",
+  "timestamp":   "{{timenow}}",
+  "token":       "YOUR_STRATEGY_WEBHOOK_SECRET"
 }
 ```
 
@@ -90,10 +110,11 @@ Create two separate TradingView alerts — one for entry, one for exit:
 | Field | Description |
 |-------|-------------|
 | `price` | Required for limit orders |
-| `tpPrice` | Take profit trigger price |
-| `slPrice` | Stop loss trigger price |
-| `marginMode` | `"cross"` (default) or `"isolated"` |
+| `tp_price` | Take profit trigger price |
+| `sl_price` | Stop loss trigger price |
+| `margin_mode` | `"cross"` (default) or `"isolated"` |
 | `indicator_price` | The price of the indicator at signal time |
+| `signal_source` | Source of the signal (e.g., `"tradingview"`) |
 | `signal_metadata` | JSON object for custom data |
 
 ## Testing with curl
@@ -102,14 +123,15 @@ Create two separate TradingView alerts — one for entry, one for exit:
 curl -X POST http://localhost/api/listener/webhook/strat-001 \
   -H "Content-Type: application/json" \
   -d '{
-    "symbol": "BTC-USDT",
+    "base_asset": "BTC",
+    "quote_asset": "USDT",
     "side": "buy",
     "signal": "open_long",
-    "orderType": "market",
+    "order_type": "market",
     "size": "0.001",
     "leverage": 10,
     "indicator_price": 65000,
     "timestamp": "2026-05-20T10:00:00Z",
-    "signalToken": "STRATEGY_SECRET_TOKEN"
+    "token": "STRATEGY_SECRET_TOKEN"
   }'
 ```

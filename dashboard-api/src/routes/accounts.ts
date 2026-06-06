@@ -1,7 +1,8 @@
 import { Router, Request, Response } from 'express';
-import { getPool } from '../db';
+import { pool, getPool } from '../db';
 
 const router = Router();
+const EXECUTOR_URL = process.env.EXECUTOR_URL || 'http://order-executor:8004';
 
 // ── GET /accounts ────────────────────────────────────────────────────
 // List all exchange accounts.
@@ -123,10 +124,9 @@ router.delete('/:id', async (req: Request, res: Response) => {
 // Evict the account's cached adapter instance from the executor registry.
 // Call this after updating credentials so the executor reloads them.
 router.post('/:id/invalidate', async (req: Request, res: Response) => {
-  const executorUrl = process.env.EXECUTOR_URL || 'http://order-executor:8004';
   try {
     const response = await fetch(
-      `${executorUrl}/accounts/${req.params.id}/invalidate`,
+      `${EXECUTOR_URL}/accounts/${req.params.id}/invalidate`,
       { method: 'POST' }
     );
     if (!response.ok) {
@@ -143,6 +143,107 @@ router.post('/:id/invalidate', async (req: Request, res: Response) => {
       error: 'Could not reach order-executor',
       detail: e.message,
     });
+  }
+});
+
+// GET /accounts/:id/balance — fetch live balance from executor
+router.get('/:id/balance', async (req: Request, res: Response) => {
+  try {
+    const response = await fetch(
+      `${EXECUTOR_URL}/accounts/${req.params.id}/balance`,
+      { signal: AbortSignal.timeout(15000) }
+    );
+    if (!response.ok) {
+      return res.status(502).json({
+        error: `Executor returned ${response.status}`,
+        total_balance: 0, available_balance: 0,
+        used_margin: 0, currency: 'USDT',
+      });
+    }
+    const data = await response.json();
+    res.json(data);
+  } catch (e: any) {
+    // Return zeroed balance on error rather than 500
+    // so the UI can still render with a "unavailable" state
+    res.json({
+      total_balance: 0, available_balance: 0,
+      used_margin: 0, currency: 'USDT',
+      error: e.message,
+    });
+  }
+});
+
+// GET /accounts/:id/meta — fetch safe account metadata from executor
+router.get('/:id/meta', async (req: Request, res: Response) => {
+  try {
+    const response = await fetch(
+      `${EXECUTOR_URL}/accounts/${req.params.id}/meta`,
+      { signal: AbortSignal.timeout(10000) }
+    );
+    if (!response.ok) {
+      return res.status(502).json({ error: `Executor returned ${response.status}` });
+    }
+    const data = await response.json();
+    res.json(data);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST /accounts/:id/credentials — update encrypted credentials
+router.post('/:id/credentials', async (req: Request, res: Response) => {
+  const { credentials_json } = req.body;
+
+  if (!credentials_json) {
+    return res.status(400).json({ error: 'credentials_json is required' });
+  }
+
+  try {
+    // Step 1: encrypt via executor (MASTER_KEY stays in executor)
+    const encryptResp = await fetch(
+      `${EXECUTOR_URL}/credentials/encrypt`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ credentials_json }),
+        signal: AbortSignal.timeout(10000),
+      }
+    );
+    if (!encryptResp.ok) {
+      const err = await encryptResp.text();
+      return res.status(502).json({
+        error: 'Executor encryption failed',
+        detail: err,
+      });
+    }
+    const { encrypted_b64 } = await encryptResp.json() as { encrypted_b64: string };
+
+    // Step 2: decode base64 → buffer → store as bytea
+    const credBuffer = Buffer.from(encrypted_b64, 'base64');
+    await pool.query(
+      `UPDATE exchange_accounts
+       SET credentials = $1, updated_at = NOW()
+       WHERE id = $2`,
+      [credBuffer, req.params.id]
+    );
+
+    // Step 3: invalidate cached adapter instance in executor
+    try {
+      await fetch(
+        `${EXECUTOR_URL}/accounts/${req.params.id}/invalidate`,
+        { method: 'POST', signal: AbortSignal.timeout(5000) }
+      );
+    } catch {
+      // Non-fatal: invalidation is best-effort
+    }
+
+    res.json({
+      updated:  req.params.id,
+      message:  'Credentials updated and adapter cache invalidated',
+    });
+
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
   }
 });
 

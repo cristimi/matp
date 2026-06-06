@@ -5,12 +5,14 @@ import DashboardPage from './pages/Dashboard';
 import OrdersPage from './pages/Orders';
 import PositionsPage from './pages/Positions';
 import StrategiesPage from './pages/Strategies';
+import AccountsPage from './pages/Accounts';
 import StrategyDetail from './pages/StrategyDetail';
 import SettingsPage from './pages/Settings';
 import { useNavCounts } from './hooks/useNavCounts';
 
 const NAV = [
   { to: '/strategies', label: 'Strategies', icon: '⚙️' },
+  { to: '/accounts',   label: 'Accounts',   icon: '🔑' },
   { to: '/positions',  label: 'Positions',  icon: '📈' },
   { to: '/orders',     label: 'Orders',     icon: '📋' },
   { to: '/settings',   label: 'Settings',   icon: '🔧' },
@@ -28,7 +30,7 @@ function ThemeToggle({ dark, toggle }: { dark: boolean; toggle: () => void }) {
   );
 }
 
-function Sidebar({ dark, toggleTheme, isCollapsed, toggleCollapsed }: { dark: boolean; toggleTheme: () => void; isCollapsed: boolean; toggleCollapsed: () => void }) {
+function Sidebar({ dark, toggleTheme, isCollapsed, toggleCollapsed, hasFailedOrders }: { dark: boolean; toggleTheme: () => void; isCollapsed: boolean; toggleCollapsed: () => void; hasFailedOrders: boolean }) {
   const navigate = useNavigate();
   const counts = useNavCounts();
 
@@ -44,8 +46,11 @@ function Sidebar({ dark, toggleTheme, isCollapsed, toggleCollapsed }: { dark: bo
         );
       case 'Orders':
         return (
-          <span>
-            {label} ({counts.orders.filled}{counts.orders.failed > 0 ? `/<span className="text-red-500">${counts.orders.failed}</span>` : ''})
+          <span className="flex items-center gap-1.5">
+            {label}
+            {hasFailedOrders && (
+              <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" title="Failed orders detected" />
+            )}
           </span>
         );
       default:
@@ -96,7 +101,7 @@ function Sidebar({ dark, toggleTheme, isCollapsed, toggleCollapsed }: { dark: bo
   );
 }
 
-function BottomNav({ dark, toggleTheme, counts }: { dark: boolean; toggleTheme: () => void; counts: any }) {
+function BottomNav({ dark, toggleTheme, counts, hasFailedOrders }: { dark: boolean; toggleTheme: () => void; counts: any; hasFailedOrders: boolean }) {
   return (
     <nav className="fixed bottom-0 left-0 right-0 z-50 md:hidden bg-white dark:bg-gray-900 border-t border-gray-200 dark:border-gray-800 flex">
       {NAV.map(({ to, label, icon }) => (
@@ -114,8 +119,8 @@ function BottomNav({ dark, toggleTheme, counts }: { dark: boolean; toggleTheme: 
             {label === 'Positions' && counts.positions.stale > 0 && (
               <span className="w-1.5 h-1.5 rounded-full bg-red-500" />
             )}
-            {label === 'Orders' && counts.orders.failed > 0 && (
-              <span className="w-1.5 h-1.5 rounded-full bg-red-500" />
+            {label === 'Orders' && hasFailedOrders && (
+              <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse" />
             )}
           </span>
         </NavLink>
@@ -130,6 +135,33 @@ export default function App() {
     return saved ? saved === 'dark' : window.matchMedia('(prefers-color-scheme: dark)').matches;
   });
   const [isCollapsed, setIsCollapsed] = useState(false);
+  const [hasFailedOrders, setHasFailedOrders] = useState(false);
+
+  useEffect(() => {
+    const check = async () => {
+      try {
+        // Checking for both lag_failed and route_failed (backend strings)
+        const res  = await fetch('/api/dashboard/orders?limit=1&status=lag_failed');
+        const data = await res.json();
+        const lagFailed = (data.items ?? []).length > 0;
+        
+        if (lagFailed) {
+          setHasFailedOrders(true);
+          return;
+        }
+
+        const res2 = await fetch('/api/dashboard/orders?limit=1&status=route_failed');
+        const data2 = await res2.json();
+        const routeFailed = (data2.items ?? []).length > 0;
+        setHasFailedOrders(routeFailed);
+      } catch {
+        setHasFailedOrders(false);
+      }
+    };
+    check();
+    const interval = setInterval(check, 30000);
+    return () => clearInterval(interval);
+  }, []);
 
   useEffect(() => {
     if (dark) {
@@ -147,7 +179,7 @@ export default function App() {
 
   return (
     <div className="flex min-h-screen bg-gray-50 dark:bg-gray-950 transition-colors duration-200">
-      <Sidebar dark={dark} toggleTheme={toggleTheme} isCollapsed={isCollapsed} toggleCollapsed={toggleCollapsed} />
+      <Sidebar dark={dark} toggleTheme={toggleTheme} isCollapsed={isCollapsed} toggleCollapsed={toggleCollapsed} hasFailedOrders={hasFailedOrders} />
       <main className="flex-1 overflow-auto pb-20 md:pb-0">
         <Routes>
           <Route path="/"           element={<DashboardPage />} />
@@ -156,11 +188,12 @@ export default function App() {
           <Route path="/strategies" element={<StrategiesPage />} />
           <Route path="/strategies/new" element={<StrategyForm />} />
           <Route path="/strategies/:id/edit" element={<StrategyForm />} />
+          <Route path="/accounts"   element={<AccountsPage />} />
           <Route path="/strategy/:id" element={<StrategyDetail />} />
           <Route path="/settings"   element={<SettingsPage />} />
         </Routes>
       </main>
-      <BottomNav dark={dark} toggleTheme={toggleTheme} counts={counts} />
+      <BottomNav dark={dark} toggleTheme={toggleTheme} counts={counts} hasFailedOrders={hasFailedOrders} />
     </div>
   );
 }

@@ -14,140 +14,351 @@ const PERIOD_FILTER: Record<string, string> = {
 router.get('/', async (_req: Request, res: Response) => {
   try {
     const query = `
-      SELECT s.*, 
-             b.symbol as base_asset, 
-             q.symbol as quote_asset,
-             ea.exchange AS account_exchange,
-             ea.mode AS account_mode,
-             ea.label AS account_label,
-             (SELECT COUNT(*)::int FROM orders o WHERE o.pair_id = s.pair_id) as total_signals,
-             (SELECT COUNT(*)::int FROM orders o WHERE o.pair_id = s.pair_id AND o.status = 'filled') as filled_orders
+      SELECT
+        s.*,
+        ea.exchange        AS account_exchange,
+        ea.mode            AS account_mode,
+        ea.label           AS account_label,
+        COALESCE((
+          SELECT COUNT(*)
+          FROM strategy_positions sp
+          WHERE sp.strategy_id = s.id
+          AND sp.status = 'open'
+        ), 0)::int         AS open_positions_count
       FROM strategies s
-      LEFT JOIN trading_pairs tp ON s.pair_id = tp.id
-      LEFT JOIN assets b ON tp.base_asset_id = b.id
-      LEFT JOIN assets q ON tp.quote_asset_id = q.id
       LEFT JOIN exchange_accounts ea ON ea.id = s.account_id
+      WHERE COALESCE(s.is_deleted, false) = false
       ORDER BY s.created_at DESC
     `;
     const { rows } = await getPool().query(query);
-    const strategies = rows.map(r => ({
-      ...r,
-      pair: { base: r.base_asset || '', quote: r.quote_asset || '', label: r.base_asset ? `${r.base_asset}/${r.quote_asset}` : r.symbol }
-    }));
-    res.json(strategies);
+    res.json(rows);
   } catch (err) {
     console.error('Error fetching strategies:', err);
     res.status(500).json({ error: 'Database error fetching strategies' });
   }
 });
 
+// POST /strategies — create a new strategy
 router.post('/', async (req: Request, res: Response) => {
-  const { id, name, type, class: className, symbol, interval, platform = 'auto', config_yaml = '' } = req.body;
-  if (!id || !name || !type || !className || !symbol || !interval) {
-    return res.status(400).json({ error: 'Missing required fields (id, name, type, class, symbol, interval)' });
+  const {
+    name,
+    symbol,
+    account_id,
+    interval         = '1h',
+    description      = '',
+    default_leverage           = 1,
+    max_position_size          = 1.0,
+    max_leverage               = 10,
+    max_daily_signals          = 500,
+    max_daily_drawdown_percent = 20,
+    capital_allocation_percent = 100,
+    allow_quote_variants       = false,
+    allow_cross_charting       = false,
+  } = req.body;
+
+  if (!name || !symbol || !account_id) {
+    return res.status(400).json({
+      error: 'Missing required fields',
+      required: ['name', 'symbol', 'account_id'],
+    });
   }
 
+  // Validate account exists and is active
   try {
-    const webhookSecret = crypto.randomBytes(32).toString('hex');
-    
-    // Try to find pair_id
-    const [base, quote] = symbol.includes('/') ? symbol.split('/') : symbol.includes('-') ? symbol.split('-') : [symbol, 'USDT'];
-    const pairQuery = `
-      SELECT tp.id FROM trading_pairs tp
-      JOIN assets b ON tp.base_asset_id = b.id
-      JOIN assets q ON tp.quote_asset_id = q.id
-      WHERE b.symbol = $1 AND q.symbol = $2
-    `;
-    const pairRes = await getPool().query(pairQuery, [base, quote]);
-    const pairId = pairRes.rows.length > 0 ? pairRes.rows[0].id : null;
+    const acct = await getPool().query(
+      `SELECT id FROM exchange_accounts WHERE id = $1 AND is_active = true`,
+      [account_id]
+    );
+    if (acct.rowCount === 0) {
+      return res.status(400).json({
+        error: `Account not found or inactive: ${account_id}`,
+      });
+    }
+  } catch (e: any) {
+    return res.status(500).json({ error: e.message });
+  }
 
-    const query = `
-      INSERT INTO strategies (
-        id, name, type, "class", symbol, interval, platform, config_yaml, webhook_secret, pair_id
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-      RETURNING *
-    `;
-    const { rows } = await getPool().query(query, [
-      id, name, type, className, symbol, interval, platform, config_yaml, webhookSecret, pairId
-    ]);
-    res.status(201).json(rows[0]);
-  } catch (err: any) {
-    console.error('Error creating strategy:', err);
-    res.status(500).json({ error: 'Database error', detail: err.message });
+  // Generate ID from name
+  const slug = name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, 30);
+  const suffix       = crypto.randomBytes(2).toString('hex');
+  const id           = `${slug}-${suffix}`;
+  const webhookSecret = crypto.randomBytes(16).toString('hex');
+
+  // Normalise symbol: accept "BTC/USDT" or "BTCUSDT", store as "BTC-USDT"
+  const normalisedSymbol = symbol
+    .toUpperCase()
+    .replace('/', '-');
+
+  try {
+    await getPool().query(
+      `INSERT INTO strategies (
+        id, name, symbol, account_id, interval, description,
+        class, config_yaml,
+        webhook_secret, webhook_enabled,
+        default_leverage,
+        max_position_size, max_leverage, max_daily_signals,
+        max_daily_drawdown_percent, capital_allocation_percent,
+        allow_quote_variants, allow_cross_charting,
+        enabled
+      ) VALUES (
+        $1, $2, $3, $4, $5, $6,
+        'webhook', '',
+        $7, true,
+        $8, $9, $10, $11,
+        $12, $13,
+        $14, $15,
+        true
+      )`,
+      [
+        id, name, normalisedSymbol, account_id, interval, description,
+        webhookSecret,
+        default_leverage,
+        max_position_size, max_leverage, max_daily_signals,
+        max_daily_drawdown_percent, capital_allocation_percent,
+        allow_quote_variants, allow_cross_charting,
+      ]
+    );
+
+    // Return the created strategy with the webhook secret
+    // (only returned here — not in GET endpoints)
+    res.status(201).json({
+      id,
+      name,
+      symbol:         normalisedSymbol,
+      account_id,
+      interval,
+      enabled:        true,
+      webhook_secret: webhookSecret,  // shown once on creation
+      allow_quote_variants,
+      allow_cross_charting,
+      message: 'Strategy created. Save the webhook_secret — it will not be shown again.',
+    });
+  } catch (e: any) {
+    if (e.code === '23505') {
+      return res.status(409).json({ error: `Strategy ID conflict: ${id}` });
+    }
+    res.status(500).json({ error: e.message });
   }
 });
 
-router.get('/:id', async (req: Request, res: Response) => {
+router.get('/comparison', async (req: Request, res: Response) => {
+  const period = (req.query.period as string) || '7d';
+  const interval = PERIOD_FILTER[period] || PERIOD_FILTER['7d'];
   try {
     const query = `
-      SELECT s.*, 
-             b.symbol as base_asset, 
-             q.symbol as quote_asset
+      SELECT 
+        s.id as strategy_id, 
+        s.name,
+        COALESCE(SUM(st.trades_count), 0)::int as trades_count,
+        COALESCE(AVG(st.win_rate), 0)::float as win_rate,
+        COALESCE(SUM(st.pnl_total), 0)::float as pnl_total,
+        COALESCE(AVG(st.max_drawdown), 0)::float as max_drawdown,
+        (SELECT COUNT(*)::int FROM strategy_positions sp WHERE sp.strategy_id = s.id AND sp.status = 'open') as open_positions
       FROM strategies s
-      LEFT JOIN trading_pairs tp ON s.pair_id = tp.id
-      LEFT JOIN assets b ON tp.base_asset_id = b.id
-      LEFT JOIN assets q ON tp.quote_asset_id = q.id
-      WHERE s.id = $1
+      LEFT JOIN strategy_stats st ON s.id = st.strategy_id AND st.period_date >= CURRENT_DATE - ${interval}
+      GROUP BY s.id, s.name
     `;
-    const { rows } = await getPool().query(query, [req.params.id]);
-    if (rows.length === 0) return res.status(404).json({ error: 'Strategy not found' });
-    
-    const strategy = {
-      ...rows[0],
-      pair: { base: rows[0].base_asset || '', quote: rows[0].quote_asset || '', label: rows[0].base_asset ? `${rows[0].base_asset}/${rows[0].quote_asset}` : rows[0].symbol }
-    };
-    res.json(strategy);
-  } catch (err: any) {
-    console.error('Error fetching strategy:', err);
+    const { rows } = await getPool().query(query);
+    res.json(rows);
+  } catch (err) {
+    console.error('Error fetching strategy comparison:', err);
     res.status(500).json({ error: 'Database error' });
   }
 });
 
-router.put('/:id', async (req: Request, res: Response) => {
-  const { id } = req.params;
-  const updatableFields = [
-    'name', 'type', 'class', 'symbol', 'interval', 'platform', 
-    'config_yaml', 'enabled', 'webhook_enabled', 'max_position_size', 
-    'max_leverage', 'max_daily_drawdown_percent', 'description'
-  ];
-  
-  const updates: string[] = [];
-  const params: any[] = [id];
-  let idx = 2;
-
-  for (const field of updatableFields) {
-    if (req.body[field] !== undefined) {
-      let dbField = field;
-      if (field === 'class') dbField = '"class"';
-      
-      updates.push(`${dbField} = $${idx++}`);
-      params.push(req.body[field]);
-    }
-  }
-
-  if (updates.length === 0) {
-    return res.status(400).json({ error: 'No fields to update' });
-  }
-
+// GET /strategies/:id/webhook-info — returns webhook URL and secret
+// Used by the edit page to display the TradingView configuration
+router.get('/:id/webhook-info', async (req: Request, res: Response) => {
   try {
-    const query = `UPDATE strategies SET ${updates.join(', ')}, updated_at = NOW() WHERE id = $1 RETURNING *`;
-    const { rows } = await getPool().query(query, params);
-    if (rows.length === 0) return res.status(404).json({ error: 'Strategy not found' });
-    res.json(rows[0]);
-  } catch (err: any) {
-    console.error('Error updating strategy:', err);
-    res.status(500).json({ error: 'Database error', detail: err.message });
+    const result = await getPool().query(
+      `SELECT id, name, symbol, webhook_secret, webhook_enabled
+       FROM strategies WHERE id = $1`,
+      [req.params.id]
+    );
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: `Strategy not found: ${req.params.id}` });
+    }
+    const s = result.rows[0];
+
+    // Determine host from request or env
+    const host = process.env.PUBLIC_HOST
+      || req.get('x-forwarded-host')
+      || req.get('host')
+      || 'localhost';
+    const protocol = req.get('x-forwarded-proto') || 'http';
+    const webhookUrl = `${protocol}://${host}/api/listener/webhook/${s.id}`;
+
+    res.json({
+      strategy_id:     s.id,
+      strategy_name:   s.name,
+      symbol:          s.symbol,
+      webhook_url:     webhookUrl,
+      webhook_secret:  s.webhook_secret,
+      webhook_enabled: s.webhook_enabled,
+    });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
   }
 });
 
+// GET /strategies/:id — single strategy with full config
+router.get('/:id', async (req: Request, res: Response) => {
+  try {
+    const result = await getPool().query(
+      `SELECT
+         s.*,
+         ea.exchange  AS account_exchange,
+         ea.mode      AS account_mode,
+         ea.label     AS account_label,
+         COALESCE((
+           SELECT COUNT(*)
+           FROM strategy_positions sp
+           WHERE sp.strategy_id = s.id
+           AND sp.status = 'open'
+         ), 0)::int   AS open_positions_count
+       FROM strategies s
+       LEFT JOIN exchange_accounts ea ON ea.id = s.account_id
+       WHERE s.id = $1`,
+      [req.params.id]
+    );
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: `Strategy not found: ${req.params.id}` });
+    }
+    res.json(result.rows[0]);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// PUT /strategies/:id — update strategy fields including coupling flags
+router.put('/:id', async (req: Request, res: Response) => {
+  const {
+    name,
+    enabled,
+    default_leverage,
+    allow_quote_variants,
+    allow_cross_charting,
+    max_position_size,
+    max_leverage,
+    max_daily_signals,
+  } = req.body;
+
+  try {
+    const result = await getPool().query(
+      `UPDATE strategies SET
+         name                  = COALESCE($1, name),
+         enabled               = COALESCE($2, enabled),
+         default_leverage      = COALESCE($3, default_leverage),
+         allow_quote_variants  = COALESCE($4, allow_quote_variants),
+         allow_cross_charting  = COALESCE($5, allow_cross_charting),
+         max_position_size     = COALESCE($6, max_position_size),
+         max_leverage          = COALESCE($7, max_leverage),
+         max_daily_signals     = COALESCE($8, max_daily_signals),
+         updated_at            = NOW()
+       WHERE id = $9
+       RETURNING id, name, enabled, default_leverage, allow_quote_variants,
+                 allow_cross_charting, symbol, account_id`,
+      [
+        name ?? null,
+        enabled ?? null,
+        default_leverage ?? null,
+        allow_quote_variants ?? null,
+        allow_cross_charting ?? null,
+        max_position_size ?? null,
+        max_leverage ?? null,
+        max_daily_signals ?? null,
+        req.params.id,
+      ]
+    );
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: `Strategy not found: ${req.params.id}` });
+    }
+    res.json(result.rows[0]);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST /strategies/:id/stop
+// Disables the strategy. If it has open positions, caller must handle
+// closing them first (checked by the UI before calling this).
+router.post('/:id/stop', async (req: Request, res: Response) => {
+  try {
+    const result = await getPool().query(
+      `UPDATE strategies
+       SET enabled = false, updated_at = NOW()
+       WHERE id = $1
+       RETURNING id, enabled`,
+      [req.params.id]
+    );
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: `Strategy not found: ${req.params.id}` });
+    }
+    res.json({ stopped: req.params.id, enabled: false });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST /strategies/:id/start — re-enable a stopped strategy
+router.post('/:id/start', async (req: Request, res: Response) => {
+  try {
+    const result = await getPool().query(
+      `UPDATE strategies
+       SET enabled = true, updated_at = NOW()
+       WHERE id = $1
+       RETURNING id, enabled`,
+      [req.params.id]
+    );
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: `Strategy not found: ${req.params.id}` });
+    }
+    res.json({ started: req.params.id, enabled: true });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// DELETE /strategies/:id — soft delete (inactive + no open positions only)
 router.delete('/:id', async (req: Request, res: Response) => {
   try {
-    const { rows } = await getPool().query('DELETE FROM strategies WHERE id = $1 RETURNING *', [req.params.id]);
-    if (rows.length === 0) return res.status(404).json({ error: 'Strategy not found' });
-    res.json({ message: 'Strategy deleted', strategy: rows[0] });
-  } catch (err: any) {
-    console.error('Error deleting strategy:', err);
-    res.status(500).json({ error: 'Database error', detail: err.message });
+    // Check strategy state
+    const check = await getPool().query(
+      `SELECT s.enabled,
+              COALESCE((
+                SELECT COUNT(*) FROM strategy_positions sp
+                WHERE sp.strategy_id = s.id AND sp.status = 'open'
+              ), 0)::int AS open_positions_count
+       FROM strategies s WHERE s.id = $1`,
+      [req.params.id]
+    );
+    if (check.rowCount === 0) {
+      return res.status(404).json({ error: `Strategy not found: ${req.params.id}` });
+    }
+    const { enabled, open_positions_count } = check.rows[0];
+    if (enabled) {
+      return res.status(409).json({
+        error: 'Cannot delete an active strategy. Stop it first.',
+      });
+    }
+    if (open_positions_count > 0) {
+      return res.status(409).json({
+        error: `Cannot delete: strategy has ${open_positions_count} open position(s).`,
+      });
+    }
+    await getPool().query(
+      `UPDATE strategies
+       SET is_deleted = true, updated_at = NOW()
+       WHERE id = $1`,
+      [req.params.id]
+    );
+    res.json({ deleted: req.params.id });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
   }
 });
 
@@ -240,28 +451,30 @@ router.post('/:id/disable', async (req: Request, res: Response) => {
   }
 });
 
-router.get('/comparison', async (req: Request, res: Response) => {
-  const period = (req.query.period as string) || '7d';
-  const interval = PERIOD_FILTER[period] || PERIOD_FILTER['7d'];
+// POST /strategies/:id/reset-daily — reset daily counters
+router.post('/:id/reset-daily', async (req: Request, res: Response) => {
   try {
-    const query = `
-      SELECT 
-        s.id as strategy_id, 
-        s.name,
-        COALESCE(SUM(st.trades_count), 0)::int as trades_count,
-        COALESCE(AVG(st.win_rate), 0)::float as win_rate,
-        COALESCE(SUM(st.pnl_total), 0)::float as pnl_total,
-        COALESCE(AVG(st.max_drawdown), 0)::float as max_drawdown,
-        (SELECT COUNT(*)::int FROM strategy_positions sp WHERE sp.strategy_id = s.id AND sp.status = 'open') as open_positions
-      FROM strategies s
-      LEFT JOIN strategy_stats st ON s.id = st.strategy_id AND st.period_date >= CURRENT_DATE - ${interval}
-      GROUP BY s.id, s.name
-    `;
-    const { rows } = await getPool().query(query);
-    res.json(rows);
-  } catch (err) {
-    console.error('Error fetching strategy comparison:', err);
-    res.status(500).json({ error: 'Database error' });
+    const result = await getPool().query(
+      `UPDATE strategies
+       SET signals_today = 0,
+           pnl_today     = 0,
+           enabled       = true,
+           updated_at    = NOW()
+       WHERE id = $1
+       RETURNING id, signals_today, pnl_today, enabled`,
+      [req.params.id]
+    );
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: `Strategy not found: ${req.params.id}` });
+    }
+    res.json({
+      reset:         req.params.id,
+      signals_today: result.rows[0].signals_today,
+      pnl_today:     result.rows[0].pnl_today,
+      enabled:       result.rows[0].enabled,
+    });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
   }
 });
 
@@ -330,4 +543,3 @@ router.get('/:id/positions', async (req: Request, res: Response) => {
 });
 
 export default router;
-

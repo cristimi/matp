@@ -25,75 +25,40 @@ class Strategy(BaseModel):
 
 
 class WebhookPayload(BaseModel):
-    # Original MATP fields
-    base_asset:  Optional[str] = None
-    quote_asset: Optional[str] = None
-    side:       Optional[str] = None # Added back for side_to_lower validator
-    orderType:  Literal["market", "limit"] = "market"
-    size:       Optional[Decimal] = None
-    price:      Optional[Decimal] = None
-    leverage:   Optional[int] = None
-    marginMode: Optional[Literal["cross", "isolated"]] = "cross"
-    tpPrice:    Optional[Decimal] = None
-    slPrice:    Optional[Decimal] = None
-    platform:   str = "auto"
-    strategy_id: Optional[str] = None
-    symbol:     Optional[str] = None
-    signal:     Optional[str] = None
-    timestamp:  datetime
-    token:      Optional[str] = None
-    # New fields
-    signal_source: Optional[str] = "tradingview"
+    """
+    Incoming webhook payload from TradingView, Telegram, or Order Generator.
+
+    Breaking changes from legacy format:
+    - `symbol` removed: replaced by base_asset + quote_asset
+    - `action` removed: use signal field
+    - `instrument` removed: redundant
+    - `amount` removed: use size field
+    - `platform` removed: exchange determined by strategy.account_id
+
+    New fields:
+    - base_asset: e.g. "BTC"
+    - quote_asset: e.g. "USDT", "USDC", "USD"
+    - target_position: optional state-sync signal ("long", "short", "flat")
+    """
+    # Structured asset identification
+    base_asset:      str
+    quote_asset:     str
+
+    side:            Literal["buy", "sell"]
+    order_type:      Literal["market", "limit"] = "market"
+    size:            Decimal
+    price:           Optional[Decimal] = None
+    leverage:        Optional[int] = None
+    margin_mode:     Optional[Literal["cross", "isolated"]] = "cross"
+    tp_price:        Optional[Decimal] = None
+    sl_price:        Optional[Decimal] = None
+    signal:          Literal["open_long", "close_long", "open_short", "close_short"]
+    target_position: Optional[Literal["long", "short", "flat"]] = None
+    timestamp:       datetime
+    token:           str
+    signal_source:   Optional[str] = "tradingview"
     signal_metadata: Optional[dict] = {}
     indicator_price: Optional[Decimal] = None
-    # TradingView-specific payload fields
-    action:             Optional[str] = None
-    marketPosition:     Optional[str] = None
-    prevMarketPosition: Optional[str] = None
-    instrument:         Optional[str] = None
-    signalToken:        Optional[str] = None
-    maxLag:             Optional[int] = 60
-    investmentType:     Optional[str] = None
-    amount:             Optional[Decimal] = None
-    id:                 Optional[str] = None
-
-    @property
-    def pair_label(self) -> str:
-        return f"{self.base_asset}-{self.quote_asset}"
-
-
-    @field_validator("side", mode="before")
-    @classmethod
-    def side_to_lower(cls, v: str) -> str:
-        if isinstance(v, str):
-            v = v.lower()
-            # Map 'short' to 'sell' and 'long' to 'buy'
-            mapping = {"short": "sell", "long": "buy"}
-            v = mapping.get(v, v)
-            if v not in ["buy", "sell"]:
-                raise ValueError("side must be 'buy' or 'sell'")
-        return v
-
-    @field_validator("size")
-    @classmethod
-    def size_must_be_positive(cls, v: Decimal) -> Decimal:
-        if v <= 0:
-            raise ValueError("size must be positive")
-        return v
-
-    @field_validator("leverage")
-    @classmethod
-    def leverage_range(cls, v: Optional[int]) -> Optional[int]:
-        if v is not None and not (1 <= v <= 200):
-            raise ValueError("leverage must be between 1 and 200")
-        return v
-
-    @field_validator("price")
-    @classmethod
-    def price_required_for_limit(cls, v: Optional[Decimal], info) -> Optional[Decimal]:
-        if info.data.get("orderType") == "limit" and v is None:
-            raise ValueError("price is required for limit orders")
-        return v
 
 
 

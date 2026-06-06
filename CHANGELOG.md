@@ -1,3 +1,29 @@
+## [2026-06-06] - 2.1.0
+
+### Added
+- Multi-account support: `order-executor` now fully wired; all exchange calls route via `AccountRegistry` keyed by `strategy.account_id`.
+- Executor endpoints: `POST /close-position`, `POST /credentials/encrypt`, `GET /accounts/{id}/balance`, `GET /accounts/{id}/meta`, `GET /accounts/{id}/positions`, `POST /accounts/{id}/positions/close`.
+- Dashboard API accounts: `GET /accounts/:id/balance`, `GET /accounts/:id/meta`, `POST /accounts/:id/credentials` (encrypt-then-store via executor).
+- Dashboard API orders: `DELETE /orders/:id` (soft-delete), `POST /orders/:id/cancel`; added `account_id` filter and `account_label` join to order list response.
+- DB migration `004_strategy_config_jsonb.sql`: adds `config JSONB NOT NULL DEFAULT '{}'` to `strategies` table for per-strategy adapter settings.
+- Hyperliquid adapter: market-order slippage now configurable via `strategies.config.slippage_pct` (default 1%). Replaces hardcoded 2%.
+- `order-listener/app/symbol_validator.py`: isolated symbol resolution + coupling logic extracted from webhook handler.
+- `executor_client.py`: `call_executor_close_position()` helper for flat-signal position closing.
+- `CLAUDE.md`: project-level guidance file for AI agent sessions.
+
+### Changed
+- `OrderRequest` (internal): added `config: Optional[dict]` field; webhook handler now forwards strategy JSONB config to executor.
+- Orders API: query aliases all columns as `o.*`; left-joins `exchange_accounts` to expose `account_label` in list response.
+- `order-listener/app/orders_api.py`: retry logic now calls `call_executor` directly (removed dependency on deleted `router.py`).
+- `.env.example`: reorganised with section headers; added `POSTGRES_USER`, `POSTGRES_DB`, `EXECUTOR_URL`, and port override examples.
+- `docker-compose.yml`: removed deprecated `version` field.
+
+### Removed
+- `order-listener/app/router.py`: deleted; routing is now handled directly in `webhook_handler.py` via `executor_client`.
+
+### Tested
+- Hyperliquid market buy E2E (0.02 ETH, testnet): order filled, `exchange_order_id=54506983576`, status=`filled` in DB.
+
 ## [2026-05-25] - 2.0.10
 
 ### Added

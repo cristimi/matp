@@ -1,6 +1,6 @@
 import { Pool } from 'pg';
 
-let pool: Pool;
+export let pool: Pool;
 
 export async function initDb(): Promise<void> {
   pool = new Pool({

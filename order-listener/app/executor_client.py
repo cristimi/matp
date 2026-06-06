@@ -65,3 +65,49 @@ async def call_executor(order_request: dict) -> dict:
             "exchange_order_id": None,
             "raw_response": None,
         }
+
+
+async def call_executor_close_position(
+    account_id: str,
+    symbol:     str,
+    side:       str,
+) -> dict:
+    """
+    POST to /close-position to close an open position.
+    Returns the OrderResult dict.
+    Never raises — catches all errors and returns route_failed result.
+    """
+    url = f"{EXECUTOR_URL}/close-position"
+    logger.info(
+        f"Calling executor close-position: account={account_id} "
+        f"symbol={symbol} side={side}"
+    )
+
+    try:
+        async with httpx.AsyncClient(timeout=TIMEOUT_SECONDS) as client:
+            response = await client.post(
+                url,
+                json={
+                    "account_id": account_id,
+                    "symbol":     symbol,
+                    "side":       side,
+                }
+            )
+            response.raise_for_status()
+            return response.json()
+
+    except httpx.TimeoutException as e:
+        logger.error(f"Executor close-position timeout: {e}")
+        return {
+            "success": False,
+            "status":  "route_failed",
+            "error_msg": f"Executor timeout after {TIMEOUT_SECONDS}s",
+        }
+
+    except Exception as e:
+        logger.error(f"Executor close-position failed: {e}")
+        return {
+            "success": False,
+            "status":  "route_failed",
+            "error_msg": str(e),
+        }

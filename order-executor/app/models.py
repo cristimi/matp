@@ -20,6 +20,7 @@ class OrderRequest(BaseModel):
     margin_mode: Optional[str] = None
     tp_price:    Optional[Decimal] = None
     sl_price:    Optional[Decimal] = None
+    config:      Optional[dict] = None
 
 
 class OrderResult(BaseModel):

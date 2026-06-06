@@ -6,7 +6,7 @@ const router = Router();
 router.get('/', async (req: Request, res: Response) => {
   const {
     page = '1', limit = '50', symbol, platform, status,
-    strategy_id, from, to,
+    strategy_id, account_id, from, to,
   } = req.query as Record<string, string>;
 
   const pageNum = Math.max(parseInt(page), 1);
@@ -17,23 +17,27 @@ router.get('/', async (req: Request, res: Response) => {
   const params: unknown[] = [];
   let idx = 1;
 
-  if (symbol) { filters.push("symbol = $" + idx++); params.push(symbol); }
-  if (platform) { filters.push("platform = $" + idx++); params.push(platform); }
-  if (status) { filters.push("status = $" + idx++); params.push(status); }
-  if (strategy_id) { filters.push("strategy_id = $" + idx++); params.push(strategy_id); }
-  if (from) { filters.push("received_at >= $" + idx++); params.push(new Date(from)); }
-  if (to) { filters.push("received_at <= $" + idx++); params.push(new Date(to)); }
+  if (symbol) { filters.push("o.symbol = $" + idx++); params.push(symbol); }
+  if (platform) { filters.push("o.platform = $" + idx++); params.push(platform); }
+  if (status) { filters.push("o.status = $" + idx++); params.push(status); }
+  if (strategy_id) { filters.push("o.strategy_id = $" + idx++); params.push(strategy_id); }
+  if (account_id) { filters.push("o.account_id = $" + idx++); params.push(account_id); }
+  if (from) { filters.push("o.received_at >= $" + idx++); params.push(new Date(from)); }
+  if (to) { filters.push("o.received_at <= $" + idx++); params.push(new Date(to)); }
 
   const where = filters.length ? "WHERE " + filters.join(' AND ') : '';
   const pool = getPool();
 
   const [countRes, rowsRes] = await Promise.all([
-    pool.query("SELECT COUNT(*) FROM orders " + where, params),
+    pool.query("SELECT COUNT(*) FROM orders o " + where, params),
     pool.query(
-      "SELECT id, received_at, symbol, side, signal, size, platform, " +
-              "status, strategy_id, exchange_order_id, pnl, error_msg, indicator_price, actual_fill_price " +
-       "FROM orders " + where +
-       " ORDER BY received_at DESC " +
+      "SELECT o.id, o.received_at, o.symbol, o.side, o.signal, o.size, o.platform, " +
+              "o.status, o.strategy_id, o.account_id, o.exchange_order_id, o.pnl, o.error_msg, o.indicator_price, o.actual_fill_price, " +
+              "ea.label AS account_label " +
+       "FROM orders o " +
+       "LEFT JOIN exchange_accounts ea ON ea.id = o.account_id " +
+       where +
+       " ORDER BY o.received_at DESC " +
        "LIMIT $" + idx + " OFFSET $" + (idx + 1),
       [...params, limitNum, offset],
     ),
@@ -63,6 +67,34 @@ router.post('/:id/retry', async (req: Request, res: Response) => {
   const resp = await fetch(listenerUrl + '/orders/' + req.params.id + '/retry', { method: 'POST' });
   const data = await resp.json();
   res.status(resp.status).json(data);
+});
+
+// DELETE /orders/:id — soft delete (mark as deleted / remove log)
+router.delete('/:id', async (req: Request, res: Response) => {
+  try {
+    const pool = getPool();
+    await pool.query(
+      `UPDATE orders SET status = 'deleted', updated_at = NOW() WHERE id = $1`,
+      [req.params.id]
+    );
+    res.json({ deleted: req.params.id });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST /orders/:id/cancel — cancel a pending order
+router.post('/:id/cancel', async (req: Request, res: Response) => {
+  try {
+    const pool = getPool();
+    await pool.query(
+      `UPDATE orders SET status = 'cancelled', updated_at = NOW() WHERE id = $1`,
+      [req.params.id]
+    );
+    res.json({ cancelled: req.params.id });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 export default router;

@@ -1,0 +1,443 @@
+MATP — Session 7 of 20
+⚠️ CRITICAL — READ BEFORE STARTING
+This session implements cryptographic signing. Do NOT run on Flash Lite.
+If your quota is low or you have been downgraded, stop immediately.
+Write to CHECKPOINT.md: status: interrupted, interrupted_at: pre-start quota check
+and do not proceed. A wrong signature produces silent failures against the
+exchange — it will not crash, it will just never place a trade.
+
+READ FIRST — do this before writing any code
+Read these files in full:
+
+.gemini/NEXT_SESSION.md — handoff from Session 6
+.gemini/CHECKPOINT.md — last known task state
+order-executor/app/adapters/hyperliquid.py — current stub to replace
+order-executor/app/adapters/blofin.py — structural reference only
+order-executor/app/adapters/base.py — interface to implement
+order-executor/app/models.py — OrderRequest / OrderResult
+order-executor/requirements.txt — confirm eth-account is listed
+
+
+CONTEXT
+Sessions 1–6 completed cleanly. The executor handles Blofin orders.
+Hyperliquid has a stub that returns route_failed.
+This session replaces that stub with a real implementation using
+Hyperliquid's REST API and EIP-712 structured data signing.
+
+TASK 1 — Add dependencies
+Update CHECKPOINT.md: status: in-progress, current_task: dependencies
+Open order-executor/requirements.txt.
+Add these lines if not already present:
+eth-account>=0.11.0
+eth-keys>=0.4.0
+Run a build to confirm they install without conflict:
+bashdocker compose build order-executor 2>&1 | tail -20
+If the build fails due to a version conflict, try eth-account>=0.10.0.
+Record the installed version in REPORT_FOR_HUMAN.md.
+Update CHECKPOINT.md: status: done
+
+TASK 2 — Implement Hyperliquid adapter
+Update CHECKPOINT.md: current_task: hyperliquid adapter
+Replace order-executor/app/adapters/hyperliquid.py entirely with the
+implementation below.
+How Hyperliquid's API works (read before implementing)
+Hyperliquid uses two endpoints:
+
+POST https://api.hyperliquid.xyz/info — read-only queries (no auth)
+POST https://api.hyperliquid.xyz/exchange — order placement (requires signature)
+
+For testnet replace the domain with api.hyperliquid-testnet.xyz.
+Order placement requires an EIP-712 signed action. The signing flow is:
+
+Build an action dict describing the order
+Compute a connection_id by hashing the action + nonce using keccak256
+Sign the connection_id using the wallet's private key via EIP-712
+POST the action + nonce + signature to /exchange
+
+The full implementation
+python"""
+Hyperliquid perpetuals adapter.
+Uses EIP-712 structured data signing via eth-account.
+
+Expected credentials dict:
+    { "private_key": "0x..." }
+
+The wallet address is derived from the private key — it does not need
+to be stored separately.
+"""
+import json
+import time
+import logging
+import hashlib
+from typing import Optional
+
+import httpx
+from eth_account import Account
+from eth_account.structured_data.hashing import hash_domain, hash_message
+
+from app.adapters.base import ExchangeAdapter
+from app.models import OrderRequest, OrderResult
+
+logger = logging.getLogger(__name__)
+
+
+# ── EIP-712 domain for Hyperliquid ───────────────────────────────────
+# VERIFY: These are the known Hyperliquid mainnet domain parameters.
+# If orders are rejected with signature errors, confirm at:
+# https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/signing
+_HL_DOMAIN = {
+    "name": "Exchange",
+    "version": "1",
+    "chainId": 1337,
+    "verifyingContract": "0x0000000000000000000000000000000000000000",
+}
+
+_HL_TYPES = {
+    "Agent": [
+        {"name": "source", "type": "string"},
+        {"name": "connectionId", "type": "bytes32"},
+    ]
+}
+
+
+class HyperliquidAdapter(ExchangeAdapter):
+
+    def __init__(self, credentials: dict, mode: str):
+        super().__init__(credentials, mode)
+        private_key = credentials.get("private_key", "")
+        if not private_key:
+            raise ValueError("Hyperliquid credentials must include 'private_key'")
+
+        self._account = Account.from_key(private_key)
+        self.wallet_address = self._account.address
+        self.base_url = (
+            "https://api.hyperliquid-testnet.xyz"
+            if mode == "demo"
+            else "https://api.hyperliquid.xyz"
+        )
+        self._asset_cache: Optional[dict] = None
+        logger.info(
+            f"HyperliquidAdapter initialised "
+            f"(wallet={self.wallet_address[:8]}..., mode={mode})"
+        )
+
+    # ── Public interface ─────────────────────────────────────────────
+
+    async def submit_order(self, order: OrderRequest) -> OrderResult:
+        try:
+            asset_index = await self._get_asset_index(order.symbol)
+            result = await self._place_order(order, asset_index)
+            return result
+        except Exception as e:
+            logger.error(f"HyperliquidAdapter.submit_order failed: {e}")
+            return OrderResult(
+                success=False,
+                status="route_failed",
+                error_msg=str(e),
+            )
+
+    async def close_position(self, symbol: str, side: str) -> OrderResult:
+        try:
+            positions = await self.get_open_positions()
+            target = next(
+                (p for p in positions
+                 if p["symbol"] == symbol and p["side"] == side),
+                None
+            )
+            if not target:
+                return OrderResult(
+                    success=False, status="route_failed",
+                    error_msg=f"No open {side} position found for {symbol}"
+                )
+            # Build a reduce-only order to close
+            close_side = "sell" if side == "long" else "buy"
+            asset_index = await self._get_asset_index(symbol)
+            close_order = OrderRequest(
+                order_id="close-" + str(int(time.time() * 1000)),
+                account_id="",
+                symbol=symbol,
+                side=close_side,
+                signal="close",
+                order_type="market",
+                size=target["size"],
+                leverage=None,
+                margin_mode=None,
+            )
+            return await self._place_order(close_order, asset_index,
+                                           reduce_only=True)
+        except Exception as e:
+            logger.error(f"HyperliquidAdapter.close_position failed: {e}")
+            return OrderResult(
+                success=False, status="route_failed", error_msg=str(e)
+            )
+
+    async def get_open_positions(self) -> list[dict]:
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                resp = await client.post(
+                    f"{self.base_url}/info",
+                    json={
+                        "type": "clearinghouseState",
+                        "user": self.wallet_address,
+                    },
+                )
+                resp.raise_for_status()
+                data = resp.json()
+
+            positions = []
+            for pos in data.get("assetPositions", []):
+                p = pos.get("position", {})
+                szi = float(p.get("szi", 0))
+                if szi == 0:
+                    continue
+                positions.append({
+                    "symbol":      p.get("coin", ""),
+                    "side":        "long" if szi > 0 else "short",
+                    "size":        str(abs(szi)),
+                    "entry_price": p.get("entryPx", None),
+                    "mark_price":  None,
+                    "pnl":         p.get("unrealizedPnl", None),
+                })
+            return positions
+        except Exception as e:
+            logger.error(f"HyperliquidAdapter.get_open_positions failed: {e}")
+            return []
+
+    # ── Private helpers ──────────────────────────────────────────────
+
+    async def _get_asset_index(self, symbol: str) -> int:
+        """
+        Look up the integer asset index for a symbol.
+        Hyperliquid uses 'BTC' not 'BTC-USDT' — strip the '-USDT' suffix.
+        Caches the full asset list for the lifetime of the adapter instance.
+        """
+        coin = symbol.replace("-USDT", "").replace("-USD", "").upper()
+
+        if self._asset_cache is None:
+            async with httpx.AsyncClient(timeout=10) as client:
+                resp = await client.post(
+                    f"{self.base_url}/info",
+                    json={"type": "meta"},
+                )
+                resp.raise_for_status()
+                meta = resp.json()
+            self._asset_cache = {
+                asset["name"]: idx
+                for idx, asset in enumerate(meta.get("universe", []))
+            }
+            logger.info(
+                f"Loaded {len(self._asset_cache)} assets from Hyperliquid"
+            )
+
+        if coin not in self._asset_cache:
+            # Refresh cache once in case asset was recently added
+            self._asset_cache = None
+            raise ValueError(
+                f"Asset '{coin}' not found in Hyperliquid universe. "
+                f"Check symbol format (expected e.g. 'BTC', not 'BTC-USDT')."
+            )
+
+        return self._asset_cache[coin]
+
+    async def _place_order(
+        self,
+        order: OrderRequest,
+        asset_index: int,
+        reduce_only: bool = False,
+    ) -> OrderResult:
+        """
+        Build, sign, and submit an order to Hyperliquid.
+        """
+        is_buy = order.side == "buy"
+        nonce = int(time.time() * 1000)
+
+        # Market orders use price "0" with Ioc time-in-force
+        # Limit orders use the specified price
+        if order.order_type == "market":
+            price_str = "0"
+            order_type_payload = {"limit": {"tif": "Ioc"}}
+        else:
+            if order.price is None:
+                raise ValueError("Limit orders require a price")
+            price_str = str(order.price)
+            order_type_payload = {"limit": {"tif": "Gtc"}}
+
+        action = {
+            "type": "order",
+            "orders": [{
+                "a": asset_index,
+                "b": is_buy,
+                "p": price_str,
+                "s": str(order.size),
+                "r": reduce_only,
+                "t": order_type_payload,
+            }],
+            "grouping": "na",
+        }
+
+        # ── EIP-712 signing ──────────────────────────────────────────
+        # connection_id = keccak256(action_bytes + nonce_bytes)
+        action_bytes = json.dumps(action, separators=(",", ":")).encode()
+        nonce_bytes  = nonce.to_bytes(8, "big")
+        connection_id = hashlib.sha3_256(action_bytes + nonce_bytes).digest()
+        # Note: Hyperliquid uses sha3_256 (keccak256) for connection_id
+        # VERIFY: if orders fail with signature errors, check whether
+        # Hyperliquid expects keccak256 (ethereum) vs sha3_256 (NIST).
+        # keccak256 can be imported from: from eth_hash.auto import keccak
+
+        message = {
+            "source":       "a",   # "a" = mainnet, "b" = testnet
+            "connectionId": connection_id,
+        }
+        if self.base_url.endswith("testnet.xyz"):
+            message["source"] = "b"
+
+        structured_data = {
+            "domain":            _HL_DOMAIN,
+            "types":             _HL_TYPES,
+            "primaryType":       "Agent",
+            "message":           message,
+        }
+
+        signed = self._account.sign_typed_data(
+            domain_data=_HL_DOMAIN,
+            message_types=_HL_TYPES,
+            message_data=message,
+        )
+
+        payload = {
+            "action":    action,
+            "nonce":     nonce,
+            "signature": {
+                "r": hex(signed.r),
+                "s": hex(signed.s),
+                "v": signed.v,
+            },
+        }
+
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.post(
+                f"{self.base_url}/exchange",
+                json=payload,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+
+        # ── Parse response ───────────────────────────────────────────
+        logger.debug(f"Hyperliquid response: {data}")
+
+        status_data = data.get("response", {}).get("data", {})
+        statuses    = status_data.get("statuses", [{}])
+        first       = statuses[0] if statuses else {}
+
+        if "error" in first:
+            return OrderResult(
+                success=False,
+                status="rejected",
+                error_msg=first["error"],
+                raw_response=data,
+            )
+
+        filled = first.get("filled", {})
+        oid    = str(filled.get("oid", "")) or str(first.get("resting", {}).get("oid", ""))
+
+        return OrderResult(
+            success=True,
+            status="filled",
+            exchange_order_id=oid or None,
+            raw_response=data,
+        )
+Update CHECKPOINT.md: status: done, add file.
+
+TASK 3 — Build and unit-level smoke test
+Update CHECKPOINT.md: current_task: build and test
+bash# Rebuild
+docker compose build order-executor 2>&1 | tail -30
+
+# Start
+docker compose up -d order-executor
+sleep 10
+
+# Health check
+curl -s http://localhost:8004/health
+
+# Startup logs — confirm adapter module imports without error
+docker compose logs order-executor --tail 20
+The build must succeed. The health check must return version: "1.0.0".
+The logs must NOT show any ImportError or ModuleNotFoundError.
+If eth-account or eth-keys fails to import, try:
+bashdocker compose exec order-executor python3 -c "from eth_account import Account; print('ok')"
+Record all output in REPORT_FOR_HUMAN.md.
+
+TASK 4 — Self-assessment of signing implementation
+This task has no code. Answer these questions honestly in
+REPORT_FOR_HUMAN.md under a section called "Signing Self-Assessment":
+
+connection_id hashing: The implementation uses hashlib.sha3_256.
+Hyperliquid's docs reference keccak256. Are these the same?
+(They are NOT — sha3_256 is NIST SHA-3, keccak256 is Ethereum's
+pre-standardised version. If you are unsure which Hyperliquid uses,
+flag this as VERIFY.)
+EIP-712 domain chainId: The implementation uses chainId: 1337.
+Is this correct for Hyperliquid mainnet? (Flag as VERIFY if unsure.)
+sign_typed_data call: Does eth_account.Account.sign_typed_data
+accept domain_data, message_types, message_data as keyword
+arguments in the version installed? Or does it use a different
+signature? Check with:
+
+bash   docker compose exec order-executor python3 -c \
+     "from eth_account import Account; help(Account.sign_typed_data)"
+Record the actual method signature.
+
+Overall confidence: HIGH / MEDIUM / LOW — and why.
+
+These questions are not rhetorical. The answers determine whether
+the Hyperliquid adapter needs a verification fix session before
+live trading is attempted.
+
+CHECKPOINT PROTOCOL
+Before each task: status: in-progress, current_task: [name]
+After each task: status: done, append to files_modified
+If interrupted:
+status: interrupted
+interrupted_at: [task name and exact step]
+next_step: [exact instruction for recovery prompt]
+
+SESSION CLOSE PROTOCOL
+
+Append Session 7 entry to .gemini/SESSION_LOG.md
+Replace .gemini/NEXT_SESSION.md entirely:
+
+Confirm build passes and health check returns 1.0.0
+Paste the signing self-assessment verbatim
+Note any VERIFY flags raised
+State what Session 8 must do:
+Dashboard API — positions endpoint, orders account_id filter,
+credential update flow
+List files Session 8 must read:
+dashboard-api/src/routes/orders.ts,
+dashboard-api/src/routes/positions.ts (if exists),
+dashboard-api/src/index.ts,
+MATP.SDD.md §6.3
+
+
+Fill .gemini/REPORT_FOR_HUMAN.md including:
+
+Build output tail
+Health check response
+Startup log lines
+Full signing self-assessment (Task 4 — all 4 questions answered)
+Installed eth-account version
+
+
+
+
+FLASH LITE FALLBACK
+DO NOT run this session on Flash Lite under any circumstances.
+If quota is exhausted mid-session:
+
+Stop immediately at the current task
+Write CHECKPOINT.md with exact interrupted_at location
+Do NOT attempt to continue with degraded model
+The signing implementation must be reviewed by Claude before
+proceeding to live trading regardless

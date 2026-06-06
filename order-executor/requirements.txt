@@ -7,6 +7,8 @@ redis==5.0.4
 httpx==0.27.0
 cryptography==42.0.7
 python-dotenv==1.0.1
-eth-account
+eth-account>=0.11.0
+eth-keys>=0.4.0
 pycryptodome
 pynacl
+msgpack==1.0.8

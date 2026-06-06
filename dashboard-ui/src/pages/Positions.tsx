@@ -1,219 +1,585 @@
-import { useEffect, useState, useCallback } from 'react';
-import { api, Position } from '../api';
-import { SideBadge, PlatformBadge } from '../components/Badges';
+import { useState, useEffect, useCallback } from 'react';
+import { HeaderPill }    from '../components/shared/HeaderPill';
+import { DataGrid }      from '../components/shared/DataGrid';
+import { ActionBand }    from '../components/shared/ActionBand';
+import { SummaryBar }    from '../components/shared/SummaryBar';
+import { SectionHeader } from '../components/shared/SectionHeader';
+import { TopBar }        from '../components/shared/TopBar';
+import { FilterBar }     from '../components/shared/FilterBar';
+import { formatPrice, formatSize } from '../utils/precision';
+import { formatPnl, formatPct, pnlColor } from '../utils/pnl';
+import { formatRelative, formatAbsolute } from '../utils/datetime';
 
-export default function PositionsPage() {
+interface Position {
+  id:               string;
+  symbol:           string;
+  side:             'long' | 'short';
+  status:           'open' | 'stale' | 'closed';
+  leverage?:        number;
+  margin_mode?:     string;
+  strategy_name?:   string;
+  source?:          string;
+  destination?:     string;
+  account_id?:      string;
+  account_label?:   string;
+  account_exchange?:string;
+  opened_at?:       string;
+  closed_at?:       string;
+  entry_price?:     number;
+  mark_price?:      number;
+  close_price?:     number;
+  size?:            number;
+  margin?:          number;
+  realized_pnl?:    number;
+  realized_pnl_fees?:number;
+  unrealized_pnl?:  number;
+  pnl_pct?:         number;
+  close_reason?:    string;
+}
+
+function PositionCard({
+  position,
+  onClose,
+  onRefresh,
+}: {
+  position: Position;
+  onClose:   (id: string) => void;
+  onRefresh: (id: string) => void;
+}) {
+  const { symbol, side, status } = position;
+  const isStale  = status === 'stale';
+  const isClosed = status === 'closed';
+
+  // Left bar color
+  const barColor = isClosed ? 'var(--gray)'
+    : isStale               ? 'var(--failed-color)'
+    : side === 'long'       ? 'var(--green)'
+    :                         'var(--red)';
+
+  // Mark/close price color
+  const entryNum = position.entry_price ?? 0;
+  const markNum  = position.mark_price  ?? 0;
+  const markColor = isStale ? 'var(--failed-color)'
+    : side === 'long'
+      ? (markNum >= entryNum ? 'var(--green)' : 'var(--red)')
+      : (markNum <= entryNum ? 'var(--green)' : 'var(--red)');
+
+  // P&L colors
+  const pnlVal  = position.realized_pnl ?? 0;
+  const pnlPct  = position.pnl_pct      ?? 0;
+  const fees    = position.realized_pnl_fees ?? 0;
+  const pnlMain = isStale ? 'var(--failed-color)' : pnlColor(pnlVal);
+  const pnlSec  = isStale
+    ? 'rgba(230,152,2,.75)'
+    : 'rgba(225,29,72,.7)';
+
+  // Status pill variant
+  const statusVariant = isClosed ? 'closed'
+    : isStale           ? 'stale'
+    :                     'open';
+
+  // Side pill variant
+  const sideVariant = isClosed ? 'closed'
+    : side === 'long'  ? 'long'
+    :                    'short';
+
+  // Route
+  const source      = position.source      || 'MATP Engine';
+  const destination = position.destination
+    || position.account_exchange
+    || position.account_id
+    || 'exchange';
+
+  // DataGrid rows
+  const topRow = [
+    {
+      label: 'Entry',
+      value: (
+        <span style={{
+          fontFamily:'JetBrains Mono, monospace', fontSize:'13px',
+          fontWeight:600, color:'var(--text)', whiteSpace:'nowrap',
+        }}>
+          {formatPrice(symbol, position.entry_price)}
+        </span>
+      ),
+    },
+    {
+      label: 'Size',
+      value: (
+        <span style={{
+          fontFamily:'JetBrains Mono, monospace', fontSize:'13px',
+          fontWeight:700, color:'var(--text)', whiteSpace:'nowrap',
+        }}>
+          {formatSize(symbol, position.size)}
+        </span>
+      ),
+    },
+    {
+      label: 'Margin',
+      value: (
+        <span style={{
+          fontFamily:'JetBrains Mono, monospace', fontSize:'13px',
+          fontWeight:600, color:'var(--text)', whiteSpace:'nowrap',
+        }}>
+          {position.margin != null ? Number(position.margin).toFixed(2) : '—'}
+        </span>
+      ),
+    },
+  ];
+
+  const botRow = isClosed ? [
+    {
+      label: 'Close',
+      value: (
+        <span style={{
+          fontFamily:'JetBrains Mono, monospace', fontSize:'13px',
+          fontWeight:600, color:'var(--text)', whiteSpace:'nowrap',
+        }}>
+          {formatPrice(symbol, position.close_price)}
+        </span>
+      ),
+    },
+    {
+      label: 'P&L',
+      value: (
+        <span style={{
+          fontFamily:'JetBrains Mono, monospace', fontSize:'13px',
+          fontWeight:700, color: pnlColor(pnlVal), whiteSpace:'nowrap',
+        }}>
+          {formatPnl(pnlVal)}
+        </span>
+      ),
+    },
+    {
+      label: 'P&L %',
+      value: (
+        <span style={{
+          fontFamily:'JetBrains Mono, monospace', fontSize:'13px',
+          fontWeight:700, color: pnlColor(pnlPct), whiteSpace:'nowrap',
+        }}>
+          {formatPct(pnlPct)}
+        </span>
+      ),
+    },
+  ] : [
+    {
+      label: 'Mark',
+      value: (
+        <span style={{
+          fontFamily:'JetBrains Mono, monospace', fontSize:'13px',
+          fontWeight:600, color: markColor, whiteSpace:'nowrap',
+        }}>
+          {formatPrice(symbol, position.mark_price)}
+        </span>
+      ),
+    },
+    {
+      label: 'P&L (Realized)',
+      value: (
+        <div style={{ display:'flex', alignItems:'baseline', gap:'4px',
+                      flexWrap:'nowrap', overflow:'hidden' }}>
+          <span style={{
+            fontFamily:'JetBrains Mono, monospace', fontSize:'13px',
+            fontWeight:700, color: pnlMain, whiteSpace:'nowrap',
+          }}>
+            {formatPnl(pnlVal)}
+          </span>
+          {fees !== 0 && (
+            <span style={{
+              fontFamily:'JetBrains Mono, monospace', fontSize:'10px',
+              fontWeight:600, color: pnlSec, whiteSpace:'nowrap',
+            }}>
+              (−{Math.abs(Number(fees)).toFixed(2)})
+            </span>
+          )}
+        </div>
+      ),
+    },
+    {
+      label: 'P&L %',
+      value: (
+        <span style={{
+          fontFamily:'JetBrains Mono, monospace', fontSize:'13px',
+          fontWeight:700, color: pnlMain, whiteSpace:'nowrap',
+        }}>
+          {formatPct(pnlPct)}
+        </span>
+      ),
+    },
+  ];
+
+  // Action band buttons
+  const actionButtons = isClosed ? [] :
+    isStale ? [
+      { label: '↺ Refresh',        color: 'blue'  as const, onClick: () => onRefresh(position.id) },
+      { label: '✕ Close Position', color: 'red'   as const, onClick: () => onClose(position.id) },
+    ] : [
+      { label: '✕ Close Position', color: 'red' as const, onClick: () => onClose(position.id) },
+    ];
+
+  return (
+    <div style={{
+      background:    'var(--bg3)',
+      borderRadius:  'var(--r)',
+      border:        `1px solid ${isClosed ? 'var(--border-hi)' : 'var(--border)'}`,
+      marginBottom:  '10px',
+      position:      'relative',
+      display:       'flex',
+      flexDirection: 'column',
+      overflow:      'hidden',
+    }}>
+      {/* Left bar */}
+      <div style={{
+        position:'absolute', left:0, top:0, bottom:0,
+        width:'4px', background: barColor, zIndex:1,
+      }} />
+
+      {/* Row 1 */}
+      <div style={{
+        display:'flex', alignItems:'center', gap:'6px',
+        padding:'12px 12px 0 18px', lineHeight:1,
+      }}>
+        <span style={{
+          fontSize:'16px', fontWeight:700, letterSpacing:'-.01em',
+          color:'var(--text)', whiteSpace:'nowrap',
+          flexShrink:0, marginRight:'2px',
+        }}>
+          {symbol}
+        </span>
+        <HeaderPill variant={sideVariant}>
+          {side.toUpperCase()}
+        </HeaderPill>
+        {position.leverage && (
+          <HeaderPill variant="lev">{position.leverage}x</HeaderPill>
+        )}
+        {position.margin_mode && (
+          <HeaderPill variant="tech">{position.margin_mode}</HeaderPill>
+        )}
+        <div style={{ marginLeft:'auto' }}>
+          <HeaderPill variant={statusVariant}>{status}</HeaderPill>
+        </div>
+      </div>
+
+      {/* Strategy row */}
+      {position.strategy_name && (
+        <div style={{ padding:'5px 12px 0 18px' }}>
+          <span style={{
+            fontFamily:'JetBrains Mono, monospace', fontSize:'12px',
+            fontWeight:600, background:'var(--bg3)',
+            border:'1px solid var(--border)', borderRadius:'var(--pill-r)',
+            padding:'1px 6px', color:'var(--muted)',
+            whiteSpace:'nowrap', lineHeight:1.25,
+          }}>
+            {position.strategy_name}
+          </span>
+        </div>
+      )}
+
+      {/* Row 1b: route + timestamps */}
+      <div style={{
+        display:'flex', justifyContent:'space-between', alignItems:'center',
+        padding:'5px 12px 2px 18px',
+      }}>
+        <div style={{ display:'flex', alignItems:'center', gap:'4px' }}>
+          <HeaderPill variant="neutral">{source}</HeaderPill>
+          <span style={{
+            fontSize:'10px', color:'var(--dim)',
+            fontFamily:'monospace', fontWeight:'bold',
+          }}>→</span>
+          <HeaderPill variant="neutral">{destination}</HeaderPill>
+        </div>
+        <div style={{
+          display:'flex', flexDirection:'column',
+          alignItems:'flex-end', gap: isClosed ? '6px' : '0px',
+        }}>
+          {isClosed ? (
+            <>
+              <span style={{
+                fontFamily:'JetBrains Mono, monospace', fontSize:'10px',
+                fontWeight:500, color:'var(--muted)', lineHeight:1.1,
+              }}>
+                Opened: {formatAbsolute(position.opened_at)}
+              </span>
+              <span style={{
+                fontFamily:'JetBrains Mono, monospace', fontSize:'10px',
+                fontWeight:500, color:'var(--muted)', lineHeight:1.1,
+              }}>
+                Closed: {formatAbsolute(position.closed_at)}
+              </span>
+            </>
+          ) : (
+            <span style={{
+              fontFamily:'JetBrains Mono, monospace', fontSize:'10px',
+              fontWeight:500, color:'var(--muted)', lineHeight:1.1,
+            }}>
+              Opened: {formatRelative(position.opened_at)}
+            </span>
+          )}
+        </div>
+      </div>
+
+      {/* Data grid */}
+      <DataGrid rows={[topRow, botRow]} />
+
+      {/* Action band or closed band */}
+      {isClosed ? (
+        <div style={{
+          background:'var(--gray-a)', borderTop:'1px solid var(--border)',
+          padding:'6px 12px 6px 18px', display:'flex', alignItems:'center',
+        }}>
+          <span style={{
+            textTransform:'uppercase', fontFamily:'JetBrains Mono, monospace',
+            fontSize:'9px', letterSpacing:'.05em', fontWeight:700,
+            color:'var(--gray)', marginLeft:'auto',
+          }}>
+            {position.close_reason || 'Closed'}
+          </span>
+        </div>
+      ) : (
+        actionButtons.length > 0 && (
+          <ActionBand buttons={actionButtons} />
+        )
+      )}
+    </div>
+  );
+}
+
+export default function Positions() {
+  console.log('Positions component render start');
   const [positions, setPositions] = useState<Position[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [closing, setClosing] = useState<string | null>(null);
+  const [loading, setLoading]     = useState(true);
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    setError(null);
+  const [filterAsset,    setFilterAsset]    = useState<string>('all');
+  const [filterStatus,   setFilterStatus]   = useState<string>('all');
+  const [filterStrategy, setFilterStrategy] = useState<string>('all');
+
+  const fetchPositions = useCallback(async () => {
+    console.log('fetchPositions starting...');
     try {
-      const data = await api.get<Position[]>('/positions');
-      setPositions(data);
-    } catch (e: any) {
-      setError(e.message);
+      const res  = await fetch('/api/dashboard/positions');
+      console.log('fetch response status:', res.status);
+      const data = await res.json();
+      console.log('fetch data received, count:', Array.isArray(data) ? data.length : 'not an array');
+      setPositions(Array.isArray(data) ? data : []);
+    } catch (err) {
+      console.error('fetchPositions error:', err);
+      setPositions([]);
     } finally {
       setLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    load();
-    const t = setInterval(load, 10_000);
-    return () => clearInterval(t);
-  }, [load]);
+    console.log('Positions useEffect mounting');
+    fetchPositions();
+    const interval = setInterval(fetchPositions, 15000);
+    return () => {
+      console.log('Positions useEffect unmounting');
+      clearInterval(interval);
+    };
+  }, [fetchPositions]);
 
-  async function closePosition(symbol: string, side: string, platform: string) {
-    setClosing(symbol);
+  const uniqueAssets = Array.from(
+    new Set(positions.map(p => p.symbol))
+  ).sort();
+
+  const uniqueStrategies = Array.from(
+    new Set(positions.map(p => p.strategy_name).filter(Boolean))
+  ).sort() as string[];
+
+  const handleClose = async (id: string) => {
+    if (!confirm('Close this position?')) return;
     try {
-      await api.post(`/positions/${encodeURIComponent(symbol)}/close`, { side, platform });
-      await load();
-    } catch (e: any) {
-      alert(`Close failed: ${e.message}`);
-    } finally {
-      setClosing(null);
+      await fetch(`/api/dashboard/positions/${id}/close`, { method: 'POST' });
+      fetchPositions();
+    } catch (err) {
+      console.error('handleClose error:', err);
     }
-  }
+  };
 
-  function formatSize(symbol: string, size: string | number) {
-    const s = parseFloat(String(size));
-    return s.toFixed(4);
-  }
+  const handleRefresh = async (id: string) => {
+    try {
+      await fetch(`/api/dashboard/positions/${id}/refresh`, { method: 'POST' });
+      fetchPositions();
+    } catch (err) {
+      console.error('handleRefresh error:', err);
+    }
+  };
 
-  function formatPrice(symbol: string, price: string | number | null | undefined) {
-    if (price === null || price === undefined) return '—';
-    const p = Number(price);
-    if (isNaN(p)) return String(price);
-    
-    if (symbol.includes('BTC') || symbol.includes('ETH')) return p.toFixed(2);
-    else if (symbol.includes('SOL')) return p.toFixed(3);
-    else if (symbol.includes('XRP') || symbol.includes('ADA') || symbol.includes('DOGE')) return p.toFixed(4);
-    else if (p < 1) return p.toFixed(6);
-    return p.toFixed(2);
-  }
+  try {
+    const filtered = positions.filter(p => {
+      if (filterAsset    !== 'all' && p.symbol        !== filterAsset)    return false;
+      if (filterStatus   !== 'all' && p.status        !== filterStatus)   return false;
+      if (filterStrategy !== 'all' && p.strategy_name !== filterStrategy) return false;
+      return true;
+    });
 
-  return (
-    <div className="p-4 md:p-6 space-y-4">
-      <div className="flex items-center justify-between">
-        <h2 className="text-xl font-bold text-gray-900 dark:text-white transition-colors">Positions</h2>
-        <button className="btn-ghost text-sm" onClick={load}>↻ Refresh</button>
+    const live   = filtered.filter(p => p.status === 'open');
+    const stale  = filtered.filter(p => p.status === 'stale');
+    const closed = filtered.filter(p => p.status === 'closed');
+
+    console.log(`Rendering positions: live=${live.length}, stale=${stale.length}, closed=${closed.length}, loading=${loading}`);
+
+    if (loading) {
+      return (
+        <div style={{ padding:'24px', color:'var(--dim)' }}>
+          Loading positions...
+        </div>
+      );
+    }
+
+    return (
+      <div style={{ display:'flex', flexDirection:'column', height:'100%' }}>
+
+        <TopBar
+          title="Positions"
+          right={
+            <>
+              <span style={{
+                background:'var(--bg3)', border:'1px solid var(--border)',
+                borderRadius:'20px', padding:'4px 11px',
+                fontFamily:'JetBrains Mono, monospace', fontSize:'12px',
+                color:'var(--muted)',
+              }}>
+                {live.length} active
+              </span>
+              <button
+                onClick={fetchPositions}
+                style={{
+                  display:'flex', alignItems:'center', gap:'5px',
+                  background:'var(--bg3)', border:'1px solid var(--border)',
+                  borderRadius:'20px', padding:'5px 12px',
+                  fontFamily:'JetBrains Mono, monospace', fontSize:'11px',
+                  color:'var(--muted)', cursor:'pointer',
+                }}>
+                ↺
+              </button>
+            </>
+          }
+        />
+
+        <div style={{
+          display:'flex', gap:'6px', padding:'10px 14px',
+          borderBottom:'1px solid var(--border)',
+          overflowX:'auto', flexShrink:0, scrollbarWidth:'none',
+        }}>
+          <select
+            value={filterAsset}
+            onChange={e => setFilterAsset(e.target.value)}
+            style={{
+              background: filterAsset !== 'all' ? 'var(--blue-a)' : 'var(--bg2)',
+              border: `1px solid ${filterAsset !== 'all' ? 'var(--blue)' : 'var(--border)'}`,
+              borderRadius:'20px', padding:'5px 12px', fontSize:'10px',
+              fontWeight:500, color: filterAsset !== 'all' ? 'var(--blue)' : 'var(--muted)',
+              cursor:'pointer', outline:'none',
+            }}>
+            <option value="all">All Assets</option>
+            {uniqueAssets.map(a => <option key={a} value={a}>{a}</option>)}
+          </select>
+
+          <select
+            value={filterStatus}
+            onChange={e => setFilterStatus(e.target.value)}
+            style={{
+              background: filterStatus !== 'all' ? 'var(--blue-a)' : 'var(--bg2)',
+              border: `1px solid ${filterStatus !== 'all' ? 'var(--blue)' : 'var(--border)'}`,
+              borderRadius:'20px', padding:'5px 12px', fontSize:'10px',
+              fontWeight:500, color: filterStatus !== 'all' ? 'var(--blue)' : 'var(--muted)',
+              cursor:'pointer', outline:'none',
+            }}>
+            <option value="all">All Statuses</option>
+            <option value="open">Live</option>
+            <option value="stale">Stale</option>
+            <option value="closed">Closed</option>
+          </select>
+
+          <select
+            value={filterStrategy}
+            onChange={e => setFilterStrategy(e.target.value)}
+            style={{
+              background: filterStrategy !== 'all' ? 'var(--blue-a)' : 'var(--bg2)',
+              border: `1px solid ${filterStrategy !== 'all' ? 'var(--blue)' : 'var(--border)'}`,
+              borderRadius:'20px', padding:'5px 12px', fontSize:'10px',
+              fontWeight:500, color: filterStrategy !== 'all' ? 'var(--blue)' : 'var(--muted)',
+              cursor:'pointer', outline:'none',
+            }}>
+            <option value="all">All Strategies</option>
+            {uniqueStrategies.map(s => <option key={s} value={s}>{s}</option>)}
+          </select>
+
+          {(filterAsset !== 'all' || filterStatus !== 'all' || filterStrategy !== 'all') && (
+            <span
+              onClick={() => {
+                setFilterAsset('all');
+                setFilterStatus('all');
+                setFilterStrategy('all');
+              }}
+              style={{
+                whiteSpace:'nowrap', background:'var(--bg2)',
+                border:'1px solid var(--border)', borderRadius:'20px',
+                padding:'5px 12px', fontSize:'10px', fontWeight:500,
+                color:'var(--red)', cursor:'pointer',
+              }}>
+              ✕ Clear
+            </span>
+          )}
+        </div>
+        <SummaryBar cells={[
+          { count: live.length,   label: 'Live',   variant: 'live'   as const },
+          { count: stale.length,  label: 'Stale',  variant: 'stale'  as const },
+          { count: closed.length, label: 'Closed', variant: 'closed' as const },
+        ]} />
+
+        <div style={{
+          flex:1, overflowY:'auto', padding:'14px 14px 80px',
+          scrollbarWidth:'none',
+        }}>
+
+          {live.length > 0 && (
+            <>
+              <SectionHeader label="Live"   count={live.length}   variant="live" />
+              {live.map(p => (
+                <PositionCard key={p.id} position={p}
+                  onClose={handleClose} onRefresh={handleRefresh} />
+              ))}
+            </>
+          )}
+
+          {stale.length > 0 && (
+            <>
+              <SectionHeader label="Stale"  count={stale.length}  variant="stale" />
+              {stale.map(p => (
+                <PositionCard key={p.id} position={p}
+                  onClose={handleClose} onRefresh={handleRefresh} />
+              ))}
+            </>
+          )}
+
+          {closed.length > 0 && (
+            <>
+              <SectionHeader label="Closed" count={closed.length} variant="closed" />
+              {closed.map(p => (
+                <PositionCard key={p.id} position={p}
+                  onClose={handleClose} onRefresh={handleRefresh} />
+              ))}
+            </>
+          )}
+
+          {positions.length === 0 && (
+            <p style={{ color:'var(--dim)', textAlign:'center', padding:'40px 0' }}>
+              No open positions.
+            </p>
+          )}
+
+        </div>
       </div>
-
-      {loading && (
-        <div className="space-y-2">
-          {[...Array(3)].map((_, i) => (
-            <div key={i} className="h-20 bg-white dark:bg-gray-800 rounded-xl animate-pulse border border-gray-100 dark:border-gray-700" />
-          ))}
-        </div>
-      )}
-
-      {error && (
-        <div className="bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-800 rounded-xl p-4 text-red-600 dark:text-red-300 text-sm">
-          {error}
-        </div>
-      )}
-
-      {!loading && !error && positions.length === 0 && (
-        <div className="text-center py-20 text-gray-400">
-          <p className="text-5xl mb-4">📭</p>
-          <p className="font-medium text-gray-500">No positions found</p>
-        </div>
-      )}
-
-      {!loading && positions.length > 0 && (
-        <>
-          <div className="hidden md:block overflow-x-auto rounded-xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 transition-colors">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="text-xs text-gray-500 uppercase border-b border-gray-200 dark:border-gray-800">
-                  {['Status', 'Symbol', 'Side', 'Size', 'Entry', 'Mark', 'Close Price', 'P&L (Unrealized / Realized)', 'Platform', ''].map((h) => (
-                    <th key={h} className="px-4 py-3 text-left font-medium">{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
-                {positions.map((p) => {
-                  const uPnl = parseFloat(p.unrealizedPnl ?? '0');
-                  const rPnl = parseFloat(p.realizedPnl ?? '0');
-                  const isOpen = p.status === 'open';
-                  return (
-                    <tr key={p.id} className="table-row-hover">
-                      <td className="px-4 py-3">
-                        <span className={`px-2 py-1 rounded text-[10px] font-bold ${isOpen ? 'bg-emerald-100 text-emerald-800' : 'bg-gray-100 text-gray-600'}`}>
-                          {p.status.toUpperCase()}
-                        </span>
-                      </td>
-                      <td className="px-4 py-3 font-mono font-semibold text-gray-900 dark:text-gray-200">{p.pair.label}</td>
-                      <td className="px-4 py-3"><SideBadge side={p.side} /></td>
-                      <td className="px-4 py-3 font-mono text-gray-600 dark:text-gray-300">{formatSize(p.pair.label, p.size)}</td>
-                      <td className="px-4 py-3 font-mono text-gray-400 dark:text-gray-500">{formatPrice(p.pair.label, p.entryPx)}</td>
-                      <td className="px-4 py-3 font-mono text-gray-600 dark:text-gray-300">{formatPrice(p.pair.label, p.markPx)}</td>
-                      <td className="px-4 py-3 font-mono text-gray-600 dark:text-gray-300">{formatPrice(p.pair.label, p.closing_price)}</td>
-                      <td className="px-4 py-3 font-mono">
-                        {isOpen ? (
-                          <div className="flex items-center gap-1 font-semibold">
-                            <span className={uPnl >= 0 ? 'text-emerald-600' : 'text-red-600'}>
-                              {uPnl >= 0 ? '+' : ''}{uPnl.toFixed(2)}
-                            </span>
-                            <span className="text-gray-300 dark:text-gray-600">/</span>
-                            <span className={rPnl >= 0 ? 'text-emerald-500/80' : 'text-red-500/80'}>
-                              {rPnl >= 0 ? '+' : ''}{rPnl.toFixed(2)}
-                            </span>
-                          </div>
-                        ) : (
-                          <span className={`font-semibold ${rPnl >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
-                            {rPnl >= 0 ? '+' : ''}{rPnl.toFixed(2)}
-                          </span>
-                        )}
-                      </td>
-                      <td className="px-4 py-3"><PlatformBadge platform={p.platform} /></td>
-                      <td className="px-4 py-3">
-                        {isOpen && (
-                          <button
-                            className="btn-danger text-xs py-1 shadow-sm"
-                            disabled={closing === p.pair.label}
-                            onClick={() => closePosition(p.pair.label, p.side, p.platform)}
-                          >
-                            {closing === p.pair.label ? 'Closing…' : 'Close'}
-                          </button>
-                        )}
-                        {p.status === 'stale' && (
-                          <button
-                            className="text-[10px] bg-amber-100 text-amber-800 px-2 py-1 rounded font-bold hover:bg-amber-200"
-                            onClick={() => console.log('Reconcile triggered')}
-                          >
-                            RECONCILE
-                          </button>
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-          <div className="md:hidden space-y-2">
-            {positions.map((p) => {
-              const uPnl = parseFloat(p.unrealizedPnl ?? '0');
-              const rPnl = parseFloat(p.realizedPnl ?? '0');
-              const isOpen = p.status === 'open';
-              return (
-                <div key={p.id} className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-lg p-3 shadow-sm space-y-2">
-                  <div className="flex justify-between items-center">
-                  <div className="flex items-center gap-2">
-                  <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold ${isOpen ? 'bg-emerald-100 text-emerald-800' : 'bg-gray-100 text-gray-600'}`}>
-                  {p.status.toUpperCase()}
-                  </span>
-                  <span className="font-mono font-bold text-gray-900 dark:text-gray-200">{p.pair.label}</span>
-                  </div>
-                  <SideBadge side={p.side} />
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
-                  <div className="flex justify-between"><span className="text-gray-400">Size</span> <span className="font-mono">{formatSize(p.pair.label, p.size)}</span></div>
-                  <div className="flex justify-between"><span className="text-gray-400">Entry</span> <span className="font-mono">{formatPrice(p.pair.label, p.entryPx)}</span></div>
-                  <div className="flex justify-between"><span className="text-gray-400">Mark</span> <span className="font-mono">{formatPrice(p.pair.label, p.markPx)}</span></div>
-                  <div className="flex justify-between"><span className="text-gray-400">Platform</span> <PlatformBadge platform={p.platform} /></div>
-                  </div>
-
-                  <div className="pt-2 border-t border-gray-100 dark:border-gray-800 flex justify-between items-center">
-                  <div className="font-mono text-xs font-semibold">
-                  {isOpen ? (
-                  <div className="flex items-center gap-1">
-                    <span className={uPnl >= 0 ? 'text-emerald-600' : 'text-red-600'}>
-                      {uPnl >= 0 ? '+' : ''}{uPnl.toFixed(2)}
-                    </span>
-                    <span className="text-gray-300">/</span>
-                    <span className={rPnl >= 0 ? 'text-emerald-500/80' : 'text-red-500/80'}>
-                      {rPnl >= 0 ? '+' : ''}{rPnl.toFixed(2)}
-                    </span>
-                  </div>
-                  ) : (
-                  <span className={rPnl >= 0 ? 'text-emerald-600' : 'text-red-600'}>
-                    {rPnl >= 0 ? '+' : ''}{rPnl.toFixed(2)}
-                  </span>
-                  )}
-                  </div>
-                  {isOpen && (
-                  <button
-                  className="bg-red-50 hover:bg-red-100 dark:bg-red-900/20 text-red-600 px-3 py-1 rounded text-[10px] font-bold"
-                  onClick={() => closePosition(p.pair.label, p.side, p.platform)}
-                  >
-                  CLOSE
-                  </button>
-                  )}
-                  </div>
-
-                </div>
-              );
-            })}
-          </div>
-        </>
-      )}
-    </div>
-  );
+    );
+  } catch (err) {
+    console.error('Positions render error:', err);
+    return (
+      <div style={{ padding: '24px', color: 'red' }}>
+        Render error: {String(err)}
+      </div>
+    );
+  }
 }

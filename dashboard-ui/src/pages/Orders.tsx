@@ -1,300 +1,479 @@
-import { useEffect, useState, useCallback } from 'react';
-import { useSearchParams } from 'react-router-dom';
-import { api, Order, fetchStrategies, Strategy } from '../api';
-import { StatusBadge, SideBadge, PlatformBadge, StrategyBadge } from '../components/Badges';
+import React, { useState, useEffect, useCallback } from 'react';
+import { HeaderPill } from '../components/shared/HeaderPill';
+import { TopBar }     from '../components/shared/TopBar';
+import { FilterBar }  from '../components/shared/FilterBar';
+import { formatPrice, formatSize } from '../utils/precision';
+import { formatRelative } from '../utils/datetime';
 
-const STATUSES = ['', 'filled', 'received', 'routing', 'route_failed', 'rejected'];
-
-function SourceIcon({ source }: { source?: string }) {
-  if (source === 'tradingview') return <span title="TradingView">📡</span>;
-  if (source === 'internal') return <span title="Internal">⚙️</span>;
-  return <span title="Unknown">❓</span>;
+interface Order {
+  id:               string;
+  symbol:           string;
+  side:             'buy' | 'sell';
+  leverage?:        number;
+  status:           string; // Using string to allow backend statuses before mapping
+  strategy_id?:     string;
+  strategy_name?:   string;
+  source?:          string;
+  destination?:     string;
+  account_id?:      string;
+  account_label?:   string;
+  created_at:       string;
+  price?:           number;
+  size?:            number;
+  margin?:          number;
+  error_msg?:       string;
 }
 
-export default function OrdersPage() {
-  const [searchParams, setSearchParams] = useSearchParams();
-  const [orders, setOrders] = useState<Order[]>([]);
-  const [strategies, setStrategies] = useState<Strategy[]>([]);
-  const [total, setTotal] = useState(0);
-  const [loading, setLoading] = useState(true);
+type ChipStatus = 'filled' | 'lag-fail' | 'route-fail' | 'pending' | 'rejected';
 
-  // Filters from URL
-  const symbol = searchParams.get('symbol') || '';
-  const platform = searchParams.get('platform') || '';
-  const status = searchParams.get('status') || '';
-  const strategy_id = searchParams.get('strategy_id') || '';
+const CHIP_STYLES: Record<ChipStatus, React.CSSProperties> = {
+  'filled':     { background:'var(--green-a)',         color:'var(--green)',        borderColor:'var(--green-b)' },
+  'lag-fail':   { background:'var(--failed-color-a)',  color:'var(--failed-color)', borderColor:'var(--failed-color-b)' },
+  'route-fail': { background:'var(--failed-color-a)',  color:'var(--failed-color)', borderColor:'var(--failed-color-b)' },
+  'pending':    { background:'var(--blue-a)',           color:'var(--blue)',         borderColor:'var(--blue-b)' },
+  'rejected':   { background:'var(--red-a)',            color:'var(--red)',          borderColor:'var(--red-b)' },
+};
 
-  const [expanded, setExpanded] = useState<string | null>(null);
-  const [retrying, setRetrying] = useState<string | null>(null);
+function StatusChip({ status }: { status: ChipStatus }) {
+  return (
+    <span style={{
+      fontFamily:    'JetBrains Mono, monospace',
+      fontSize:      '10px',
+      fontWeight:    700,
+      letterSpacing: '.04em',
+      borderRadius:  'var(--pill-r)',
+      padding:       '2px 6px',
+      border:        '1px solid',
+      textTransform: 'uppercase',
+      flexShrink:    0,
+      ...CHIP_STYLES[status],
+    }}>
+      {status}
+    </span>
+  );
+}
 
-  const LIMIT = 50;
-  const page = parseInt(searchParams.get('page') || '1');
+function OrderCard({
+  order,
+  onRetry,
+  onDelete,
+  onCancel,
+}: {
+  order:    Order;
+  onRetry:  (id: string) => void;
+  onDelete: (id: string) => void;
+  onCancel: (id: string) => void;
+}) {
+  // Normalize status for UI
+  let uiStatus: ChipStatus = 'pending';
+  if (order.status === 'filled') uiStatus = 'filled';
+  else if (order.status === 'route_failed') uiStatus = 'route-fail';
+  else if (order.status === 'lag_failed' || order.status === 'lag-fail') uiStatus = 'lag-fail';
+  else if (order.status === 'rejected') uiStatus = 'rejected';
+  else if (['received', 'routing', 'pending'].includes(order.status)) uiStatus = 'pending';
 
-  const loadStrategies = async () => {
-    const data = await fetchStrategies();
-    setStrategies(data);
-  };
+  const isFailed = uiStatus === 'lag-fail' || uiStatus === 'route-fail' || uiStatus === 'rejected';
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    const params = new URLSearchParams({ page: String(page), limit: String(LIMIT) });
-    if (symbol) params.set('symbol', symbol);
-    if (platform) params.set('platform', platform);
-    if (status) params.set('status', status);
-    if (strategy_id) params.set('strategy_id', strategy_id);
+  // Left bar: failed orders always use failed-color regardless of side
+  const barColor = isFailed
+    ? 'var(--failed-color)'
+    : order.side === 'buy' ? 'var(--green)' : 'var(--red)';
 
-    try {
-      const res = await api.get<{ total: number; items: Order[] }>(`/orders?${params}`);
-      setOrders(res.items);
-      setTotal(res.total);
-    } finally {
-      setLoading(false);
+  const sideVariant = order.side === 'buy' ? 'buy' : 'sell';
+
+  const source      = order.source      || 'TradingView';
+  const destination = order.destination
+    || order.account_label
+    || order.account_id
+    || 'exchange';
+
+  // Footer buttons per status
+  const footerButtons: { label: string; color: 'red' | 'blue'; onClick: () => void; fullWidth?: boolean }[] = (() => {
+    switch (uiStatus) {
+      case 'lag-fail':
+        return [
+          { label: '✕ Delete Log', color: 'red' as const,
+            onClick: () => onDelete(order.id), fullWidth: true },
+        ];
+      case 'route-fail':
+      case 'rejected':
+        return [
+          { label: '↺ Retry',  color: 'blue' as const, onClick: () => onRetry(order.id) },
+          { label: '✕ Delete', color: 'red'  as const, onClick: () => onDelete(order.id) },
+        ];
+      case 'pending':
+        return [
+          { label: '✕ Cancel Order', color: 'red' as const,
+            onClick: () => onCancel(order.id), fullWidth: true },
+        ];
+      default:
+        return [];
     }
-  }, [page, symbol, platform, status, strategy_id]);
-
-  useEffect(() => { loadStrategies(); }, []);
-  useEffect(() => { load(); }, [load]);
-
-  const setFilter = (key: string, value: string) => {
-    const next = new URLSearchParams(searchParams);
-    if (value) next.set(key, value);
-    else next.delete(key);
-    next.set('page', '1');
-    setSearchParams(next);
-  };
-
-  async function retry(orderId: string) {
-    setRetrying(orderId);
-    try {
-      const res = await api.post<{ status: string; retry_result: any }>(`/orders/${orderId}/retry`);
-      // Update local state for immediate feedback
-      setOrders(current => current.map(o => 
-        o.id === orderId 
-          ? { 
-              ...o, 
-              status: res.status, 
-              error_msg: res.retry_result?.error_msg || o.error_msg,
-              exchange_order_id: res.retry_result?.exchange_order_id || o.exchange_order_id,
-              actual_fill_price: res.retry_result?.actual_fill_price || o.actual_fill_price
-            } 
-          : o
-      ));
-    } catch (e: any) {
-      alert(`Retry failed: ${e.message}`);
-    } finally {
-      setRetrying(null);
-    }
-  }
-
-  const totalPages = Math.ceil(total / LIMIT);
-
-  function formatPrice(label: string, price: string | number | null | undefined) {
-    if (price === null || price === undefined) return '—';
-    const p = Number(price);
-    if (isNaN(p)) return String(price);
-    
-    if (label.includes('BTC') || label.includes('ETH')) return p.toFixed(2);
-    else if (label.includes('SOL')) return p.toFixed(3);
-    else if (label.includes('XRP') || label.includes('ADA') || label.includes('DOGE')) return p.toFixed(4);
-    else if (p < 1) return p.toFixed(6);
-    return p.toFixed(2);
-  }
+  })();
 
   return (
-    <div className="p-4 md:p-6 space-y-4">
-      <div className="flex items-center justify-between">
-        <h2 className="text-xl font-bold text-gray-900 dark:text-white">Orders</h2>
-        <span className="text-xs text-gray-500">{total} total</span>
+    <div style={{
+      background:    'var(--bg3)',
+      borderRadius:  'var(--r)',
+      border:        '1px solid var(--border)',
+      marginBottom:  '10px',
+      position:      'relative',
+      display:       'flex',
+      flexDirection: 'column',
+      overflow:      'hidden',
+    }}>
+      {/* Left bar */}
+      <div style={{
+        position:'absolute', left:0, top:0, bottom:0,
+        width:'4px', background: barColor, zIndex:1,
+      }} />
+
+      {/* Row 1: side + leverage + symbol + chip */}
+      <div style={{
+        display:'flex', alignItems:'center', gap:'6px',
+        padding:'12px 12px 0 18px', lineHeight:1,
+      }}>
+        <HeaderPill variant={sideVariant}>
+          {order.side.toUpperCase()}
+        </HeaderPill>
+        {order.leverage && (
+          <HeaderPill variant="lev">{order.leverage}x</HeaderPill>
+        )}
+        <span style={{
+          fontSize:'16px', fontWeight:700, letterSpacing:'-.01em',
+          color:'var(--text)', whiteSpace:'nowrap', flexShrink:0,
+          marginRight:'2px',
+        }}>
+          {order.symbol}
+        </span>
+        <div style={{ marginLeft:'auto' }}>
+          <StatusChip status={uiStatus} />
+        </div>
       </div>
 
-      {/* Filters */}
-      <div className="flex flex-wrap gap-2">
-        <input
-          className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg px-3 py-1.5 text-sm text-gray-900 dark:text-gray-200 placeholder-gray-400 dark:placeholder-gray-600 focus:outline-none focus:border-indigo-500 w-36 transition-colors"
-          placeholder="Symbol…"
-          value={symbol}
-          onChange={(e) => setFilter('symbol', e.target.value.toUpperCase())}
-        />
-        <select
-          className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg px-3 py-1.5 text-sm text-gray-900 dark:text-gray-200 focus:outline-none focus:border-indigo-500 transition-colors"
-          value={strategy_id}
-          onChange={(e) => setFilter('strategy_id', e.target.value)}
-        >
-          <option value="">All strategies</option>
-          {strategies.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
-        </select>
-        <select
-          className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg px-3 py-1.5 text-sm text-gray-900 dark:text-gray-200 focus:outline-none focus:border-indigo-500 transition-colors"
-          value={platform}
-          onChange={(e) => setFilter('platform', e.target.value)}
-        >
-          <option value="">All platforms</option>
-          <option value="blofin">Blofin</option>
-          <option value="hyperliquid">Hyperliquid</option>
-        </select>
-        <select
-          className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg px-3 py-1.5 text-sm text-gray-900 dark:text-gray-200 focus:outline-none focus:border-indigo-500 transition-colors"
-          value={status}
-          onChange={(e) => setFilter('status', e.target.value)}
-        >
-          {STATUSES.map((s) => (
-            <option key={s} value={s}>{s || 'All statuses'}</option>
-          ))}
-        </select>
-        <button className="btn-ghost text-sm" onClick={() => setSearchParams({})}>
-          Clear
-        </button>
+      {/* Strategy row */}
+      {(order.strategy_name || order.strategy_id) && (
+        <div style={{ padding:'5px 12px 0 18px' }}>
+          <span style={{
+            fontFamily:'JetBrains Mono, monospace', fontSize:'12px',
+            fontWeight:600, background:'var(--bg3)',
+            border:'1px solid var(--border)', borderRadius:'var(--pill-r)',
+            padding:'1px 6px', color:'var(--muted)',
+            whiteSpace:'nowrap', lineHeight:1.25,
+          }}>
+            {order.strategy_name || order.strategy_id}
+          </span>
+        </div>
+      )}
+
+      {/* Row 1b: route + timestamp */}
+      <div style={{
+        display:'flex', alignItems:'center', justifyContent:'space-between',
+        padding:'5px 12px 2px 18px',
+      }}>
+        <div style={{ display:'flex', alignItems:'center', gap:'4px' }}>
+          <HeaderPill variant="neutral">{source}</HeaderPill>
+          <span style={{
+            fontSize:'10px', color:'var(--dim)',
+            fontFamily:'monospace', fontWeight:'bold',
+          }}>→</span>
+          <HeaderPill variant="neutral">{destination}</HeaderPill>
+        </div>
+        <span style={{
+          fontFamily:'JetBrains Mono, monospace', fontSize:'10px',
+          fontWeight:500, color:'var(--muted)',
+        }}>
+          {formatRelative(order.created_at)}
+        </span>
       </div>
 
-      {loading ? (
-        <div className="space-y-2">
-          {[...Array(8)].map((_, i) => (
-            <div key={i} className="h-10 bg-white dark:bg-gray-800 rounded animate-pulse border border-gray-100 dark:border-gray-700" />
+      {/* Data row: Price | Size | Margin */}
+      <div style={{
+        display:'flex', margin:'8px 12px 0 18px',
+        borderRadius:'var(--pill-r)', overflow:'hidden',
+        border:'1px solid var(--border)', background:'rgba(226,232,240,.4)',
+      }}>
+        {[
+          { label: 'Price',  value: formatPrice(order.symbol, order.price ?? null) },
+          { label: 'Size',   value: formatSize(order.symbol,  order.size  ?? null) },
+          { label: 'Margin', value: order.margin != null ? Number(order.margin).toFixed(2) : '—' },
+        ].map((cell, idx) => (
+          <div key={cell.label} style={{
+            flex:1, padding:'6px 10px', display:'flex',
+            flexDirection:'column', gap:'1px',
+            borderRight: idx < 2 ? '1px solid var(--border)' : 'none',
+          }}>
+            <span style={{
+              fontSize:'9px', fontWeight:600, letterSpacing:'.11em',
+              textTransform:'uppercase', color:'var(--dim)', marginBottom:'2px',
+            }}>
+              {cell.label}
+            </span>
+            <span style={{
+              fontFamily:'JetBrains Mono, monospace', fontSize:'13px',
+              fontWeight: cell.label === 'Size' ? 700 : 600,
+              color:'var(--text)', whiteSpace:'nowrap',
+            }}>
+              {cell.value}
+            </span>
+          </div>
+        ))}
+      </div>
+
+      {/* Footer */}
+      {footerButtons.length > 0 && (
+        <div style={{
+          borderTop:'1px solid var(--border)', background:'var(--bg2)',
+          display:'flex', marginTop:'8px',
+        }}>
+          {footerButtons.map((btn, idx) => (
+            <button
+              key={idx}
+              onClick={btn.onClick}
+              style={{
+                flex:          1,
+                background:    'transparent',
+                border:        'none',
+                borderRight:   !btn.fullWidth && idx < footerButtons.length - 1
+                  ? '1px solid var(--border)'
+                  : 'none',
+                color:         btn.color === 'red' ? 'var(--red)' : 'var(--blue)',
+                fontSize:      '11px',
+                fontWeight:    700,
+                letterSpacing: '.06em',
+                textTransform: 'uppercase',
+                padding:       '10px',
+                cursor:        'pointer',
+                textAlign:     'center',
+              }}
+            >
+              {btn.label}
+            </button>
           ))}
         </div>
-      ) : (
-        <>
-          <div className="hidden md:block overflow-x-auto rounded-xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 transition-colors">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="text-xs text-gray-500 uppercase border-b border-gray-200 dark:border-gray-800">
-                  {['Time', 'Origin', 'Symbol', 'Side', 'Price', 'Size', 'Strategy', 'Platform', 'Status', 'P&L', ''].map((h) => (
-                    <th key={h} className="px-4 py-3 text-left font-medium">{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
-                {orders.map((o) => {
-                  const price = o.actual_fill_price || o.indicator_price;
-                  return (
-                    <>
-                    <tr
-                      key={o.id}
-                      className="table-row-hover cursor-pointer"
-                      onClick={() => setExpanded(expanded === o.id ? null : o.id)}
-                    >
-                      <td className="px-4 py-3 text-gray-500 dark:text-gray-400 font-mono text-xs">
-                        {new Date(o.received_at).toLocaleString()}
-                      </td>
-                      <td className="px-4 py-3 text-center">
-                        <SourceIcon source={o.signal_source} />
-                      </td>
-                      <td className="px-4 py-3 font-mono font-semibold text-gray-900 dark:text-gray-200">{o.pair.label}</td>
-                      <td className="px-4 py-3"><SideBadge side={o.side} /></td>
-                      <td className="px-4 py-3 font-mono text-gray-600 dark:text-gray-300">{formatPrice(o.pair.label, price)}</td>
-                      <td className="px-4 py-3 font-mono text-gray-600 dark:text-gray-300">{o.size}</td>
-                      <td className="px-4 py-3 text-xs text-gray-500 dark:text-gray-400 font-medium">{o.strategy_id || '—'}</td>
-                      <td className="px-4 py-3"><PlatformBadge platform={o.platform} /></td>
-                      <td className="px-4 py-3"><StatusBadge status={o.status} /></td>
-                      <td className="px-4 py-3 font-mono text-xs">
-                        {o.pnl != null ? (
-                          <span className={parseFloat(o.pnl) >= 0 ? 'text-emerald-600 dark:text-emerald-400 font-bold' : 'text-red-600 dark:text-red-400 font-bold'}>
-                            ${parseFloat(o.pnl).toFixed(2)}
-                          </span>
-                        ) : (
-                          <span className="text-gray-400">—</span>
-                        )}
-                      </td>
-                      <td className="px-4 py-3">
-                        {(o.status === 'route_failed' || o.status === 'rejected') && (
-                          <button
-                            className="btn-primary text-xs py-1"
-                            disabled={retrying === o.id}
-                            onClick={(e) => { e.stopPropagation(); retry(o.id); }}
-                          >
-                            {retrying === o.id ? '…' : 'Retry'}
-                          </button>
-                        )}
-                      </td>
-                    </tr>
-                    {expanded === o.id && (
-                      <tr key={`${o.id}-expand`}>
-                        <td colSpan={11} className="px-4 py-3 bg-gray-50 dark:bg-gray-900/50">
-                          <div className="text-xs text-gray-500 dark:text-gray-400 space-y-1">
-                            <p><span className="text-gray-400 dark:text-gray-600">ID:</span> {o.id}</p>
-                            {o.exchange_order_id && <p><span className="text-gray-400 dark:text-gray-600">Exchange ID:</span> {o.exchange_order_id}</p>}
-                            {o.strategy_id && <p><span className="text-gray-400 dark:text-gray-600">Strategy:</span> {o.strategy_id}</p>}
-                            {o.signal_source && <p><span className="text-gray-400 dark:text-gray-600">Signal Source:</span> {o.signal_source}</p>}
-                            {o.error_msg && <p className="text-red-600 dark:text-red-400"><span className="text-gray-400 dark:text-gray-600">Error:</span> {o.error_msg}</p>}
-                          </div>
-                        </td>
-                      </tr>
-                    )}
-                    </>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-
-          <div className="md:hidden space-y-2">
-            {orders.map((o) => (
-              <div key={o.id} className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-lg p-3 shadow-sm space-y-2">
-                <div className="flex justify-between items-center">
-                  <div className="flex items-center gap-2">
-                    <span className="font-mono font-bold text-gray-900 dark:text-gray-200">{o.pair.label}</span>
-                    <SourceIcon source={o.signal_source} />
-                  </div>
-                  <StatusBadge status={o.status} />
-                </div>
-                
-                <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
-                  <div className="flex justify-between"><span className="text-gray-400">Price</span> <span className="font-mono">{formatPrice(o.pair.label, o.actual_fill_price || o.indicator_price)}</span></div>
-                  <div className="flex justify-between"><span className="text-gray-400">Size</span> <span className="font-mono">{o.size}</span></div>
-                  <div className="flex justify-between"><span className="text-gray-400">Side</span> <SideBadge side={o.side} /></div>
-                  <div className="flex justify-between"><span className="text-gray-400">Strategy</span> {o.strategy_id ? <StrategyBadge strategyId={o.strategy_id} /> : '—'}</div>
-                </div>
-                
-                <div className="pt-2 border-t border-gray-100 dark:border-gray-800 flex justify-between items-center text-xs">
-                   <div className="font-mono text-gray-500 dark:text-gray-400">
-                    {new Date(o.received_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                  </div>
-                   {o.pnl != null && (
-                     <div className={parseFloat(o.pnl) >= 0 ? 'text-emerald-600 dark:text-emerald-400 font-mono font-bold' : 'text-red-600 dark:text-red-400 font-mono font-bold'}>
-                       ${parseFloat(o.pnl).toFixed(2)}
-                     </div>
-                   )}
-                   {o.pnl == null && (
-                     <div className="text-gray-400 font-mono">—</div>
-                   )}                </div>
-                {(o.status === 'route_failed' || o.status === 'rejected') && (
-                  <button
-                    className="bg-red-50 hover:bg-red-100 dark:bg-red-900/20 text-red-600 px-3 py-1 rounded text-[10px] font-bold w-full"
-                    disabled={retrying === o.id}
-                    onClick={() => retry(o.id)}
-                  >
-                    {retrying === o.id ? 'Retrying…' : 'RETRY ORDER'}
-                  </button>
-                )}
-              </div>
-            ))}
-          </div>
-
-          {totalPages > 1 && (
-            <div className="flex items-center justify-center gap-2 pt-2">
-              <button 
-                className="btn-ghost text-sm border border-gray-200 dark:border-gray-800" 
-                disabled={page === 1} 
-                onClick={() => setFilter('page', String(page - 1))}
-              >
-                ← Prev
-              </button>
-              <span className="text-sm text-gray-500 dark:text-gray-400">{page} / {totalPages}</span>
-              <button 
-                className="btn-ghost text-sm border border-gray-200 dark:border-gray-800" 
-                disabled={page >= totalPages} 
-                onClick={() => setFilter('page', String(page + 1))}
-              >
-                Next →
-              </button>
-            </div>
-          )}
-
-          {orders.length === 0 && (
-            <p className="text-center text-gray-500 py-12">No orders found</p>
-          )}
-        </>
       )}
     </div>
   );
+}
+
+export default function Orders() {
+  const [orders, setOrders]     = useState<Order[]>([]);
+  const [loading, setLoading]   = useState(true);
+  const [total, setTotal]       = useState(0);
+
+  const [filterAsset,    setFilterAsset]    = useState<string>('all');
+  const [filterStatus,   setFilterStatus]   = useState<string>('all');
+  const [filterStrategy, setFilterStrategy] = useState<string>('all');
+  const [page, setPage]                     = useState<number>(1);
+  const PAGE_SIZE = 50;
+
+  const fetchOrders = useCallback(async (pageNum: number = 1, append: boolean = false) => {
+    try {
+      const res  = await fetch(`/api/dashboard/orders?limit=${PAGE_SIZE}&page=${pageNum}`);
+      const data = await res.json();
+      const items = (data.items ?? (Array.isArray(data) ? data : [])).map((o: any) => ({
+        ...o,
+        created_at: o.received_at, // Map backend received_at to created_at
+        price: o.actual_fill_price || o.indicator_price || o.price,
+      }));
+      setOrders(prev => append ? [...prev, ...items] : items);
+      setTotal(data.total ?? items.length);
+    } catch (err) {
+      console.error('fetchOrders error:', err);
+      if (!append) setOrders([]);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchOrders(1, false);
+    const interval = setInterval(() => fetchOrders(1, false), 20000);
+    return () => clearInterval(interval);
+  }, [fetchOrders]);
+
+  const uniqueAssets = Array.from(
+    new Set(orders.map(o => o.symbol))
+  ).sort();
+
+  const uniqueStrategies = Array.from(
+    new Set(orders.map(o => o.strategy_name || o.strategy_id).filter(Boolean))
+  ).sort() as string[];
+
+  const handleLoadMore = () => {
+    const nextPage = page + 1;
+    setPage(nextPage);
+    fetchOrders(nextPage, true);
+  };
+
+  const handleRetry = async (id: string) => {
+    try {
+      await fetch(`/api/dashboard/orders/${id}/retry`, { method: 'POST' });
+      fetchOrders();
+    } catch {}
+  };
+
+  const handleDelete = async (id: string) => {
+    if (!confirm('Delete this order log?')) return;
+    try {
+      await fetch(`/api/dashboard/orders/${id}`, { method: 'DELETE' });
+      fetchOrders();
+    } catch {}
+  };
+
+  const handleCancel = async (id: string) => {
+    if (!confirm('Cancel this pending order?')) return;
+    try {
+      await fetch(`/api/dashboard/orders/${id}/cancel`, { method: 'POST' });
+      fetchOrders();
+    } catch {}
+  };
+
+  try {
+    const filteredOrders = orders.filter(o => {
+      if (filterAsset    !== 'all' && o.symbol                          !== filterAsset)    return false;
+      if (filterStatus   !== 'all' && o.status                          !== filterStatus)   return false;
+      if (filterStrategy !== 'all' && (o.strategy_name || o.strategy_id) !== filterStrategy) return false;
+      return true;
+    });
+
+    if (loading) {
+      return (
+        <div style={{ padding:'24px', color:'var(--dim)' }}>
+          Loading orders...
+        </div>
+      );
+    }
+
+    return (
+      <div style={{ display:'flex', flexDirection:'column', height:'100%' }}>
+
+        <TopBar
+          title="Orders"
+          right={
+            <span style={{
+              background:'var(--bg3)', border:'1px solid var(--border)',
+              borderRadius:'20px', padding:'4px 11px',
+              fontFamily:'JetBrains Mono, monospace', fontSize:'12px',
+              color:'var(--muted)',
+            }}>
+              {total} total
+            </span>
+          }
+        />
+
+        <div style={{
+          display:'flex', gap:'6px', padding:'10px 14px',
+          borderBottom:'1px solid var(--border)',
+          overflowX:'auto', flexShrink:0, scrollbarWidth:'none',
+        }}>
+          <select
+            value={filterAsset}
+            onChange={e => { setFilterAsset(e.target.value); setPage(1); }}
+            style={{
+              background: filterAsset !== 'all' ? 'var(--blue-a)' : 'var(--bg2)',
+              border: `1px solid ${filterAsset !== 'all' ? 'var(--blue)' : 'var(--border)'}`,
+              borderRadius:'20px', padding:'5px 12px', fontSize:'10px',
+              fontWeight:500, color: filterAsset !== 'all' ? 'var(--blue)' : 'var(--muted)',
+              cursor:'pointer', outline:'none',
+            }}>
+            <option value="all">All Assets</option>
+            {uniqueAssets.map(a => <option key={a} value={a}>{a}</option>)}
+          </select>
+
+          <select
+            value={filterStatus}
+            onChange={e => { setFilterStatus(e.target.value); setPage(1); }}
+            style={{
+              background: filterStatus !== 'all' ? 'var(--blue-a)' : 'var(--bg2)',
+              border: `1px solid ${filterStatus !== 'all' ? 'var(--blue)' : 'var(--border)'}`,
+              borderRadius:'20px', padding:'5px 12px', fontSize:'10px',
+              fontWeight:500, color: filterStatus !== 'all' ? 'var(--blue)' : 'var(--muted)',
+              cursor:'pointer', outline:'none',
+            }}>
+            <option value="all">All Statuses</option>
+            <option value="filled">Filled</option>
+            <option value="route_failed">Route Fail</option>
+            <option value="lag_failed">Lag Fail</option>
+            <option value="pending">Pending</option>
+          </select>
+
+          <select
+            value={filterStrategy}
+            onChange={e => { setFilterStrategy(e.target.value); setPage(1); }}
+            style={{
+              background: filterStrategy !== 'all' ? 'var(--blue-a)' : 'var(--bg2)',
+              border: `1px solid ${filterStrategy !== 'all' ? 'var(--blue)' : 'var(--border)'}`,
+              borderRadius:'20px', padding:'5px 12px', fontSize:'10px',
+              fontWeight:500, color: filterStrategy !== 'all' ? 'var(--blue)' : 'var(--muted)',
+              cursor:'pointer', outline:'none',
+            }}>
+            <option value="all">All Strategies</option>
+            {uniqueStrategies.map(s => <option key={s} value={s}>{s}</option>)}
+          </select>
+
+          {(filterAsset !== 'all' || filterStatus !== 'all' || filterStrategy !== 'all') && (
+            <span
+              onClick={() => {
+                setFilterAsset('all');
+                setFilterStatus('all');
+                setFilterStrategy('all');
+                setPage(1);
+              }}
+              style={{
+                whiteSpace:'nowrap', background:'var(--bg2)',
+                border:'1px solid var(--border)', borderRadius:'20px',
+                padding:'5px 12px', fontSize:'10px', fontWeight:500,
+                color:'var(--red)', cursor:'pointer',
+              }}>
+              ✕ Clear
+            </span>
+          )}
+        </div>
+
+        <div style={{
+          flex:1, overflowY:'auto', padding:'14px 14px 80px',
+          scrollbarWidth:'none',
+        }}>
+          {filteredOrders.length === 0 ? (
+            <p style={{ color:'var(--dim)', textAlign:'center', padding:'40px 0' }}>
+              No orders found.
+            </p>
+          ) : (
+            filteredOrders.map(o => (
+              <OrderCard
+                key={o.id}
+                order={o}
+                onRetry={handleRetry}
+                onDelete={handleDelete}
+                onCancel={handleCancel}
+              />
+            ))
+          )}
+          {total > orders.length && (
+            <div style={{ textAlign:'center', padding:'16px 0 24px' }}>
+              <button
+                onClick={handleLoadMore}
+                style={{
+                  padding:'8px 20px',
+                  border:'1px solid var(--border)', borderRadius:'20px',
+                  background:'var(--bg2)', fontSize:'12px', fontWeight:600,
+                  color:'var(--blue)', cursor:'pointer',
+                }}>
+                Load {Math.min(PAGE_SIZE, total - orders.length)} more
+                ({orders.length} / {total})
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  } catch (err) {
+    console.error('Orders render error:', err);
+    return (
+      <div style={{ padding: '24px', color: 'red' }}>
+        Render error: {String(err)}
+      </div>
+    );
+  }
 }
