@@ -8,6 +8,7 @@ Expected credentials dict:
 The wallet address is derived from the private key — it does not need
 to be stored separately.
 """
+import asyncio
 import json
 import time
 import logging
@@ -351,29 +352,50 @@ class HyperliquidAdapter(ExchangeAdapter):
         )
 
     async def get_balance(self) -> dict:
-        """Fetch perpetual futures balance from Hyperliquid."""
+        """Fetch balance from Hyperliquid.
+
+        Unified Account Mode (common on testnet faucet accounts) holds all
+        funds in spotClearinghouseState; clearinghouseState returns 0 in that
+        case. We query both and sum so either mode works correctly.
+        """
         try:
             async with httpx.AsyncClient(timeout=10) as client:
-                resp = await client.post(
-                    f"{self.base_url}/info",
-                    json={
-                        "type": "clearinghouseState",
-                        "user": self.wallet_address,
-                    }
+                perp_resp, spot_resp = await asyncio.gather(
+                    client.post(
+                        f"{self.base_url}/info",
+                        json={"type": "clearinghouseState", "user": self.wallet_address},
+                    ),
+                    client.post(
+                        f"{self.base_url}/info",
+                        json={"type": "spotClearinghouseState", "user": self.wallet_address},
+                    ),
                 )
-                resp.raise_for_status()
-                data = resp.json()
+                perp_resp.raise_for_status()
+                spot_resp.raise_for_status()
+                perp_data = perp_resp.json()
+                spot_data = spot_resp.json()
 
-            # Parse Hyperliquid clearinghouse state
-            margin_summary = data.get("marginSummary", {})
-            total     = float(margin_summary.get("accountValue",    0))
-            available = float(margin_summary.get("withdrawable",    0))
-            used      = float(margin_summary.get("totalMarginUsed", 0))
+            # Perp / clearinghouse balance
+            margin_summary = perp_data.get("marginSummary", {})
+            perp_total = float(margin_summary.get("accountValue",    0))
+            perp_avail = float(margin_summary.get("withdrawable",    0))
+            perp_used  = float(margin_summary.get("totalMarginUsed", 0))
+
+            # Spot / unified balance — find USDC entry (token index 0)
+            spot_total = 0.0
+            spot_avail = 0.0
+            for entry in spot_data.get("balances", []):
+                if entry.get("coin") == "USDC" or entry.get("token") == 0:
+                    t = float(entry.get("total", 0))
+                    h = float(entry.get("hold",  0))
+                    spot_total = t
+                    spot_avail = t - h
+                    break
 
             return {
-                "total_balance":     total,
-                "available_balance": available,
-                "used_margin":       used,
+                "total_balance":     perp_total + spot_total,
+                "available_balance": perp_avail + spot_avail,
+                "used_margin":       perp_used,
                 "currency":          "USDC",
             }
         except Exception as e:
