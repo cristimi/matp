@@ -221,13 +221,12 @@ export default function Accounts() {
               <div key={acc.id} style={{
                 background:    'var(--bg3)',
                 borderRadius:  'var(--r)',
-                border:        `1px solid ${acc.is_active ? 'var(--border)' : 'var(--border-hi)'}`,
+                border:        '1px solid var(--border)',
                 marginBottom:  '10px',
                 position:      'relative',
                 display:       'flex',
                 flexDirection: 'column',
                 overflow:      'hidden',
-                opacity:       acc.is_active ? 1 : 0.6,
               }}>
                 {/* Left bar */}
                 <div style={{

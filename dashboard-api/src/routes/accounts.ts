@@ -12,6 +12,7 @@ router.get('/', async (_req: Request, res: Response) => {
     const result = await getPool().query(
       `SELECT id, exchange, mode, label, is_active, created_at, updated_at
        FROM exchange_accounts
+       WHERE is_active = true
        ORDER BY exchange ASC, mode ASC, label ASC`
     );
     res.json(result.rows);
