@@ -17,6 +17,8 @@ interface Strategy {
   margin_mode?:           'isolated' | 'cross';
   max_leverage?:          number;
   open_positions_count?:  number;
+  closed_positions_count?: number;
+  realized_pnl?:          number;
   max_position_size?:          number;
   max_daily_signals?:          number;
   max_daily_drawdown_percent?: number;
@@ -28,7 +30,6 @@ interface Strategy {
   loss_positions?:      number;
   win_rate?:            number;
   allocated?:           number;
-  realized_pnl?:        number;
   pnl_fees?:            number;
   total_return?:        number;
   uptime_label?:        string;
@@ -144,12 +145,12 @@ function StrategyCard({
   const isActive = strategy.enabled;
   const barColor = isActive ? 'var(--green)' : 'var(--gray)';
 
-  const wins  = strategy.win_positions  ?? 0;
+  const wins   = strategy.win_positions  ?? 0;
   const losses = strategy.loss_positions ?? 0;
-  const total  = strategy.open_positions_count ?? 0;
+  const closedCount = strategy.closed_positions_count ?? 0;
   const winRate = strategy.win_rate ?? 0;
   const allocated = strategy.allocated ?? 0;
-  const realizedPnl = parseFloat(strategy.pnl_total || '0');
+  const realizedPnl = Number(strategy.realized_pnl ?? 0);
   const pnlFees = strategy.pnl_fees ?? 0;
   const totalReturn = strategy.total_return ?? 0;
 
@@ -306,15 +307,17 @@ function StrategyCard({
         {/* Top row */}
         <div style={{ display:'flex', width:'100%',
                       borderBottom:'1px solid var(--border)' }}>
-          <GridCell label="Positions">
+          <GridCell label="Closed">
             <span style={{
               fontFamily:'JetBrains Mono, monospace', fontSize:'13px',
               fontWeight:700, color:'var(--text)',
             }}>
-              {total} (
-              <span style={{ color:'var(--green)' }}>{wins}</span>/
-              <span style={{ color:'var(--red)' }}>{losses}</span>
-              )
+              {closedCount}
+              {(wins > 0 || losses > 0) && (
+                <span style={{ fontSize:'11px', fontWeight:500, color:'var(--dim)' }}>
+                  {' '}(<span style={{ color:'var(--green)' }}>{wins}</span>/<span style={{ color:'var(--red)' }}>{losses}</span>)
+                </span>
+              )}
             </span>
           </GridCell>
           <GridCell label="Win Rate">

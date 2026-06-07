@@ -24,7 +24,19 @@ router.get('/', async (_req: Request, res: Response) => {
           FROM strategy_positions sp
           WHERE sp.strategy_id = s.id
           AND sp.status = 'open'
-        ), 0)::int         AS open_positions_count
+        ), 0)::int         AS open_positions_count,
+        COALESCE((
+          SELECT COUNT(*)
+          FROM strategy_positions sp
+          WHERE sp.strategy_id = s.id
+          AND sp.status = 'closed'
+        ), 0)::int         AS closed_positions_count,
+        COALESCE((
+          SELECT SUM(sp.pnl_realized)
+          FROM strategy_positions sp
+          WHERE sp.strategy_id = s.id
+          AND sp.status = 'closed'
+        ), 0)::numeric     AS realized_pnl
       FROM strategies s
       LEFT JOIN exchange_accounts ea ON ea.id = s.account_id
       WHERE COALESCE(s.is_deleted, false) = false

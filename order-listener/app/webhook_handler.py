@@ -500,7 +500,7 @@ async def _process_order(
                         strategy['id'],
                     )
                     if pos_row:
-                        pnl_realized_flat = float(flat_order_result.realized_pnl or 0) if flat_order_result else 0
+                        pnl_realized_flat = float(flat_order_result.realized_pnl) if flat_order_result and flat_order_result.realized_pnl is not None else None
                         await conn.execute(
                             """
                             UPDATE strategy_positions
@@ -511,8 +511,8 @@ async def _process_order(
                                 updated_at    = NOW()
                             WHERE id = $3
                             """,
-                            close_price or None,
-                            pnl_realized_flat or None,
+                            close_price if close_price else None,
+                            pnl_realized_flat,
                             pos_row['id'],
                         )
                         logger.info(
@@ -619,8 +619,8 @@ async def _process_order(
 
                 if existing:
                     if payload.signal in ("close_long", "close_short"):
-                        close_price = float(result.actual_fill_price or 0)
-                        pnl_realized = float(result.realized_pnl or 0)
+                        close_price  = float(result.actual_fill_price) if result.actual_fill_price is not None else None
+                        pnl_realized = float(result.realized_pnl)       if result.realized_pnl is not None       else None
                         await conn.execute(
                             """
                             UPDATE strategy_positions
@@ -631,8 +631,8 @@ async def _process_order(
                                 updated_at    = NOW()
                             WHERE id = $3
                             """,
-                            close_price or None,
-                            pnl_realized or None,
+                            close_price,
+                            pnl_realized,
                             existing['id'],
                         )
                         logger.info(
