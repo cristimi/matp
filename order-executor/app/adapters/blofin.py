@@ -178,12 +178,14 @@ class BlofinAdapter(ExchangeAdapter):
             if size_val == 0:
                 continue
                 
+            mark_raw = p.get("markPrice") or p.get("last") or p.get("averagePrice", "0")
             mapped_positions.append(Position(
                 symbol=p.get("instId"),
                 side="long" if size_val > 0 else "short",
                 size=Decimal(str(abs(size_val))),
                 entry_price=Decimal(p.get("averagePrice", "0")),
                 leverage=int(p.get("leverage", 10)),
+                mark_price=Decimal(str(mark_raw)),
                 unrealized_pnl=Decimal(p.get("unrealizedPnl", "0"))
             ))
             

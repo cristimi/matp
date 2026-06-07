@@ -64,9 +64,11 @@ function PositionCard({
       ? (markNum >= entryNum ? 'var(--green)' : 'var(--red)')
       : (markNum <= entryNum ? 'var(--green)' : 'var(--red)');
 
-  // P&L colors
-  const pnlVal  = position.realized_pnl ?? 0;
-  const pnlPct  = position.pnl_pct      ?? 0;
+  // P&L colors — open positions use unrealized, closed use realized
+  const pnlVal  = isClosed
+    ? (position.realized_pnl   ?? 0)
+    : (position.unrealized_pnl ?? 0);
+  const pnlPct  = position.pnl_pct ?? 0;
   const fees    = position.realized_pnl_fees ?? 0;
   const pnlMain = isStale ? 'var(--failed-color)' : pnlColor(pnlVal);
   const pnlSec  = isStale
@@ -174,7 +176,7 @@ function PositionCard({
       ),
     },
     {
-      label: 'P&L (Realized)',
+      label: 'Unrealized P&L',
       value: (
         <div style={{ display:'flex', alignItems:'baseline', gap:'4px',
                       flexWrap:'nowrap', overflow:'hidden' }}>
@@ -369,15 +371,14 @@ export default function Positions() {
     }
   }, []);
 
+  const hasOpen = positions.some(p => p.status === 'open');
+
   useEffect(() => {
-    console.log('Positions useEffect mounting');
     fetchPositions();
-    const interval = setInterval(fetchPositions, 15000);
-    return () => {
-      console.log('Positions useEffect unmounting');
-      clearInterval(interval);
-    };
-  }, [fetchPositions]);
+    // Poll every 3s when live positions exist, 15s otherwise
+    const interval = setInterval(fetchPositions, hasOpen ? 3000 : 15000);
+    return () => clearInterval(interval);
+  }, [fetchPositions, hasOpen]);
 
   const uniqueAssets = Array.from(
     new Set(positions.map(p => p.symbol))

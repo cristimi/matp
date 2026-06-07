@@ -53,7 +53,14 @@ class HyperliquidAdapter(ExchangeAdapter):
             raise ValueError("Hyperliquid credentials must include 'private_key'")
 
         self._account = Account.from_key(private_key)
-        self.wallet_address = self._account.address
+        self.wallet_address = self._account.address  # signs orders (API/agent wallet)
+
+        # If credentials include a main_wallet, use it for state queries
+        # (agent wallets place orders on behalf of a main wallet; positions/balance
+        # live under the main wallet's clearinghouse state, not the agent's)
+        main_wallet = credentials.get("main_wallet", "").strip()
+        self.query_address = main_wallet if main_wallet else self.wallet_address
+
         self.base_url = (
             "https://api.hyperliquid-testnet.xyz"
             if mode == "demo"
@@ -62,7 +69,8 @@ class HyperliquidAdapter(ExchangeAdapter):
         self._asset_cache: Optional[dict] = None
         logger.info(
             f"HyperliquidAdapter initialised "
-            f"(wallet={self.wallet_address[:8]}..., mode={mode})"
+            f"(wallet={self.wallet_address[:8]}..., "
+            f"query={self.query_address[:8]}..., mode={mode})"
         )
 
     # ── Public interface ─────────────────────────────────────────────
@@ -115,33 +123,36 @@ class HyperliquidAdapter(ExchangeAdapter):
                 success=False, status="route_failed", error_msg=str(e)
             )
 
-    async def get_open_positions(self) -> list[dict]:
+    async def get_open_positions(self) -> list:
         try:
             async with httpx.AsyncClient(timeout=10) as client:
                 resp = await client.post(
                     f"{self.base_url}/info",
-                    json={
-                        "type": "clearinghouseState",
-                        "user": self.wallet_address,
-                    },
+                    json={"type": "clearinghouseState", "user": self.query_address},
                 )
                 resp.raise_for_status()
                 data = resp.json()
 
+            from app.models import Position
+            from decimal import Decimal as D
             positions = []
             for pos in data.get("assetPositions", []):
                 p = pos.get("position", {})
                 szi = float(p.get("szi", 0))
                 if szi == 0:
                     continue
-                positions.append({
-                    "symbol":      p.get("coin", ""),
-                    "side":        "long" if szi > 0 else "short",
-                    "size":        str(abs(szi)),
-                    "entry_price": p.get("entryPx", None),
-                    "mark_price":  None,
-                    "pnl":         p.get("unrealizedPnl", None),
-                })
+                size = abs(szi)
+                pos_value = float(p.get("positionValue", 0))
+                mark_px = (pos_value / size) if size > 0 else None
+                positions.append(Position(
+                    symbol=p.get("coin", "") + "-USDT",
+                    side="long" if szi > 0 else "short",
+                    size=D(str(size)),
+                    entry_price=D(str(p.get("entryPx", 0))),
+                    leverage=p.get("leverage", {}).get("value", 1),
+                    mark_price=D(str(round(mark_px, 6))) if mark_px else None,
+                    unrealized_pnl=D(str(p.get("unrealizedPnl", 0))),
+                ))
             return positions
         except Exception as e:
             logger.error(f"HyperliquidAdapter.get_open_positions failed: {e}")
@@ -363,11 +374,11 @@ class HyperliquidAdapter(ExchangeAdapter):
                 perp_resp, spot_resp = await asyncio.gather(
                     client.post(
                         f"{self.base_url}/info",
-                        json={"type": "clearinghouseState", "user": self.wallet_address},
+                        json={"type": "clearinghouseState", "user": self.query_address},
                     ),
                     client.post(
                         f"{self.base_url}/info",
-                        json={"type": "spotClearinghouseState", "user": self.wallet_address},
+                        json={"type": "spotClearinghouseState", "user": self.query_address},
                     ),
                 )
                 perp_resp.raise_for_status()

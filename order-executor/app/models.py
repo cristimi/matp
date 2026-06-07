@@ -42,9 +42,10 @@ class AccountRecord(BaseModel):
 
 
 class Position(BaseModel):
-    symbol:      str
-    side:        Literal["long", "short"]
-    size:        Decimal
-    entry_price: Decimal
-    leverage:    int
+    symbol:         str
+    side:           Literal["long", "short"]
+    size:           Decimal
+    entry_price:    Decimal
+    leverage:       int
+    mark_price:     Optional[Decimal] = None
     unrealized_pnl: Optional[Decimal] = None

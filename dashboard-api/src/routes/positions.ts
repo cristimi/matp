@@ -80,10 +80,15 @@ router.get('/', async (_req: Request, res: Response) => {
         destination:       dbPos.account_exchange || 'exchange',
       };
 
-      // Calculate P&L %
-      if (enrichedPos.margin > 0) {
-        const pnl = enrichedPos.status === 'closed' ? enrichedPos.realized_pnl : (enrichedPos.unrealized_pnl || 0);
-        enrichedPos.pnl_pct = (pnl / enrichedPos.margin) * 100;
+      // Calculate P&L % — open positions use unrealized, closed use realized
+      const pnlForPct = enrichedPos.status === 'closed'
+        ? enrichedPos.realized_pnl
+        : (enrichedPos.unrealized_pnl || 0);
+      if (enrichedPos.entry_price > 0 && enrichedPos.size > 0) {
+        const notional = enrichedPos.entry_price * enrichedPos.size;
+        const leverage = enrichedPos.leverage || 1;
+        const margin   = notional / leverage;
+        enrichedPos.pnl_pct = margin > 0 ? (pnlForPct / margin) * 100 : 0;
       }
 
       // Determine 'stale' status
