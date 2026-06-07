@@ -11,7 +11,7 @@ router.get('/', async (_req: Request, res: Response) => {
     
     // 1. Fetch all strategy positions (open, stale, and last 20 closed)
     const posResult = await pool.query(
-      `SELECT sp.*, s.name as strategy_name, s.account_id, ea.exchange as account_exchange, ea.label as account_label
+      `SELECT sp.*, s.name as strategy_name, s.type as strategy_type, s.account_id, ea.exchange as account_exchange, ea.label as account_label
        FROM strategy_positions sp
        JOIN strategies s ON sp.strategy_id = s.id
        LEFT JOIN exchange_accounts ea ON s.account_id = ea.id
@@ -58,7 +58,7 @@ router.get('/', async (_req: Request, res: Response) => {
         symbol:            dbPos.symbol,
         side:              dbPos.side,
         status:            dbPos.status,
-        leverage:          dbPos.leverage,
+        leverage:          realPos ? (realPos.leverage ?? dbPos.leverage) : dbPos.leverage,
         margin_mode:       dbPos.margin_mode,
         strategy_name:     dbPos.strategy_name,
         account_id:        dbPos.account_id,
@@ -76,7 +76,7 @@ router.get('/', async (_req: Request, res: Response) => {
         unrealized_pnl:    realPos ? Number(realPos.unrealized_pnl) : Number(dbPos.pnl_unrealized),
         pnl_pct:           0,
         close_reason:      dbPos.close_reason || (dbPos.status === 'closed' ? 'Manual Close' : null),
-        source:            'MATP Engine',
+        strategy_type:     dbPos.strategy_type,
         destination:       dbPos.account_exchange || 'exchange',
       };
 

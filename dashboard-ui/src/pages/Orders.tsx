@@ -13,8 +13,8 @@ interface Order {
   status:           string; // Using string to allow backend statuses before mapping
   strategy_id?:     string;
   strategy_name?:   string;
-  source?:          string;
-  destination?:     string;
+  signal_source?:    string;
+  account_exchange?: string;
   account_id?:      string;
   account_label?:   string;
   created_at:       string;
@@ -59,11 +59,13 @@ function OrderCard({
   onRetry,
   onDelete,
   onCancel,
+  retryingId,
 }: {
-  order:    Order;
-  onRetry:  (id: string) => void;
-  onDelete: (id: string) => void;
-  onCancel: (id: string) => void;
+  order:      Order;
+  onRetry:    (id: string) => void;
+  onDelete:   (id: string) => void;
+  onCancel:   (id: string) => void;
+  retryingId: string | null;
 }) {
   // Normalize status for UI
   let uiStatus: ChipStatus = 'pending';
@@ -83,11 +85,14 @@ function OrderCard({
 
   const sideVariant = order.side === 'buy' ? 'buy' : 'sell';
 
-  const source      = order.source      || 'TradingView';
-  const destination = order.destination
-    || order.account_label
-    || order.account_id
-    || 'exchange';
+  const src = order.signal_source;
+  const source = src === 'tradingview' ? 'TradingView'
+    : src === 'internal' ? 'Engine'
+    : 'MATP';
+  const exch = order.account_exchange;
+  const destination = order.account_label
+    || (exch ? exch.charAt(0).toUpperCase() + exch.slice(1) : '')
+    || 'Exchange';
 
   // Footer buttons per status
   const footerButtons: { label: string; color: 'red' | 'blue'; onClick: () => void; fullWidth?: boolean }[] = (() => {
@@ -98,6 +103,7 @@ function OrderCard({
             onClick: () => onDelete(order.id), fullWidth: true },
         ];
       case 'route-fail':
+        return []; // rendered inline with retrying state
       case 'rejected':
         return [
           { label: '↺ Retry',  color: 'blue' as const, onClick: () => onRetry(order.id) },
@@ -228,7 +234,37 @@ function OrderCard({
       </div>
 
       {/* Footer */}
-      {footerButtons.length > 0 && (
+      {uiStatus === 'route-fail' ? (
+        <div style={{
+          borderTop:'1px solid var(--border)', background:'var(--bg2)',
+          display:'flex', marginTop:'8px',
+        }}>
+          <button
+            onClick={() => !retryingId && onRetry(order.id)}
+            disabled={retryingId === order.id}
+            style={{
+              flex:1, background:'transparent', border:'none',
+              borderRight:'1px solid var(--border)',
+              color: retryingId === order.id ? 'var(--dim)' : 'var(--blue)',
+              fontSize:'11px', fontWeight:700, letterSpacing:'.06em',
+              textTransform:'uppercase', padding:'10px',
+              cursor: retryingId === order.id ? 'not-allowed' : 'pointer',
+              textAlign:'center',
+            }}>
+            {retryingId === order.id ? '↺ Retrying…' : '↺ Retry'}
+          </button>
+          <button
+            onClick={() => onDelete(order.id)}
+            style={{
+              flex:1, background:'transparent', border:'none',
+              color:'var(--red)', fontSize:'11px', fontWeight:700,
+              letterSpacing:'.06em', textTransform:'uppercase',
+              padding:'10px', cursor:'pointer', textAlign:'center',
+            }}>
+            ✕ Delete
+          </button>
+        </div>
+      ) : footerButtons.length > 0 && (
         <div style={{
           borderTop:'1px solid var(--border)', background:'var(--bg2)',
           display:'flex', marginTop:'8px',
@@ -267,6 +303,7 @@ export default function Orders() {
   const [orders, setOrders]     = useState<Order[]>([]);
   const [loading, setLoading]   = useState(true);
   const [total, setTotal]       = useState(0);
+  const [retryingId, setRetryingId] = useState<string | null>(null);
 
   const [filterAsset,    setFilterAsset]    = useState<string>('all');
   const [filterStatus,   setFilterStatus]   = useState<string>('all');
@@ -314,10 +351,14 @@ export default function Orders() {
   };
 
   const handleRetry = async (id: string) => {
+    setRetryingId(id);
     try {
       await fetch(`/api/dashboard/orders/${id}/retry`, { method: 'POST' });
       fetchOrders();
     } catch {}
+    finally {
+      setRetryingId(null);
+    }
   };
 
   const handleDelete = async (id: string) => {
@@ -460,6 +501,7 @@ export default function Orders() {
                 onRetry={handleRetry}
                 onDelete={handleDelete}
                 onCancel={handleCancel}
+                retryingId={retryingId}
               />
             ))
           )}

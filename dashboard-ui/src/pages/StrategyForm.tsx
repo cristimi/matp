@@ -17,6 +17,8 @@ const StrategyForm = () => {
     symbol: 'BTC/USDT',
     interval: '5m',
     platform: 'auto',
+    default_leverage: 1,
+    margin_mode: 'isolated',
     max_position_size: 1.0,
     max_leverage: 10,
     max_daily_drawdown_percent: 20,
@@ -167,33 +169,56 @@ const StrategyForm = () => {
         </div>
 
         <div className="col-span-1 md:col-span-2 border-t border-gray-100 dark:border-gray-800 pt-6">
+          <h3 className="text-sm font-bold text-gray-700 dark:text-gray-300 mb-4">Position Defaults</h3>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+            <div className="space-y-1">
+              <label className="text-[10px] font-bold text-gray-400 uppercase">Default Leverage</label>
+              <input
+                type="number" min="1" max="125"
+                className="w-full bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg px-3 py-2 text-sm"
+                value={formData.default_leverage ?? 1}
+                onChange={(e) => setFormData({...formData, default_leverage: parseInt(e.target.value)})}
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-[10px] font-bold text-gray-400 uppercase">Margin Mode</label>
+              <select
+                className="w-full bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg px-3 py-2 text-sm"
+                value={formData.margin_mode ?? 'isolated'}
+                onChange={(e) => setFormData({...formData, margin_mode: e.target.value})}
+              >
+                <option value="isolated">Isolated</option>
+                <option value="cross">Cross</option>
+              </select>
+            </div>
+          </div>
           <h3 className="text-sm font-bold text-gray-700 dark:text-gray-300 mb-4">Risk Limits</h3>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <div className="space-y-1">
               <label className="text-[10px] font-bold text-gray-400 uppercase">Max Pos Size</label>
-              <input 
+              <input
                 type="number" step="0.1"
-                className="w-full bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg px-3 py-2 text-sm" 
-                value={formData.max_position_size} 
-                onChange={(e) => setFormData({...formData, max_position_size: parseFloat(e.target.value)})} 
+                className="w-full bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg px-3 py-2 text-sm"
+                value={formData.max_position_size}
+                onChange={(e) => setFormData({...formData, max_position_size: parseFloat(e.target.value)})}
               />
             </div>
             <div className="space-y-1">
               <label className="text-[10px] font-bold text-gray-400 uppercase">Max Leverage</label>
-              <input 
+              <input
                 type="number"
-                className="w-full bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg px-3 py-2 text-sm" 
-                value={formData.max_leverage} 
-                onChange={(e) => setFormData({...formData, max_leverage: parseInt(e.target.value)})} 
+                className="w-full bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg px-3 py-2 text-sm"
+                value={formData.max_leverage}
+                onChange={(e) => setFormData({...formData, max_leverage: parseInt(e.target.value)})}
               />
             </div>
             <div className="space-y-1">
               <label className="text-[10px] font-bold text-gray-400 uppercase">Max DD %</label>
-              <input 
+              <input
                 type="number"
-                className="w-full bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg px-3 py-2 text-sm" 
-                value={formData.max_daily_drawdown_percent} 
-                onChange={(e) => setFormData({...formData, max_daily_drawdown_percent: parseInt(e.target.value)})} 
+                className="w-full bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg px-3 py-2 text-sm"
+                value={formData.max_daily_drawdown_percent}
+                onChange={(e) => setFormData({...formData, max_daily_drawdown_percent: parseInt(e.target.value)})}
               />
             </div>
           </div>

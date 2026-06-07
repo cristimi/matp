@@ -34,7 +34,7 @@ router.get('/', async (req: Request, res: Response) => {
     pool.query(
       "SELECT o.id, o.received_at, o.symbol, o.side, o.signal, o.size, o.platform, " +
               "o.status, o.strategy_id, o.account_id, o.exchange_order_id, o.pnl, o.error_msg, o.indicator_price, o.actual_fill_price, " +
-              "ea.label AS account_label " +
+              "o.signal_source, ea.label AS account_label, ea.exchange AS account_exchange " +
        "FROM orders o " +
        "LEFT JOIN exchange_accounts ea ON ea.id = o.account_id " +
        where +

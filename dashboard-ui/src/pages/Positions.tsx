@@ -18,8 +18,7 @@ interface Position {
   leverage?:        number;
   margin_mode?:     string;
   strategy_name?:   string;
-  source?:          string;
-  destination?:     string;
+  strategy_type?:   string;
   account_id?:      string;
   account_label?:   string;
   account_exchange?:string;
@@ -86,11 +85,13 @@ function PositionCard({
     :                    'short';
 
   // Route
-  const source      = position.source      || 'MATP Engine';
-  const destination = position.destination
-    || position.account_exchange
-    || position.account_id
-    || 'exchange';
+  const source = position.strategy_type === 'tradingview' ? 'TradingView'
+    : position.strategy_type === 'internal' ? 'Engine'
+    : 'MATP';
+  const exch = position.account_exchange;
+  const destination = position.account_label
+    || (exch ? exch.charAt(0).toUpperCase() + exch.slice(1) : '')
+    || 'Exchange';
 
   // DataGrid rows
   const topRow = [

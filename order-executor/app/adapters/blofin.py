@@ -103,7 +103,7 @@ class BlofinAdapter(ExchangeAdapter):
             path = "/api/v1/trade/order"
             body_data = {
                 "instId": order.symbol,
-                "marginMode": order.margin_mode or "cross",
+                "marginMode": order.margin_mode or "isolated",
                 "side": order.side,
                 "orderType": order.order_type,
                 "size": str(order_size),
@@ -198,7 +198,7 @@ class BlofinAdapter(ExchangeAdapter):
                 side="long" if size_val > 0 else "short",
                 size=Decimal(str(abs(size_val))),
                 entry_price=Decimal(p.get("averagePrice", "0")),
-                leverage=int(p.get("leverage", 10)),
+                leverage=int(p.get("lever") or p.get("leverage") or 10),
                 mark_price=Decimal(str(mark_raw)),
                 unrealized_pnl=Decimal(p.get("unrealizedPnl", "0"))
             ))

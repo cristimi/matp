@@ -119,7 +119,7 @@ async def _finalize_signal_log(
         logger.error(f"Failed to finalize signal_log {signal_log_id}: {e}")
 
 
-async def _log_order(pool, payload: WebhookPayload, order_id: uuid.UUID, strategy_id: str, pair_id: int, symbol: str, effective_leverage: int) -> None:
+async def _log_order(pool, payload: WebhookPayload, order_id: uuid.UUID, strategy_id: str, pair_id: int, symbol: str, effective_leverage: int, effective_margin_mode: str = "isolated") -> None:
     """Write initial order record to PostgreSQL."""
     async with pool.acquire() as conn:
         await conn.execute(
@@ -144,7 +144,7 @@ async def _log_order(pool, payload: WebhookPayload, order_id: uuid.UUID, strateg
             payload.size,
             payload.price,
             effective_leverage,
-            payload.margin_mode,
+            effective_margin_mode,
             payload.tp_price,
             payload.sl_price,
             'auto',
@@ -262,6 +262,13 @@ async def receive_webhook(
         else int(strategy.get("default_leverage") or 1)
     )
 
+    # ── Effective margin mode resolution ──────────────────────────────
+    effective_margin_mode = (
+        payload.margin_mode
+        if payload.margin_mode is not None
+        else (strategy.get("margin_mode") or "isolated")
+    )
+
     # ── Risk Management Guards ────────────────────────────────────────
 
     # Guard 1: Daily signal cap
@@ -340,7 +347,7 @@ async def receive_webhook(
         )
 
     await _log_webhook_call(pool, strategy_id, 200)
-    await _log_order(pool, payload, order_id, strategy_id, None, resolved.execution_symbol, effective_leverage)
+    await _log_order(pool, payload, order_id, strategy_id, None, resolved.execution_symbol, effective_leverage, effective_margin_mode)
 
     await publish("orders:received", {
         "event": "orders:received",
@@ -353,7 +360,7 @@ async def receive_webhook(
     asyncio.create_task(
         _process_order(
             pool, order_id, payload, strategy, resolved,
-            price, tp_price, sl_price, effective_leverage,
+            price, tp_price, sl_price, effective_leverage, effective_margin_mode,
             signal_log_id=signal_log_id, start_ms=start_ms,
         )
     )
@@ -361,7 +368,7 @@ async def receive_webhook(
     return OrderResponse(order_id=order_id, status="received", message="OK")
 
 
-async def _create_strategy_position(pool, payload: WebhookPayload, strategy: dict, opening_order_id: uuid.UUID, result: OrderResult, effective_leverage: int) -> None:
+async def _create_strategy_position(pool, payload: WebhookPayload, strategy: dict, opening_order_id: uuid.UUID, result: OrderResult, effective_leverage: int, effective_margin_mode: str = "isolated") -> None:
     """Create a new strategy position record in the database."""
     async with pool.acquire() as conn:
         entry_price = result.actual_fill_price or payload.price or payload.indicator_price or 0
@@ -394,14 +401,14 @@ async def _create_strategy_position(pool, payload: WebhookPayload, strategy: dic
             entry_price,
             payload.size,
             effective_leverage,
-            payload.margin_mode,
+            effective_margin_mode,
             opening_order_id,
         )
 
 
 async def _process_order(
     pool, order_id: uuid.UUID, payload: WebhookPayload, strategy: dict, resolved,
-    price, tp_price, sl_price, effective_leverage: int,
+    price, tp_price, sl_price, effective_leverage: int, effective_margin_mode: str = "isolated",
     signal_log_id: Optional[int] = None, start_ms: float = 0.0,
 ):
     try:
@@ -544,7 +551,7 @@ async def _process_order(
             "size":           str(payload.size),
             "price":          str(price)    if price    else None,
             "leverage":       effective_leverage,
-            "margin_mode":    payload.margin_mode,
+            "margin_mode":    effective_margin_mode,
             "tp_price":       str(tp_price) if tp_price else None,
             "sl_price":       str(sl_price) if sl_price else None,
             "config":         json.loads(strategy["config"]) if strategy.get("config") else {},
@@ -625,7 +632,7 @@ async def _process_order(
                         )
                 else:
                     if payload.signal in ("open_long", "open_short"):
-                        await _create_strategy_position(pool, payload, strategy, order_id, result, effective_leverage)
+                        await _create_strategy_position(pool, payload, strategy, order_id, result, effective_leverage, effective_margin_mode)
 
     except Exception as e:
         logger.exception(f"Error processing order {order_id}: {e}")
