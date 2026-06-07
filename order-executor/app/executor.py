@@ -100,14 +100,16 @@ async def _update_order_record(order_id: str, result: OrderResult):
                     raw_response       = $3::jsonb,
                     error_msg          = $4,
                     actual_fill_price  = $5,
+                    pnl                = $6,
                     updated_at         = NOW()
-                WHERE id = $6
+                WHERE id = $7
                 """,
                 result.status,
                 result.exchange_order_id,
                 json.dumps(result.raw_response) if result.raw_response else None,
                 result.error_msg,
                 float(result.actual_fill_price) if result.actual_fill_price else None,
+                float(result.realized_pnl) if result.realized_pnl else None,
                 order_id,
             )
     except Exception as e:

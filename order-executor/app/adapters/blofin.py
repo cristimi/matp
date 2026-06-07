@@ -53,23 +53,37 @@ class BlofinAdapter(ExchangeAdapter):
         }
 
     async def _get_order_details(self, symbol: str, order_id: str) -> dict:
-        path = "/api/v1/trade/order"
-        params = f"instId={symbol}&orderId={order_id}"
-        full_path = f"{path}?{params}"
-        headers = self._headers("GET", full_path, "")
-        
-        async with httpx.AsyncClient(base_url=self.base_url, timeout=10) as client:
-            response = await client.get(full_path, headers=headers)
-            
-        if response.status_code != 200:
-            logger.warning(f"Failed to fetch Blofin order details: {response.text}")
-            return {}
-            
-        data = response.json()
-        details = data.get("data", [])
-        if isinstance(details, list) and len(details) > 0:
-            return details[0]
-        return details if isinstance(details, dict) else {}
+        # Try orders-history first (completed/filled orders), fall back to fills
+        for path_tpl in [
+            "/api/v1/trade/orders-history?instId={inst}&orderId={oid}",
+            "/api/v1/trade/fills-history?instId={inst}&orderId={oid}",
+        ]:
+            full_path = path_tpl.format(inst=symbol, oid=order_id)
+            headers = self._headers("GET", full_path, "")
+            async with httpx.AsyncClient(base_url=self.base_url, timeout=10) as client:
+                response = await client.get(full_path, headers=headers)
+            if response.status_code != 200:
+                continue
+            data = response.json()
+            code = str(data.get("code", "0"))
+            if code not in ("0", "200"):
+                logger.debug(f"Blofin {full_path} returned code {code}: {data.get('msg')}")
+                continue
+            items = data.get("data", [])
+            if isinstance(items, list) and items:
+                return items[0]
+        logger.warning(f"Blofin: could not fetch order details for {order_id}")
+        return {}
+
+    def _parse_fill_price(self, details: dict):
+        """Extract fill price from order details, trying all field name variants."""
+        raw = (details.get("avgPrice") or details.get("averagePrice")
+               or details.get("fillPrice") or details.get("avgFillPrice"))
+        try:
+            v = Decimal(str(raw)) if raw else None
+            return v if v and v > 0 else None
+        except Exception:
+            return None
 
     async def submit_order(self, order: OrderRequest) -> OrderResult:
         """
@@ -131,10 +145,9 @@ class BlofinAdapter(ExchangeAdapter):
                     await asyncio.sleep(0.5)
                     details = await self._get_order_details(order.symbol, exchange_order_id)
                     if details:
-                        fill_price = details.get("avgPrice") or details.get("fillPrice")
-                        pnl_val = details.get("realizedPnl")
-                        actual_fill_price = Decimal(fill_price) if fill_price else None
-                        pnl = Decimal(pnl_val) if pnl_val else None
+                        actual_fill_price = self._parse_fill_price(details)
+                        pnl_raw = details.get("realizedPnl") or details.get("pnl")
+                        pnl = Decimal(str(pnl_raw)) if pnl_raw else None
 
                 return OrderResult(
                     success=True,
@@ -142,6 +155,7 @@ class BlofinAdapter(ExchangeAdapter):
                     exchange_order_id=exchange_order_id,
                     raw_response=data,
                     actual_fill_price=actual_fill_price,
+                    realized_pnl=pnl,
                 )
             else:
                 error = data.get("msg", "Unknown error")
@@ -224,17 +238,20 @@ class BlofinAdapter(ExchangeAdapter):
             
             await asyncio.sleep(0.5)
             details = await self._get_order_details(symbol, exchange_order_id)
-            
             fill_price = None
+            pnl = None
             if details:
-                fill_price = details.get("avgPrice") or details.get("fillPrice")
+                fill_price = self._parse_fill_price(details)
+                pnl_raw = details.get("realizedPnl") or details.get("pnl")
+                pnl = Decimal(str(pnl_raw)) if pnl_raw else None
 
             return OrderResult(
                 success=True,
                 status="filled",
                 exchange_order_id=exchange_order_id,
                 raw_response=data,
-                actual_fill_price=Decimal(fill_price) if fill_price else None,
+                actual_fill_price=fill_price,
+                realized_pnl=pnl,
             )
         else:
             error = data.get("msg", "Unknown error")

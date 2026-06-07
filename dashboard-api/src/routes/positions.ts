@@ -68,11 +68,11 @@ router.get('/', async (_req: Request, res: Response) => {
         closed_at:         dbPos.closed_at,
         entry_price:       Number(dbPos.entry_price) || (realPos ? Number(realPos.entry_price) : 0),
         mark_price:        realPos ? Number(realPos.mark_price || realPos.entry_price) : Number(dbPos.current_price),
-        close_price:       Number(dbPos.close_price || dbPos.closing_price),
+        close_price:       Number(dbPos.closing_price || dbPos.close_price || 0),
         size:              Number(dbPos.size),
-        margin:            Number(dbPos.margin || 0),
+        margin:            0, // computed below from entry_price * size / leverage
         realized_pnl:      Number(dbPos.pnl_realized || 0),
-        realized_pnl_fees: 0, // TODO: API enrichment if needed
+        realized_pnl_fees: 0,
         unrealized_pnl:    realPos ? Number(realPos.unrealized_pnl) : Number(dbPos.pnl_unrealized),
         pnl_pct:           0,
         close_reason:      dbPos.close_reason || (dbPos.status === 'closed' ? 'Manual Close' : null),
@@ -80,16 +80,16 @@ router.get('/', async (_req: Request, res: Response) => {
         destination:       dbPos.account_exchange || 'exchange',
       };
 
-      // Calculate P&L % — open positions use unrealized, closed use realized
+      // Compute margin from position notional — no margin column in DB
+      if (enrichedPos.entry_price > 0 && enrichedPos.size > 0) {
+        enrichedPos.margin = (enrichedPos.entry_price * enrichedPos.size) / (enrichedPos.leverage || 1);
+      }
+
+      // P&L % — open uses unrealized, closed uses realized
       const pnlForPct = enrichedPos.status === 'closed'
         ? enrichedPos.realized_pnl
         : (enrichedPos.unrealized_pnl || 0);
-      if (enrichedPos.entry_price > 0 && enrichedPos.size > 0) {
-        const notional = enrichedPos.entry_price * enrichedPos.size;
-        const leverage = enrichedPos.leverage || 1;
-        const margin   = notional / leverage;
-        enrichedPos.pnl_pct = margin > 0 ? (pnlForPct / margin) * 100 : 0;
-      }
+      enrichedPos.pnl_pct = enrichedPos.margin > 0 ? (pnlForPct / enrichedPos.margin) * 100 : 0;
 
       // Determine 'stale' status
       if (enrichedPos.status === 'open' && !realPos) {

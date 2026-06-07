@@ -355,10 +355,12 @@ class HyperliquidAdapter(ExchangeAdapter):
         oid    = str(filled.get("oid", "")) or \
                  str(first.get("resting", {}).get("oid", ""))
 
+        avg_px = filled.get("avgPx")
         return OrderResult(
             success=True,
             status="filled",
             exchange_order_id=oid or None,
+            actual_fill_price=Decimal(str(avg_px)) if avg_px else None,
             raw_response=data,
         )
 

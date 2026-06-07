@@ -173,7 +173,7 @@ async def _update_order_status(pool, order_id: uuid.UUID, status: str, payload: 
             result.error_msg if result else None,
             order_id,
             result.actual_fill_price if result else None,
-            result.pnl if hasattr(result, 'pnl') else None,
+            result.realized_pnl if result else None,
         )
 
     # Publish status update to Redis
@@ -484,21 +484,24 @@ async def _process_order(
                         strategy['id'],
                     )
                     if pos_row:
+                        pnl_realized_flat = float(flat_order_result.realized_pnl or 0) if flat_order_result else 0
                         await conn.execute(
                             """
                             UPDATE strategy_positions
-                            SET status      = 'closed',
-                                close_price = $1,
-                                closed_at   = NOW(),
-                                updated_at  = NOW()
-                            WHERE id = $2
+                            SET status        = 'closed',
+                                closing_price = $1,
+                                pnl_realized  = $2,
+                                closed_at     = NOW(),
+                                updated_at    = NOW()
+                            WHERE id = $3
                             """,
-                            close_price,
+                            close_price or None,
+                            pnl_realized_flat or None,
                             pos_row['id'],
                         )
                         logger.info(
                             f"Closed position {pos_row['id']} via flat signal "
-                            f"for strategy {strategy['id']} at {close_price}"
+                            f"for strategy {strategy['id']} at {close_price}, pnl={pnl_realized_flat}"
                         )
 
             # ── Update pnl_today if result contains PnL ──────────────────────
@@ -604,21 +607,24 @@ async def _process_order(
                 if existing:
                     if payload.signal in ("close_long", "close_short"):
                         close_price = float(result.actual_fill_price or 0)
+                        pnl_realized = float(result.realized_pnl or 0)
                         await conn.execute(
                             """
                             UPDATE strategy_positions
-                            SET status      = 'closed',
-                                close_price = $1,
-                                closed_at   = NOW(),
-                                updated_at  = NOW()
-                            WHERE id = $2
+                            SET status        = 'closed',
+                                closing_price = $1,
+                                pnl_realized  = $2,
+                                closed_at     = NOW(),
+                                updated_at    = NOW()
+                            WHERE id = $3
                             """,
-                            close_price,
+                            close_price or None,
+                            pnl_realized or None,
                             existing['id'],
                         )
                         logger.info(
                             f"Closed position {existing['id']} for strategy "
-                            f"{strategy['id']} at {close_price}"
+                            f"{strategy['id']} at {close_price}, pnl={pnl_realized}"
                         )
                 else:
                     if payload.signal in ("open_long", "open_short"):
