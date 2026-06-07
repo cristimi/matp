@@ -32,7 +32,7 @@ export default function Accounts() {
   const [loading,  setLoading]    = useState(true);
   const [showAdd,  setShowAdd]    = useState(false);
   const [credAccount, setCredAccount] = useState<Account | null>(null);
-  const [credJson,    setCredJson]    = useState('');
+  const [credFields,  setCredFields]  = useState<Record<string, string>>({});
   const [credStatus,  setCredStatus]  = useState<string | null>(null);
   const [addForm,  setAddForm]    = useState({
     id: '', exchange: 'blofin', mode: 'demo', label: ''
@@ -40,9 +40,16 @@ export default function Accounts() {
   const [addError,   setAddError]   = useState<string | null>(null);
   const [addLoading, setAddLoading] = useState(false);
 
-  const CRED_PLACEHOLDERS: Record<string, string> = {
-    blofin:      '{"api_key": "", "api_secret": "", "api_passphrase": ""}',
-    hyperliquid: '{"private_key": "0x..."}',
+  const CRED_FIELDS: Record<string, { key: string; label: string; type: 'text' | 'password'; placeholder: string }[]> = {
+    blofin: [
+      { key: 'api_key',        label: 'API Key',        type: 'text',     placeholder: 'bfkey-...' },
+      { key: 'api_secret',     label: 'API Secret',     type: 'password', placeholder: '' },
+      { key: 'api_passphrase', label: 'API Passphrase', type: 'password', placeholder: '' },
+    ],
+    hyperliquid: [
+      { key: 'private_key', label: 'API Wallet Private Key', type: 'password', placeholder: '0x...' },
+      { key: 'main_wallet', label: 'Main Wallet Address',    type: 'text',     placeholder: '0x...' },
+    ],
   };
 
   const fetchAccounts = useCallback(async () => {
@@ -107,19 +114,24 @@ export default function Accounts() {
 
   const handleUpdateCreds = async () => {
     if (!credAccount) return;
+    const fields = CRED_FIELDS[credAccount.exchange] || [];
+    const missing = fields.filter(f => !credFields[f.key]?.trim());
+    if (missing.length > 0) {
+      setCredStatus(`Error: fill in ${missing.map(f => f.label).join(', ')}`);
+      return;
+    }
     setCredStatus('Saving...');
     try {
       const res = await fetch(`${API}/accounts/${credAccount.id}/credentials`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ credentials_json: credJson }),
+        body: JSON.stringify({ credentials_json: JSON.stringify(credFields) }),
       });
       const data = await res.json();
       if (!res.ok) { setCredStatus(`Error: ${data.error}`); return; }
       setCredStatus('Credentials updated');
-      // Invalidate meta cache for this account
       setMetas(prev => { const n = {...prev}; delete n[credAccount.id]; return n; });
-      setTimeout(() => { setCredAccount(null); setCredJson(''); setCredStatus(null); }, 1500);
+      setTimeout(() => { setCredAccount(null); setCredFields({}); setCredStatus(null); }, 1500);
     } catch (e: any) { setCredStatus(`Error: ${e.message}`); }
   };
 
@@ -319,7 +331,12 @@ export default function Accounts() {
                    background:'var(--bg4)', borderTop:'1px solid var(--border)',
                 }}>
                   <button
-                    onClick={() => { setCredAccount(acc); setCredJson(CRED_PLACEHOLDERS[acc.exchange] || ''); }}
+                    onClick={() => {
+                      setCredAccount(acc);
+                      const empty: Record<string, string> = {};
+                      (CRED_FIELDS[acc.exchange] || []).forEach(f => { empty[f.key] = ''; });
+                      setCredFields(empty);
+                    }}
                     style={{
                       background:'none', border:'1px solid var(--border)',
                       borderRadius:'4px', padding:'4px 10px', color:'var(--muted)',
@@ -466,24 +483,30 @@ export default function Accounts() {
               </span>
             </div>
 
-            <div style={{ display:'flex', flexDirection:'column', gap:'5px' }}>
-              <label style={{ fontSize:'11px', fontWeight:600, color:'var(--dim)' }}>
-                JSON CREDENTIALS
-              </label>
-              <textarea
-                value={credJson}
-                onChange={e => setCredJson(e.target.value)}
-                rows={6}
-                style={{
-                  background:'var(--bg3)', border:'1px solid var(--border)',
-                  borderRadius:'4px', padding:'10px', color:'var(--text)',
-                  fontFamily:'JetBrains Mono, monospace', fontSize:'12px',
-                  resize:'none',
-                }}
-              />
-              <p style={{ fontSize:'10px', color:'var(--muted)', marginTop:'5px' }}>
-                Note: These will be encrypted by the executor and stored as ciphertext. 
-                They are never stored or transmitted in plain text.
+            <div style={{ display:'flex', flexDirection:'column', gap:'12px' }}>
+              {(CRED_FIELDS[credAccount.exchange] || []).map(field => (
+                <div key={field.key} style={{ display:'flex', flexDirection:'column', gap:'5px' }}>
+                  <label style={{ fontSize:'11px', fontWeight:600, color:'var(--dim)',
+                                  textTransform:'uppercase', letterSpacing:'.04em' }}>
+                    {field.label}
+                  </label>
+                  <input
+                    type={field.type}
+                    value={credFields[field.key] || ''}
+                    onChange={e => setCredFields(prev => ({ ...prev, [field.key]: e.target.value }))}
+                    placeholder={field.placeholder}
+                    autoComplete="off"
+                    style={{
+                      background:'var(--bg3)', border:'1px solid var(--border)',
+                      borderRadius:'4px', padding:'8px 10px', color:'var(--text)',
+                      fontFamily:'JetBrains Mono, monospace', fontSize:'12px',
+                      width:'100%', boxSizing:'border-box',
+                    }}
+                  />
+                </div>
+              ))}
+              <p style={{ fontSize:'10px', color:'var(--muted)', margin:0 }}>
+                Credentials are encrypted by the executor before storage. Never transmitted in plain text.
               </p>
             </div>
 
@@ -498,7 +521,7 @@ export default function Accounts() {
 
             <div style={{ display:'flex', gap:'10px', marginTop:'10px' }}>
               <button
-                onClick={() => { setCredAccount(null); setCredJson(''); setCredStatus(null); }}
+                onClick={() => { setCredAccount(null); setCredFields({}); setCredStatus(null); }}
                 style={{
                   flex:1, background:'none', border:'1px solid var(--border)',
                   borderRadius:'4px', padding:'10px', color:'var(--muted)',
