@@ -87,6 +87,62 @@ async def close_position_endpoint(request: ClosePositionRequest):
         }
 
 
+class ValidateRequest(PydanticBaseModel):
+    exchange:         str
+    mode:             str
+    credentials_json: str
+
+
+@app.post("/credentials/validate")
+async def validate_credentials(request: ValidateRequest):
+    """
+    Validate exchange credentials without storing them.
+    - Hyperliquid: derives wallet from private_key, checks it matches api_wallet if provided.
+    - Blofin: makes a live get_balance() call to verify auth.
+    Returns {valid, error?, detail?} where detail is exchange-specific info (wallet, balance).
+    """
+    import json as _json
+    try:
+        creds = _json.loads(request.credentials_json)
+    except Exception:
+        return {"valid": False, "error": "Invalid JSON in credentials"}
+
+    if request.exchange == "hyperliquid":
+        private_key    = creds.get("private_key", "").strip()
+        expected_wallet = creds.get("api_wallet", "").strip()
+        if not private_key:
+            return {"valid": False, "error": "private_key is required"}
+        try:
+            from eth_account import Account as EthAccount
+            derived = EthAccount.from_key(private_key).address
+            if expected_wallet and derived.lower() != expected_wallet.lower():
+                return {
+                    "valid": False,
+                    "error": (
+                        f"Private key derives {derived[:10]}…{derived[-6:]}, "
+                        f"but API Wallet Address is {expected_wallet[:10]}…{expected_wallet[-6:]}"
+                    ),
+                }
+            return {"valid": True, "detail": f"Wallet verified: {derived}"}
+        except Exception as e:
+            return {"valid": False, "error": f"Invalid private key: {e}"}
+
+    elif request.exchange == "blofin":
+        try:
+            from app.adapters.blofin import BlofinAdapter
+            adapter = BlofinAdapter(creds, request.mode)
+            balance = await adapter.get_balance()
+            if "error" in balance:
+                return {"valid": False, "error": f"Blofin auth failed: {balance['error']}"}
+            total = balance.get("total_balance", 0)
+            ccy   = balance.get("currency", "USDT")
+            return {"valid": True, "detail": f"Connected — balance: {total:.2f} {ccy}"}
+        except Exception as e:
+            return {"valid": False, "error": str(e)}
+
+    return {"valid": False, "error": f"Unsupported exchange for validation: {request.exchange}"}
+
+
 @app.post("/credentials/encrypt", response_model=EncryptResponse)
 async def encrypt_credentials(request: EncryptRequest):
     """

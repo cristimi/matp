@@ -47,6 +47,7 @@ export default function Accounts() {
       { key: 'api_passphrase', label: 'API Passphrase', type: 'password', placeholder: '' },
     ],
     hyperliquid: [
+      { key: 'api_wallet',  label: 'API Wallet Address',     type: 'text',     placeholder: '0x...' },
       { key: 'private_key', label: 'API Wallet Private Key', type: 'password', placeholder: '0x...' },
       { key: 'main_wallet', label: 'Main Wallet Address',    type: 'text',     placeholder: '0x...' },
     ],
@@ -120,7 +121,7 @@ export default function Accounts() {
       setCredStatus(`Error: fill in ${missing.map(f => f.label).join(', ')}`);
       return;
     }
-    setCredStatus('Saving...');
+    setCredStatus('Validating…');
     try {
       const res = await fetch(`${API}/accounts/${credAccount.id}/credentials`, {
         method: 'POST',
@@ -129,9 +130,9 @@ export default function Accounts() {
       });
       const data = await res.json();
       if (!res.ok) { setCredStatus(`Error: ${data.error}`); return; }
-      setCredStatus('Credentials updated');
+      setCredStatus(`Saved — ${data.detail || 'credentials updated'}`);
       setMetas(prev => { const n = {...prev}; delete n[credAccount.id]; return n; });
-      setTimeout(() => { setCredAccount(null); setCredFields({}); setCredStatus(null); }, 1500);
+      setTimeout(() => { setCredAccount(null); setCredFields({}); setCredStatus(null); }, 2500);
     } catch (e: any) { setCredStatus(`Error: ${e.message}`); }
   };
 

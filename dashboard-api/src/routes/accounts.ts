@@ -200,13 +200,43 @@ router.post('/:id/credentials', async (req: Request, res: Response) => {
   }
 
   try {
+    // Step 0: fetch account exchange + mode for validation
+    const acctResult = await getPool().query(
+      `SELECT exchange, mode FROM exchange_accounts WHERE id = $1`,
+      [req.params.id]
+    );
+    if (acctResult.rowCount === 0) {
+      return res.status(404).json({ error: `Account not found: ${req.params.id}` });
+    }
+    const { exchange, mode } = acctResult.rows[0];
+
+    // Step 0b: validate credentials against the exchange before storing
+    const validateResp = await fetch(`${EXECUTOR_URL}/credentials/validate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ exchange, mode, credentials_json }),
+      signal: AbortSignal.timeout(15000),
+    });
+    if (!validateResp.ok) {
+      return res.status(502).json({ error: 'Executor validation endpoint unreachable' });
+    }
+    const validateResult = await validateResp.json() as { valid: boolean; error?: string; detail?: string };
+    if (!validateResult.valid) {
+      return res.status(400).json({ error: validateResult.error || 'Credential validation failed' });
+    }
+
+    // Strip validation-only fields (api_wallet is derived from private_key; not needed in storage)
+    const creds = JSON.parse(credentials_json);
+    delete creds.api_wallet;
+    const clean_json = JSON.stringify(creds);
+
     // Step 1: encrypt via executor (MASTER_KEY stays in executor)
     const encryptResp = await fetch(
       `${EXECUTOR_URL}/credentials/encrypt`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ credentials_json }),
+        body: JSON.stringify({ credentials_json: clean_json }),
         signal: AbortSignal.timeout(10000),
       }
     );
@@ -241,6 +271,7 @@ router.post('/:id/credentials', async (req: Request, res: Response) => {
     res.json({
       updated:  req.params.id,
       message:  'Credentials updated and adapter cache invalidated',
+      detail:   validateResult.detail,
     });
 
   } catch (e: any) {

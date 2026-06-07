@@ -264,6 +264,13 @@ class BlofinAdapter(ExchangeAdapter):
                 resp.raise_for_status()
                 data = resp.json()
 
+            code = str(data.get("code", "0"))
+            if code not in ("0", "200"):
+                msg = data.get("msg", "unknown error")
+                return {"total_balance": 0.0, "available_balance": 0.0,
+                        "used_margin": 0.0, "currency": "USDT",
+                        "error": f"Blofin API error {code}: {msg}"}
+
             # Blofin balance structure:
             # data[0].totalEquity       — account-level equity
             # data[0].details[0].available — per-currency available margin
