@@ -480,22 +480,6 @@ export default function SignalLog() {
         )}
       </div>
 
-      {/* ── Column header ── */}
-      <div style={{
-        display:'flex', gap:'8px', padding:'6px 14px',
-        borderBottom:'1px solid var(--border)', flexShrink:0,
-      }}>
-        {['Time', 'Strategy', 'Outcome', 'Symbol', 'Side', 'Size', 'Duration'].map(h => (
-          <span key={h} style={{
-            fontSize:'9px', fontWeight:600, textTransform:'uppercase',
-            letterSpacing:'.1em', color:'var(--dim)',
-            minWidth: h === 'Time' ? 110 : h === 'Strategy' ? 140 : 'auto',
-          }}>
-            {h}
-          </span>
-        ))}
-      </div>
-
       {/* ── List ── */}
       <div style={{
         flex:1, overflowY:'auto', padding:'10px 14px 80px',
