@@ -18,9 +18,10 @@ interface Balance {
 }
 
 interface AccountMeta {
-  api_key_preview?: string;
-  wallet_address?:  string;
-  error?:           string;
+  api_key?:        string;   // Blofin — full key, non-sensitive without secret
+  wallet_address?: string;   // HL — API/agent wallet
+  main_wallet?:    string;   // HL — main wallet (if agent wallet is used)
+  error?:          string;
 }
 
 const API = '/api/dashboard';
@@ -30,15 +31,14 @@ export default function Accounts() {
   const [balances, setBalances]   = useState<Record<string, Balance>>({});
   const [metas,    setMetas]      = useState<Record<string, AccountMeta>>({});
   const [loading,  setLoading]    = useState(true);
-  const [showAdd,  setShowAdd]    = useState(false);
-  const [credAccount, setCredAccount] = useState<Account | null>(null);
-  const [credFields,  setCredFields]  = useState<Record<string, string>>({});
-  const [credStatus,  setCredStatus]  = useState<string | null>(null);
-  const [addForm,  setAddForm]    = useState({
-    id: '', exchange: 'blofin', mode: 'demo', label: ''
-  });
-  const [addError,   setAddError]   = useState<string | null>(null);
-  const [addLoading, setAddLoading] = useState(false);
+  const [showAdd,      setShowAdd]      = useState(false);
+  const [credAccount,  setCredAccount]  = useState<Account | null>(null);
+  const [credFields,   setCredFields]   = useState<Record<string, string>>({});
+  const [credStatus,   setCredStatus]   = useState<string | null>(null);
+  const [addForm,      setAddForm]      = useState({ name: '', exchange: 'blofin', mode: 'demo' });
+  const [addCredFields,setAddCredFields]= useState<Record<string, string>>({});
+  const [addError,     setAddError]     = useState<string | null>(null);
+  const [addLoading,   setAddLoading]   = useState(false);
 
   const CRED_FIELDS: Record<string, { key: string; label: string; type: 'text' | 'password'; placeholder: string }[]> = {
     blofin: [
@@ -51,6 +51,18 @@ export default function Accounts() {
       { key: 'private_key', label: 'API Wallet Private Key', type: 'password', placeholder: '0x...' },
       { key: 'main_wallet', label: 'Main Wallet Address',    type: 'text',     placeholder: '0x...' },
     ],
+  };
+
+  const slugify = (name: string, exchange: string): string => {
+    const base = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 22);
+    const rand = Math.random().toString(36).slice(2, 6);
+    return `${exchange}-${base}-${rand}`;
+  };
+
+  const emptyCredFields = (exchange: string): Record<string, string> => {
+    const empty: Record<string, string> = {};
+    (CRED_FIELDS[exchange] || []).forEach(f => { empty[f.key] = ''; });
+    return empty;
   };
 
   const fetchAccounts = useCallback(async () => {
@@ -97,17 +109,40 @@ export default function Accounts() {
 
   const handleAdd = async () => {
     setAddError(null);
+    if (!addForm.name.trim()) { setAddError('Name is required'); return; }
+    const missingCreds = (CRED_FIELDS[addForm.exchange] || []).filter(f => !addCredFields[f.key]?.trim());
+    if (missingCreds.length > 0) {
+      setAddError(`Fill in: ${missingCreds.map(f => f.label).join(', ')}`);
+      return;
+    }
     setAddLoading(true);
+    const id = slugify(addForm.name, addForm.exchange);
     try {
-      const res  = await fetch(`${API}/accounts`, {
+      // Step 1: create account record
+      const res = await fetch(`${API}/accounts`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(addForm),
+        body: JSON.stringify({ id, exchange: addForm.exchange, mode: addForm.mode, label: addForm.name }),
       });
       const data = await res.json();
-      if (!res.ok) { setAddError(data.error || 'Failed'); return; }
+      if (!res.ok) { setAddError(data.error || 'Failed to create account'); return; }
+
+      // Step 2: validate + save credentials (rolls back on failure)
+      const credRes = await fetch(`${API}/accounts/${id}/credentials`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ credentials_json: JSON.stringify(addCredFields) }),
+      });
+      const credData = await credRes.json();
+      if (!credRes.ok) {
+        await fetch(`${API}/accounts/${id}`, { method: 'DELETE' });
+        setAddError(credData.error || 'Credential validation failed');
+        return;
+      }
+
       setShowAdd(false);
-      setAddForm({ id: '', exchange: 'blofin', mode: 'demo', label: '' });
+      setAddForm({ name: '', exchange: 'blofin', mode: 'demo' });
+      setAddCredFields({});
       fetchAccounts();
     } catch (e: any) { setAddError(e.message); }
     finally { setAddLoading(false); }
@@ -169,7 +204,7 @@ export default function Accounts() {
             {activeCount} Active
           </span>
           <button
-            onClick={() => setShowAdd(true)}
+            onClick={() => { setAddCredFields(emptyCredFields('blofin')); setShowAdd(true); }}
             style={{
               background:'var(--bg3)', border:'1px solid var(--border)',
               borderRadius:'20px', padding:'5px 12px',
@@ -291,7 +326,7 @@ export default function Accounts() {
                     fontFamily:'JetBrains Mono, monospace', fontSize:'11px',
                     color:'var(--muted)',
                   }}>
-                    {meta?.api_key_preview || meta?.wallet_address || 'Credentials hidden'}
+                    {meta?.api_key || meta?.wallet_address || 'Credentials hidden'}
                   </span>
                 </div>
 
@@ -334,9 +369,16 @@ export default function Accounts() {
                   <button
                     onClick={() => {
                       setCredAccount(acc);
-                      const empty: Record<string, string> = {};
-                      (CRED_FIELDS[acc.exchange] || []).forEach(f => { empty[f.key] = ''; });
-                      setCredFields(empty);
+                      const meta = metas[acc.id] || {};
+                      const prefill: Record<string, string> = {};
+                      (CRED_FIELDS[acc.exchange] || []).forEach(f => {
+                        // Pre-fill non-sensitive fields from cached meta; leave sensitive blank
+                        if (f.key === 'api_key')     prefill[f.key] = (meta as any).api_key        || '';
+                        else if (f.key === 'api_wallet')  prefill[f.key] = (meta as any).wallet_address || '';
+                        else if (f.key === 'main_wallet') prefill[f.key] = (meta as any).main_wallet   || '';
+                        else prefill[f.key] = '';
+                      });
+                      setCredFields(prefill);
                     }}
                     style={{
                       background:'none', border:'1px solid var(--border)',
@@ -367,70 +409,71 @@ export default function Accounts() {
         <div style={{
           position:'fixed', inset:0, background:'rgba(0,0,0,0.8)',
           zIndex:100, display:'flex', alignItems:'center', justifyContent:'center',
-          padding:'20px',
+          padding:'20px', overflowY:'auto',
         }}>
           <div style={{
             background:'var(--bg2)', border:'1px solid var(--border)',
-            borderRadius:'var(--r)', width:'100%', maxWidth:'400px',
-            padding:'20px', display:'flex', flexDirection:'column', gap:'15px',
+            borderRadius:'var(--r)', width:'100%', maxWidth:'420px',
+            padding:'20px', display:'flex', flexDirection:'column', gap:'14px',
+            margin:'auto',
           }}>
             <span style={{ fontSize:'18px', fontWeight:800, color:'var(--text)' }}>
               Add Exchange Account
             </span>
-            {addError && <p style={{ color:'var(--red)', fontSize:'12px' }}>{addError}</p>}
-            
+            {addError && <p style={{ color:'var(--red)', fontSize:'12px', margin:0 }}>{addError}</p>}
+
+            {/* Name */}
             <div style={{ display:'flex', flexDirection:'column', gap:'5px' }}>
-              <label style={{ fontSize:'11px', fontWeight:600, color:'var(--dim)' }}>ACCOUNT ID</label>
+              <label style={{ fontSize:'11px', fontWeight:600, color:'var(--dim)',
+                              textTransform:'uppercase', letterSpacing:'.04em' }}>Name</label>
               <input
-                value={addForm.id}
-                onChange={e => setAddForm({...addForm, id: e.target.value})}
-                placeholder="e.g. main-blofin"
+                value={addForm.name}
+                onChange={e => setAddForm({...addForm, name: e.target.value})}
+                placeholder="e.g. My Blofin Demo"
                 style={{
                   background:'var(--bg3)', border:'1px solid var(--border)',
-                  borderRadius:'4px', padding:'8px 10px', color:'var(--text)',
-                  fontFamily:'JetBrains Mono, monospace', fontSize:'13px',
+                  borderRadius:'4px', padding:'8px 10px', color:'var(--text)', fontSize:'13px',
                 }}
               />
+              {addForm.name.trim() && (
+                <span style={{
+                  fontFamily:'JetBrains Mono, monospace', fontSize:'10px',
+                  color:'var(--dim)', paddingLeft:'2px',
+                }}>
+                  ID: {addForm.exchange}-{addForm.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 22)}-••••
+                </span>
+              )}
             </div>
 
-            <div style={{ display:'flex', flexDirection:'column', gap:'5px' }}>
-              <label style={{ fontSize:'11px', fontWeight:600, color:'var(--dim)' }}>LABEL</label>
-              <input
-                value={addForm.label}
-                onChange={e => setAddForm({...addForm, label: e.target.value})}
-                placeholder="e.g. My Blofin Account"
-                style={{
-                  background:'var(--bg3)', border:'1px solid var(--border)',
-                  borderRadius:'4px', padding:'8px 10px', color:'var(--text)',
-                  fontSize:'13px',
-                }}
-              />
-            </div>
-
+            {/* Exchange + Mode */}
             <div style={{ display:'flex', gap:'10px' }}>
               <div style={{ flex:1, display:'flex', flexDirection:'column', gap:'5px' }}>
-                <label style={{ fontSize:'11px', fontWeight:600, color:'var(--dim)' }}>EXCHANGE</label>
+                <label style={{ fontSize:'11px', fontWeight:600, color:'var(--dim)',
+                                textTransform:'uppercase', letterSpacing:'.04em' }}>Exchange</label>
                 <select
                   value={addForm.exchange}
-                  onChange={e => setAddForm({...addForm, exchange: e.target.value})}
+                  onChange={e => {
+                    const ex = e.target.value;
+                    setAddForm(prev => ({...prev, exchange: ex}));
+                    setAddCredFields(emptyCredFields(ex));
+                  }}
                   style={{
                     background:'var(--bg3)', border:'1px solid var(--border)',
-                    borderRadius:'4px', padding:'8px 10px', color:'var(--text)',
-                    fontSize:'13px',
+                    borderRadius:'4px', padding:'8px 10px', color:'var(--text)', fontSize:'13px',
                   }}>
                   <option value="blofin">Blofin</option>
                   <option value="hyperliquid">Hyperliquid</option>
                 </select>
               </div>
               <div style={{ flex:1, display:'flex', flexDirection:'column', gap:'5px' }}>
-                <label style={{ fontSize:'11px', fontWeight:600, color:'var(--dim)' }}>MODE</label>
+                <label style={{ fontSize:'11px', fontWeight:600, color:'var(--dim)',
+                                textTransform:'uppercase', letterSpacing:'.04em' }}>Mode</label>
                 <select
                   value={addForm.mode}
-                  onChange={e => setAddForm({...addForm, mode: e.target.value})}
+                  onChange={e => setAddForm(prev => ({...prev, mode: e.target.value}))}
                   style={{
                     background:'var(--bg3)', border:'1px solid var(--border)',
-                    borderRadius:'4px', padding:'8px 10px', color:'var(--text)',
-                    fontSize:'13px',
+                    borderRadius:'4px', padding:'8px 10px', color:'var(--text)', fontSize:'13px',
                   }}>
                   <option value="demo">Demo</option>
                   <option value="live">Live</option>
@@ -438,9 +481,44 @@ export default function Accounts() {
               </div>
             </div>
 
-            <div style={{ display:'flex', gap:'10px', marginTop:'10px' }}>
+            {/* Credential fields */}
+            <div style={{
+              display:'flex', flexDirection:'column', gap:'10px',
+              borderTop:'1px solid var(--border)', paddingTop:'12px',
+            }}>
+              <span style={{ fontSize:'11px', fontWeight:600, color:'var(--dim)',
+                             textTransform:'uppercase', letterSpacing:'.04em' }}>
+                Credentials
+              </span>
+              {(CRED_FIELDS[addForm.exchange] || []).map(field => (
+                <div key={field.key} style={{ display:'flex', flexDirection:'column', gap:'4px' }}>
+                  <label style={{ fontSize:'11px', fontWeight:600, color:'var(--dim)',
+                                  letterSpacing:'.03em' }}>
+                    {field.label}
+                  </label>
+                  <input
+                    type={field.type}
+                    value={addCredFields[field.key] || ''}
+                    onChange={e => setAddCredFields(prev => ({...prev, [field.key]: e.target.value}))}
+                    placeholder={field.placeholder}
+                    autoComplete="off"
+                    style={{
+                      background:'var(--bg3)', border:'1px solid var(--border)',
+                      borderRadius:'4px', padding:'8px 10px', color:'var(--text)',
+                      fontFamily:'JetBrains Mono, monospace', fontSize:'12px',
+                      boxSizing:'border-box', width:'100%',
+                    }}
+                  />
+                </div>
+              ))}
+              <p style={{ fontSize:'10px', color:'var(--muted)', margin:0 }}>
+                Credentials are validated against the exchange then encrypted before storage.
+              </p>
+            </div>
+
+            <div style={{ display:'flex', gap:'10px', marginTop:'4px' }}>
               <button
-                onClick={() => setShowAdd(false)}
+                onClick={() => { setShowAdd(false); setAddError(null); }}
                 style={{
                   flex:1, background:'none', border:'1px solid var(--border)',
                   borderRadius:'4px', padding:'10px', color:'var(--muted)',
@@ -456,7 +534,7 @@ export default function Accounts() {
                   borderRadius:'4px', padding:'10px', color:'white',
                   fontWeight:700, cursor:'pointer', opacity: addLoading ? 0.5 : 1,
                 }}>
-                {addLoading ? 'Saving...' : 'Add Account'}
+                {addLoading ? 'Validating…' : 'Add Account'}
               </button>
             </div>
           </div>

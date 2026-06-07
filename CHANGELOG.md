@@ -1,3 +1,28 @@
+## [2026-06-07] - 2.6.0
+
+### Added
+- **Structured credentials UI**: replaced raw-JSON textarea with per-field inputs for each exchange. Sensitive fields (secrets, private keys) are masked (`type="password"`); non-sensitive fields (API keys, wallet addresses) are shown in plain text.
+- **API Wallet field for Hyperliquid**: `api_wallet` is now an explicit field in the credential form; the server derives the wallet from `private_key` and cross-checks it matches the supplied `api_wallet` before storing.
+- **Server-side credential validation**: `POST /credentials/validate` on the executor checks credentials before storage. Hyperliquid: derives wallet from private key, verifies match. Blofin: makes a live `get_balance()` call to verify auth; catches Blofin's HTTP-200 error codes.
+- **HL agent wallet support**: `main_wallet` optional credential field; HL adapter uses it as `query_address` for all state queries (positions, balance) while the API wallet is still used for signing orders.
+- **HL duplicate-account check**: when saving HL credentials, dashboard-api checks existing active HL accounts via `/meta` to ensure the same API wallet isn't registered twice.
+- **Account creation with credentials inline**: "Add Account" modal now includes credential fields from the start. Name is the only user-entered field; account ID is derived automatically (`{exchange}-{kebab-name}-{rand4}`). Credentials are validated and saved atomically on creation; if credential save fails the account row is rolled back.
+- **Non-sensitive fields pre-filled on edit**: "Update Credentials" opens with non-sensitive fields (api_key for Blofin; api_wallet + main_wallet for HL) pre-populated from the cached meta, so only secrets need to be re-entered.
+
+### Changed
+- `order-executor/app/models.py`: `Position` gains `mark_price: Optional[Decimal]` and `unrealized_pnl: Optional[Decimal]`.
+- `order-executor/app/adapters/hyperliquid.py`: `get_open_positions` returns `mark_price` (derived from `positionValue/size`) and `unrealized_pnl` (was `pnl`); `get_balance` queries both clearinghouse endpoints in parallel; `get_account_meta` returns `main_wallet` when set; all state queries use `self.query_address`.
+- `order-executor/app/adapters/blofin.py`: `get_open_positions` returns `mark_price` from `markPrice`/`last`/`averagePrice`; `get_balance` checks `code` field for Blofin HTTP-200 auth errors; `get_account_meta` returns full `api_key`.
+- `order-executor/app/main.py`: added `POST /credentials/validate` endpoint.
+- `dashboard-api/src/routes/accounts.ts`: `POST /:id/credentials` now validates before encrypting; HL duplicate check; `api_wallet` stripped from JSON before storage; `TODO(blofin-dedup)` marker for future Blofin deduplication.
+- `dashboard-ui/src/pages/Accounts.tsx`: full credential fields UX overhaul; `CRED_FIELDS` schema; `slugify`/`emptyCredFields` helpers; Add Account modal with inline credentials; `addForm.name` replaces `addForm.id + addForm.label`.
+- `dashboard-ui/src/pages/Positions.tsx`: open positions use `unrealized_pnl`; label "P&L (Realized)" → "Unrealized P&L" for open positions; poll rate drops to 3 s when open positions exist.
+
+### Fixed
+- **HL positions/balance under API wallet**: orders placed by the API wallet appear under the main wallet's clearinghouse state — resolved by `query_address` using `main_wallet` for all state queries.
+- **Live P&L not updating**: `pnl` field renamed to `unrealized_pnl` across adapter + UI; `mark_price` now populated from exchange data so Positions page shows real-time P&L.
+- **Blofin validation false-positive**: `get_balance` previously used `raise_for_status()` which doesn't catch Blofin's HTTP-200 auth errors; now checks `code` in response JSON.
+
 ## [2026-06-07] - 2.5.0
 
 ### Fixed

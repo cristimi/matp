@@ -303,17 +303,12 @@ class BlofinAdapter(ExchangeAdapter):
             }
 
     async def get_account_meta(self) -> dict:
-        """Return masked api_key preview — safe to display in UI."""
+        """Return api_key — non-sensitive without the secret/passphrase."""
         try:
-            key = self.api_key
-            if len(key) >= 7:
-                preview = f"{key[:3]}...{key[-4:]}"
-            else:
-                preview = "***"
             return {
-                "api_key_preview": preview,
-                "account_type":    "futures",
-                "exchange":        "blofin",
+                "api_key":      self.api_key,
+                "account_type": "futures",
+                "exchange":     "blofin",
             }
         except Exception as e:
             logger.error(f"BlofinAdapter.get_account_meta failed: {e}")

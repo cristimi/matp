@@ -225,6 +225,30 @@ router.post('/:id/credentials', async (req: Request, res: Response) => {
       return res.status(400).json({ error: validateResult.error || 'Credential validation failed' });
     }
 
+    // HL duplicate check: ensure no existing active account uses the same API wallet
+    // TODO(blofin-dedup): add equivalent check for Blofin using api_key comparison
+    if (exchange === 'hyperliquid' && (validateResult as any).wallet) {
+      const derivedWallet: string = (validateResult as any).wallet;
+      const existingHL = await getPool().query(
+        `SELECT id FROM exchange_accounts WHERE exchange = 'hyperliquid' AND is_active = true AND id != $1`,
+        [req.params.id]
+      );
+      for (const existing of existingHL.rows) {
+        try {
+          const metaResp = await fetch(`${EXECUTOR_URL}/accounts/${existing.id}/meta`,
+            { signal: AbortSignal.timeout(5000) });
+          if (metaResp.ok) {
+            const meta = await metaResp.json() as any;
+            if (meta.wallet_address?.toLowerCase() === derivedWallet.toLowerCase()) {
+              return res.status(409).json({
+                error: `API wallet ${derivedWallet.slice(0, 10)}… is already registered on account "${existing.id}"`,
+              });
+            }
+          }
+        } catch { /* non-fatal: skip unresponsive account */ }
+      }
+    }
+
     // Strip validation-only fields (api_wallet is derived from private_key; not needed in storage)
     const creds = JSON.parse(credentials_json);
     delete creds.api_wallet;

@@ -123,7 +123,7 @@ async def validate_credentials(request: ValidateRequest):
                         f"but API Wallet Address is {expected_wallet[:10]}…{expected_wallet[-6:]}"
                     ),
                 }
-            return {"valid": True, "detail": f"Wallet verified: {derived}"}
+            return {"valid": True, "detail": f"Wallet verified: {derived}", "wallet": derived}
         except Exception as e:
             return {"valid": False, "error": f"Invalid private key: {e}"}
 

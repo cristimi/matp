@@ -420,12 +420,15 @@ class HyperliquidAdapter(ExchangeAdapter):
             }
 
     async def get_account_meta(self) -> dict:
-        """Return wallet address — this is public information."""
+        """Return wallet addresses — both are public information."""
         try:
-            return {
-                "wallet_address": self.wallet_address,
+            meta = {
+                "wallet_address": self.wallet_address,   # API/agent wallet (signs orders)
                 "exchange":       "hyperliquid",
             }
+            if self.query_address != self.wallet_address:
+                meta["main_wallet"] = self.query_address
+            return meta
         except Exception as e:
             logger.error(f"HyperliquidAdapter.get_account_meta failed: {e}")
             return {}
