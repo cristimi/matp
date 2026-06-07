@@ -45,7 +45,10 @@ async def _log_webhook_call(pool, strategy_id: str, http_status: int, error_mess
 async def _get_strategy(pool, strategy_id: str):
     """Retrieve strategy configuration from the database."""
     async with pool.acquire() as conn:
-        return await conn.fetchrow("SELECT * FROM strategies WHERE id = $1", strategy_id)
+        return await conn.fetchrow(
+            "SELECT * FROM strategies WHERE id = $1 AND COALESCE(is_deleted, false) = false",
+            strategy_id
+        )
 
 
 async def _check_rate_limit(pool, strategy_id: str, max_signals: int) -> bool:

@@ -49,7 +49,7 @@ class WebhookPayload(BaseModel):
     size:            Decimal
     price:           Optional[Decimal] = None
     leverage:        Optional[int] = None
-    margin_mode:     Optional[Literal["cross", "isolated"]] = "cross"
+    margin_mode:     Optional[Literal["cross", "isolated"]] = None
     tp_price:        Optional[Decimal] = None
     sl_price:        Optional[Decimal] = None
     signal:          Literal["open_long", "close_long", "open_short", "close_short"]

@@ -6,7 +6,7 @@ import logging
 import time
 import asyncio
 from decimal import Decimal
-from typing import List
+from typing import Dict, List, Optional
 
 import httpx
 
@@ -15,7 +15,13 @@ from app.models import OrderRequest, OrderResult, Position
 
 logger = logging.getLogger(__name__)
 
+_INSTRUMENTS_TTL = 86400  # 24 hours
+
 class BlofinAdapter(ExchangeAdapter):
+    # Class-level cache shared across all instances, keyed by base_url
+    _instruments: Dict[str, Dict[str, dict]] = {}   # base_url -> instId -> spec
+    _instruments_ts: Dict[str, float]        = {}   # base_url -> fetch timestamp
+
     def __init__(self, credentials: dict, mode: str):
         super().__init__(credentials, mode)
         self.api_key        = credentials["api_key"]
@@ -26,6 +32,47 @@ class BlofinAdapter(ExchangeAdapter):
             if mode == "demo"
             else "https://openapi.blofin.com"
         )
+
+    async def _refresh_instruments(self) -> None:
+        """Fetch all SWAP instrument specs and populate the class-level cache."""
+        path = "/api/v1/market/instruments?instType=SWAP"
+        headers = self._headers("GET", path, "")
+        try:
+            async with httpx.AsyncClient(base_url=self.base_url, timeout=10) as client:
+                resp = await client.get(path, headers=headers)
+            items = resp.json().get("data", [])
+            if items:
+                BlofinAdapter._instruments[self.base_url] = {
+                    inst["instId"]: inst for inst in items
+                }
+                BlofinAdapter._instruments_ts[self.base_url] = time.time()
+                logger.info(f"BlofinAdapter: cached {len(items)} instrument specs from {self.base_url}")
+        except Exception as e:
+            logger.warning(f"BlofinAdapter: failed to refresh instruments: {e}")
+
+    async def _get_instrument(self, inst_id: str) -> Optional[dict]:
+        """Return instrument spec for inst_id, refreshing if cache is stale or missing."""
+        age = time.time() - BlofinAdapter._instruments_ts.get(self.base_url, 0)
+        if age > _INSTRUMENTS_TTL or self.base_url not in BlofinAdapter._instruments:
+            await self._refresh_instruments()
+        return BlofinAdapter._instruments.get(self.base_url, {}).get(inst_id)
+
+    async def _to_contracts(self, inst_id: str, base_volume: Decimal) -> str:
+        """Convert base-asset volume to Blofin contract count string."""
+        inst = await self._get_instrument(inst_id)
+        if inst:
+            contract_val = float(inst.get("contractValue") or "0.001")
+            lot_size     = float(inst.get("lotSize")       or "0.1")
+            min_size     = float(inst.get("minSize")       or "0.1")
+        else:
+            # Fallback: assume BTC-style 0.001 contract value
+            logger.warning(f"BlofinAdapter: no instrument spec for {inst_id}, using defaults")
+            contract_val, lot_size, min_size = 0.001, 0.1, 0.1
+
+        raw      = float(base_volume) / contract_val
+        rounded  = round(round(raw / lot_size) * lot_size, 8)
+        enforced = max(min_size, rounded)
+        return f"{enforced:g}"
 
     def _sign(self, method: str, path: str, body: str, timestamp: str, nonce: str) -> str:
         # Blofin Prehash: requestPath + method + timestamp + nonce + body
@@ -91,14 +138,7 @@ class BlofinAdapter(ExchangeAdapter):
         Wraps the existing place_order / create_order logic.
         """
         try:
-            # Blofin requires order size to be a multiple of lotSize (0.1) and >= minSize (0.1) for BTC-USDT.
-            # Conversion: [API Contract Amount] = [BTC Volume] / 0.001 = [BTC Volume] * 1000
-            # For now keeping the 1000x multiplier as it was in the listener's adapter
-            order_size = float(order.size) * 1000.0
-            
-            # Simple normalization for BTC
-            if "BTC" in order.symbol:
-                order_size = max(0.1, round(order_size, 1))
+            order_size = await self._to_contracts(order.symbol, order.size)
 
             path = "/api/v1/trade/order"
             body_data = {
