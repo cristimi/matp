@@ -83,6 +83,8 @@ export interface Stats {
 export interface Strategy {
   id: string;
   name: string;
+  symbol: string;
+  account_id: string;
   pair: TradingPair;
   interval: string;
   platform: string;
@@ -90,9 +92,13 @@ export interface Strategy {
   type: 'internal' | 'tradingview';
   last_signal_time?: number;
   tags: string[];
+  default_leverage: number;
+  margin_mode: 'isolated' | 'cross';
   max_position_size: number;
   max_leverage: number;
   max_daily_drawdown_percent: number;
+  allow_quote_variants: boolean;
+  allow_cross_charting: boolean;
   pnl_today: number;
   pnl_total: number;
   win_count: number;

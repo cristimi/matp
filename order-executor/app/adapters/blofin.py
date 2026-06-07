@@ -132,22 +132,49 @@ class BlofinAdapter(ExchangeAdapter):
         except Exception:
             return None
 
+    async def _set_leverage(self, inst_id: str, leverage: int, margin_mode: str) -> None:
+        """Set leverage for an instrument before placing an order."""
+        path = "/api/v1/account/set-leverage"
+        body_data = {
+            "instId":       inst_id,
+            "leverage":     str(leverage),
+            "marginMode":   margin_mode,
+            "positionSide": "net",
+        }
+        body_str = json.dumps(body_data, separators=(",", ":"))
+        headers  = self._headers("POST", path, body_str)
+        try:
+            async with httpx.AsyncClient(base_url=self.base_url, timeout=10) as client:
+                resp = await client.post(path, content=body_str, headers=headers)
+            data = resp.json()
+            if str(data.get("code")) not in ("0", "200"):
+                logger.warning(f"BlofinAdapter: set-leverage failed for {inst_id}: {data.get('msg')}")
+            else:
+                logger.info(f"BlofinAdapter: leverage set to {leverage}x for {inst_id} ({margin_mode})")
+        except Exception as e:
+            logger.warning(f"BlofinAdapter: set-leverage error for {inst_id}: {e}")
+
     async def submit_order(self, order: OrderRequest) -> OrderResult:
         """
         Implements ExchangeAdapter.submit_order.
         Wraps the existing place_order / create_order logic.
         """
         try:
-            order_size = await self._to_contracts(order.symbol, order.size)
+            order_size   = await self._to_contracts(order.symbol, order.size)
+            margin_mode  = order.margin_mode or "isolated"
+            leverage     = order.leverage or 10
+
+            # Blofin ignores the lever field in order placement; must set it explicitly first
+            await self._set_leverage(order.symbol, leverage, margin_mode)
 
             path = "/api/v1/trade/order"
             body_data = {
                 "instId": order.symbol,
-                "marginMode": order.margin_mode or "isolated",
+                "marginMode": margin_mode,
                 "side": order.side,
                 "orderType": order.order_type,
                 "size": str(order_size),
-                "lever": str(order.leverage or 10),
+                "lever": str(leverage),
             }
             
             if order.price:

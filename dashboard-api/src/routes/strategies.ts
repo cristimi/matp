@@ -239,7 +239,10 @@ router.get('/:id', async (req: Request, res: Response) => {
 router.put('/:id', async (req: Request, res: Response) => {
   const {
     name,
+    symbol,
+    interval,
     enabled,
+    webhook_enabled,
     default_leverage,
     margin_mode,
     allow_quote_variants,
@@ -247,27 +250,41 @@ router.put('/:id', async (req: Request, res: Response) => {
     max_position_size,
     max_leverage,
     max_daily_signals,
+    max_daily_drawdown_percent,
   } = req.body;
+
+  // Normalise symbol if provided
+  const normalisedSymbol = symbol
+    ? symbol.toUpperCase().replace('/', '-')
+    : null;
 
   try {
     const result = await getPool().query(
       `UPDATE strategies SET
-         name                  = COALESCE($1, name),
-         enabled               = COALESCE($2, enabled),
-         default_leverage      = COALESCE($3, default_leverage),
-         margin_mode           = COALESCE($4, margin_mode),
-         allow_quote_variants  = COALESCE($5, allow_quote_variants),
-         allow_cross_charting  = COALESCE($6, allow_cross_charting),
-         max_position_size     = COALESCE($7, max_position_size),
-         max_leverage          = COALESCE($8, max_leverage),
-         max_daily_signals     = COALESCE($9, max_daily_signals),
-         updated_at            = NOW()
-       WHERE id = $10
-       RETURNING id, name, enabled, default_leverage, margin_mode,
-                 allow_quote_variants, allow_cross_charting, symbol, account_id`,
+         name                       = COALESCE($1, name),
+         symbol                     = COALESCE($2, symbol),
+         interval                   = COALESCE($3, interval),
+         enabled                    = COALESCE($4, enabled),
+         webhook_enabled            = COALESCE($5, webhook_enabled),
+         default_leverage           = COALESCE($6, default_leverage),
+         margin_mode                = COALESCE($7, margin_mode),
+         allow_quote_variants       = COALESCE($8, allow_quote_variants),
+         allow_cross_charting       = COALESCE($9, allow_cross_charting),
+         max_position_size          = COALESCE($10, max_position_size),
+         max_leverage               = COALESCE($11, max_leverage),
+         max_daily_signals          = COALESCE($12, max_daily_signals),
+         max_daily_drawdown_percent = COALESCE($13, max_daily_drawdown_percent),
+         updated_at                 = NOW()
+       WHERE id = $14
+       RETURNING id, name, symbol, interval, enabled, webhook_enabled,
+                 default_leverage, margin_mode,
+                 allow_quote_variants, allow_cross_charting, account_id`,
       [
         name ?? null,
+        normalisedSymbol,
+        interval ?? null,
         enabled ?? null,
+        webhook_enabled ?? null,
         default_leverage ?? null,
         margin_mode ?? null,
         allow_quote_variants ?? null,
@@ -275,6 +292,7 @@ router.put('/:id', async (req: Request, res: Response) => {
         max_position_size ?? null,
         max_leverage ?? null,
         max_daily_signals ?? null,
+        max_daily_drawdown_percent ?? null,
         req.params.id,
       ]
     );

@@ -14,6 +14,7 @@ interface Strategy {
   allow_quote_variants: boolean;
   allow_cross_charting: boolean;
   default_leverage?:      number;
+  margin_mode?:           'isolated' | 'cross';
   max_leverage?:          number;
   open_positions_count?:  number;
   max_position_size?:          number;
@@ -592,6 +593,7 @@ export default function Strategies() {
       name:                       strategy.name,
       symbol:                     strategy.symbol,
       account_id:                 strategy.account_id,
+      margin_mode:                strategy.margin_mode ?? 'isolated',
       default_leverage:           String(strategy.default_leverage ?? 1),
       max_leverage:               String(strategy.max_leverage ?? 10),
       max_position_size:          String(strategy.max_position_size ?? 1),
@@ -1209,8 +1211,8 @@ export default function Strategies() {
               </select>
             </FieldRow>
 
-            {/* Leverage pair */}
-            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr',
+            {/* Leverage + Margin Mode */}
+            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr',
                           gap:'10px', marginBottom:'14px' }}>
               <FieldRow label="Default Leverage">
                 <input type="number" value={editForm.default_leverage}
@@ -1223,6 +1225,15 @@ export default function Strategies() {
                   onChange={e => setEditForm((f:any) =>
                     ({ ...f, max_leverage: e.target.value }))}
                   style={inputStyle} />
+              </FieldRow>
+              <FieldRow label="Margin Mode">
+                <select value={editForm.margin_mode}
+                  onChange={e => setEditForm((f:any) =>
+                    ({ ...f, margin_mode: e.target.value }))}
+                  style={inputStyle}>
+                  <option value="isolated">Isolated</option>
+                  <option value="cross">Cross</option>
+                </select>
               </FieldRow>
             </div>
 

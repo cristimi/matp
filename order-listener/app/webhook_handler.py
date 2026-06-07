@@ -233,11 +233,17 @@ async def receive_webhook(
         raise HTTPException(status_code=403, detail="Invalid token")
 
     # ── Check enabled ─────────────────────────────────────────────────
+    if not strategy['enabled']:
+        logger.warning(f"Rejected webhook: stopped strategy={strategy_id}")
+        await _log_webhook_call(pool, strategy_id, 403, "Strategy stopped")
+        await _finalize_signal_log(pool, signal_log_id, 403, "auth_failed", "Strategy stopped", start_ms)
+        raise HTTPException(status_code=403, detail="Strategy stopped")
+
     if not strategy['webhook_enabled']:
-        logger.warning(f"Rejected webhook: disabled strategy={strategy_id}")
-        await _log_webhook_call(pool, strategy_id, 403, "Strategy disabled")
-        await _finalize_signal_log(pool, signal_log_id, 403, "auth_failed", "Strategy disabled", start_ms)
-        raise HTTPException(status_code=403, detail="Strategy disabled")
+        logger.warning(f"Rejected webhook: webhooks disabled strategy={strategy_id}")
+        await _log_webhook_call(pool, strategy_id, 403, "Webhooks disabled")
+        await _finalize_signal_log(pool, signal_log_id, 403, "auth_failed", "Webhooks disabled", start_ms)
+        raise HTTPException(status_code=403, detail="Webhooks disabled")
 
     # ── Symbol resolution ─────────────────────────────────────────────
     try:
