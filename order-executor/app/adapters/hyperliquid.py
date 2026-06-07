@@ -79,7 +79,8 @@ class HyperliquidAdapter(ExchangeAdapter):
     async def submit_order(self, order: OrderRequest) -> OrderResult:
         try:
             asset_index = await self._get_asset_index(order.symbol)
-            result = await self._place_order(order, asset_index)
+            is_close = order.signal in ("close_long", "close_short")
+            result = await self._place_order(order, asset_index, reduce_only=is_close)
             return result
         except Exception as e:
             logger.error(f"HyperliquidAdapter.submit_order failed: {e}")
@@ -357,13 +358,40 @@ class HyperliquidAdapter(ExchangeAdapter):
                  str(first.get("resting", {}).get("oid", ""))
 
         avg_px = filled.get("avgPx")
+
+        realized_pnl = None
+        if reduce_only and oid:
+            realized_pnl = await self._get_fill_pnl(int(oid))
+
         return OrderResult(
             success=True,
             status="filled",
             exchange_order_id=oid or None,
             actual_fill_price=Decimal(str(avg_px)) if avg_px else None,
+            realized_pnl=realized_pnl,
             raw_response=data,
         )
+
+    async def _get_fill_pnl(self, oid: int) -> Optional[Decimal]:
+        """Query userFills and return sum of closedPnl for the given order id.
+        Returns None only if no fills are found for the oid (unknown outcome).
+        Returns Decimal('0') if the order generated no closed PnL (e.g. open)."""
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                resp = await client.post(
+                    f"{self.base_url}/info",
+                    json={"type": "userFills", "user": self.query_address},
+                )
+                resp.raise_for_status()
+            fills = resp.json()
+            matching = [f for f in fills if f.get("oid") == oid]
+            if not matching:
+                logger.warning(f"No fills found for oid {oid} in userFills")
+                return None
+            return sum(Decimal(str(f.get("closedPnl", "0"))) for f in matching)
+        except Exception as e:
+            logger.warning(f"HyperliquidAdapter._get_fill_pnl failed for oid {oid}: {e}")
+            return None
 
     async def get_balance(self) -> dict:
         """Fetch balance from Hyperliquid.
