@@ -1,3 +1,28 @@
+## [2026-06-07] - 2.7.0
+
+### Added
+- **HL realized PnL from userFills**: after a close order fills on Hyperliquid, the adapter queries `POST /info {type: "userFills"}` for the main wallet and sums `closedPnl` for the matching `oid`. Returns `None` when the oid is not found (unknown), `Decimal('0')` when the fill generated no closed PnL (open orders).
+- **`OrderResult.realized_pnl`**: new optional field on the shared result model (both executor and listener); Blofin already fetched PnL from order details — it is now propagated through to `orders.pnl` and `strategy_positions.pnl_realized`.
+- **Margin computed dynamically**: positions API now returns `margin = entry_price × size / leverage` (computed at response time) instead of the always-zero DB column, for both open and closed positions.
+
+### Fixed
+- **`close_long`/`close_short` left position `open` in DB**: webhook handler found the existing position via `pair_id` which is `NULL` for symbols not in `trading_pairs`; `WHERE pair_id = NULL` is always false in SQL. Switched lookup to `WHERE symbol = $2` so the close always finds and updates the position row.
+- **`close_price` column mismatch**: close handler was writing to `close_price` (non-existent); DB schema uses `closing_price`. Fixed column name in both the `close_long`/`close_short` and `target_position=flat` handlers.
+- **`pnl_realized` not written on close**: close handlers now write `pnl_realized` to `strategy_positions` from `result.realized_pnl`; executor's `_update_order_record` now writes `pnl` column on the `orders` table.
+- **Blofin fill price always null**: `_get_order_details` called `GET /api/v1/trade/order` which returns HTTP 200 with `code: '405'` (wrong endpoint for completed orders). Now tries `/api/v1/trade/orders-history` then `/api/v1/trade/fills-history`. Fill price field is `averagePrice` (not `avgPrice`) — `_parse_fill_price()` tries all variants.
+- **HL fill price always null**: `_place_order` extracted `filled.avgPx` from the exchange response but returned it as a raw value; `Decimal` was not imported in `hyperliquid.py` causing `NameError` at runtime. Added `from decimal import Decimal`.
+- **HL realized PnL never fetched from webhook closes**: `_get_fill_pnl` was gated on `reduce_only=True` which is only set by the internal `close_position()` path. Webhook-originated `close_long`/`close_short` signals go through `submit_order`, which always called `_place_order(reduce_only=False)`. Fixed by deriving `reduce_only` from `order.signal`.
+- **`flat` signal left position open**: `target_position=flat` handler closed the position on the exchange but never updated `strategy_positions`; same fix applied (write `closing_price` + `pnl_realized`).
+
+### Changed
+- `order-executor/app/models.py`: `OrderResult` gains `realized_pnl: Optional[Decimal]`.
+- `order-executor/app/adapters/hyperliquid.py`: `from decimal import Decimal` added; `submit_order` passes `reduce_only=is_close` based on signal; `_place_order` reads `filled.avgPx` as `actual_fill_price`; new `_get_fill_pnl(oid)` method queries `userFills`.
+- `order-executor/app/adapters/blofin.py`: `_get_order_details` tries `orders-history` → `fills-history` endpoints; new `_parse_fill_price()` helper tries all field name variants; `submit_order` and `close_position` return `realized_pnl`.
+- `order-executor/app/executor.py`: `_update_order_record` writes `pnl` from `result.realized_pnl`.
+- `order-listener/app/models.py`: `OrderResult` gains `realized_pnl: Optional[Decimal]`.
+- `order-listener/app/webhook_handler.py`: close handlers write `closing_price` + `pnl_realized`; position lookup uses `symbol` instead of `pair_id`; `_update_order_status` reads `result.realized_pnl`.
+- `dashboard-api/src/routes/positions.ts`: `margin` computed as `entry_price × size / leverage`; `closing_price` field priority corrected.
+
 ## [2026-06-07] - 2.6.0
 
 ### Added
