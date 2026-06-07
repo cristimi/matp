@@ -591,17 +591,14 @@ async def _process_order(
 
         if result.success and payload.base_asset and payload.quote_asset and payload.side and payload.size:
             async with pool.acquire() as conn:
-                # Lookup pair_id
-                pair = await conn.fetchrow(
-                    "SELECT tp.id FROM trading_pairs tp JOIN assets b ON tp.base_asset_id = b.id JOIN assets q ON tp.quote_asset_id = q.id WHERE b.symbol = $1 AND q.symbol = $2",
-                    payload.base_asset, payload.quote_asset
-                )
-                pair_id = pair['id'] if pair else None
+                pos_symbol = f"{payload.base_asset}-{payload.quote_asset}"
 
-                # Check for existing open position
+                # Check for existing open position by symbol (pair_id may be NULL for
+                # symbols not yet in trading_pairs, so match on symbol directly)
                 existing = await conn.fetchrow(
-                    "SELECT sp.id, sp.size FROM strategy_positions sp WHERE strategy_id = $1 AND pair_id = $2 AND status = 'open'",
-                    strategy['id'], pair_id
+                    """SELECT sp.id, sp.size FROM strategy_positions sp
+                       WHERE strategy_id = $1 AND symbol = $2 AND status = 'open'""",
+                    strategy['id'], pos_symbol
                 )
 
                 if existing:

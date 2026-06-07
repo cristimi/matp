@@ -13,6 +13,7 @@ import json
 import time
 import logging
 import hashlib
+from decimal import Decimal
 from typing import Optional
 
 import httpx
