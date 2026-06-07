@@ -71,6 +71,8 @@ This document provides a comprehensive checklist for verifying the functionality
 | TT-BF.6 | Blofin available balance correct | `curl -s http://localhost:80/api/dashboard/accounts/acc_blofin_demo_default/balance` | `available_balance` is non-zero and less than `total_balance`; `used_margin` equals `total_balance − available_balance`. ✅ Passed 2026-06-06 |
 | TT-BF.7 | Cancel order shows amber badge + Delete | Cancel a pending order in the UI Orders page | Order badge turns amber "cancelled"; footer shows "✕ Delete" button only. ✅ Passed 2026-06-06 |
 | TT-BF.8 | Delete account removes card | Click Delete on an account card | Card disappears immediately; account is soft-deleted (`is_active = false`) in DB. ✅ Passed 2026-06-06 |
+| TT-BF.9 | Deleted account does not reappear on refresh | Delete an account, then hard-refresh the Accounts page | Deleted card is gone after refresh; only active accounts are listed. ✅ Passed 2026-06-07 |
+| TT-BF.10 | Hyperliquid spot balance reported correctly | `curl -s http://localhost:80/api/dashboard/accounts/Hyperliquidtest/balance` | `total_balance` reflects spot USDC held in `spotClearinghouseState`; non-zero when faucet funds present. ✅ Passed 2026-06-07 |
 
 ### P4-Hardening
 | Test ID | What it verifies | Exact command(s) | Expected output |

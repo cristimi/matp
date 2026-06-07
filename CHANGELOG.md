@@ -1,3 +1,14 @@
+## [2026-06-07] - 2.5.0
+
+### Fixed
+- **Deleted accounts reappear on refresh**: `GET /accounts` was returning all rows including `is_active = false` ones, so soft-deleted accounts came back after a page reload. Added `WHERE is_active = true` to the list query — matches the same pattern as the `status != 'deleted'` filter on orders.
+- **Hyperliquid balance always 0**: `get_balance` only queried `clearinghouseState` (perp). Testnet faucet funds and accounts in Unified Account Mode hold balances in `spotClearinghouseState` instead. Now queries both endpoints in parallel and sums the results so either account mode reports correctly.
+
+### Changed
+- `dashboard-api/src/routes/accounts.ts`: `GET /` query now filters `WHERE is_active = true`.
+- `dashboard-ui/src/pages/Accounts.tsx`: removed `opacity: 0.6` and conditional border colour for inactive accounts (they are no longer returned by the API).
+- `order-executor/app/adapters/hyperliquid.py`: `get_balance` queries both `clearinghouseState` and `spotClearinghouseState` via `asyncio.gather`; USDC spot balance parsed from `balances[coin=="USDC"].total − hold`.
+
 ## [2026-06-06] - 2.4.0
 
 ### Fixed

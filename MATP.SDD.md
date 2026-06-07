@@ -433,6 +433,8 @@ class AccountRegistry:
 
 Adding a new exchange: one adapter class + one `case` in `_load()` + one DB row. Nothing else changes.
 
+**Hyperliquid balance note:** `get_balance` queries both `clearinghouseState` (perp) and `spotClearinghouseState` (spot/unified) in parallel and sums the results. This is required because testnet faucet funds and Unified Account Mode accounts hold balances exclusively in the spot clearinghouse — querying only the perp endpoint returns 0 in those cases.
+
 #### Execute Flow
 
 ```
@@ -947,6 +949,8 @@ class TradingStats(BaseModel):
 ```
 
 ### 6.8 GET /api/dashboard/accounts
+
+Returns only active accounts (`WHERE is_active = true`). Soft-deleted accounts (`is_active = false`) are excluded — they are preserved in the DB for FK integrity but never returned by this endpoint.
 
 **Response 200:**
 ```json
