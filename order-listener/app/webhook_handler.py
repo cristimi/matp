@@ -504,15 +504,17 @@ async def _process_order(
                         await conn.execute(
                             """
                             UPDATE strategy_positions
-                            SET status        = 'closed',
-                                closing_price = $1,
-                                pnl_realized  = $2,
-                                closed_at     = NOW(),
-                                updated_at    = NOW()
-                            WHERE id = $3
+                            SET status           = 'closed',
+                                closing_price    = $1,
+                                pnl_realized     = $2,
+                                closing_order_id = $3,
+                                closed_at        = NOW(),
+                                updated_at       = NOW()
+                            WHERE id = $4
                             """,
                             close_price if close_price else None,
                             pnl_realized_flat,
+                            order_id,
                             pos_row['id'],
                         )
                         logger.info(
@@ -624,15 +626,17 @@ async def _process_order(
                         await conn.execute(
                             """
                             UPDATE strategy_positions
-                            SET status        = 'closed',
-                                closing_price = $1,
-                                pnl_realized  = $2,
-                                closed_at     = NOW(),
-                                updated_at    = NOW()
-                            WHERE id = $3
+                            SET status           = 'closed',
+                                closing_price    = $1,
+                                pnl_realized     = $2,
+                                closing_order_id = $3,
+                                closed_at        = NOW(),
+                                updated_at       = NOW()
+                            WHERE id = $4
                             """,
                             close_price,
                             pnl_realized,
+                            order_id,
                             existing['id'],
                         )
                         logger.info(

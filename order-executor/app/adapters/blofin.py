@@ -209,12 +209,12 @@ class BlofinAdapter(ExchangeAdapter):
                 actual_fill_price = None
                 pnl = None
                 if order.order_type == "market":
-                    await asyncio.sleep(0.5)
+                    await asyncio.sleep(2.0)
                     details = await self._get_order_details(order.symbol, exchange_order_id)
                     if details:
                         actual_fill_price = self._parse_fill_price(details)
-                        pnl_raw = details.get("realizedPnl") or details.get("pnl")
-                        pnl = Decimal(str(pnl_raw)) if pnl_raw else None
+                        pnl_raw = details.get("pnl") or details.get("realizedPnl")
+                        pnl = Decimal(str(pnl_raw)) if pnl_raw is not None else None
 
                 return OrderResult(
                     success=True,
@@ -303,14 +303,14 @@ class BlofinAdapter(ExchangeAdapter):
             order_info = data["data"][0]
             exchange_order_id = order_info.get("orderId")
             
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(2.0)
             details = await self._get_order_details(symbol, exchange_order_id)
             fill_price = None
             pnl = None
             if details:
                 fill_price = self._parse_fill_price(details)
-                pnl_raw = details.get("realizedPnl") or details.get("pnl")
-                pnl = Decimal(str(pnl_raw)) if pnl_raw else None
+                pnl_raw = details.get("pnl") or details.get("realizedPnl")
+                pnl = Decimal(str(pnl_raw)) if pnl_raw is not None else None
 
             return OrderResult(
                 success=True,
