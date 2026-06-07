@@ -462,13 +462,44 @@ async def _process_order(
             )
 
             # Update order record with close result
+            flat_order_result = OrderResult(**close_result) if close_result.get("success") else None
             await _update_order_status(
-                pool, 
-                order_id, 
-                close_result.get("status", "route_failed"), 
-                payload, 
-                OrderResult(**close_result) if close_result.get("success") else None
+                pool,
+                order_id,
+                close_result.get("status", "route_failed"),
+                payload,
+                flat_order_result,
             )
+
+            # Close the strategy_positions record if fill succeeded
+            if close_result.get("success"):
+                close_price = float(flat_order_result.actual_fill_price or 0) if flat_order_result else 0
+                async with pool.acquire() as conn:
+                    pos_row = await conn.fetchrow(
+                        """
+                        SELECT id FROM strategy_positions
+                        WHERE strategy_id = $1 AND status = 'open'
+                        ORDER BY opened_at DESC LIMIT 1
+                        """,
+                        strategy['id'],
+                    )
+                    if pos_row:
+                        await conn.execute(
+                            """
+                            UPDATE strategy_positions
+                            SET status      = 'closed',
+                                close_price = $1,
+                                closed_at   = NOW(),
+                                updated_at  = NOW()
+                            WHERE id = $2
+                            """,
+                            close_price,
+                            pos_row['id'],
+                        )
+                        logger.info(
+                            f"Closed position {pos_row['id']} via flat signal "
+                            f"for strategy {strategy['id']} at {close_price}"
+                        )
 
             # ── Update pnl_today if result contains PnL ──────────────────────
             result_pnl = close_result.get("pnl") or close_result.get("realized_pnl")
@@ -571,10 +602,27 @@ async def _process_order(
                 )
 
                 if existing:
-                    pass  # position already exists, no action needed
+                    if payload.signal in ("close_long", "close_short"):
+                        close_price = float(result.actual_fill_price or 0)
+                        await conn.execute(
+                            """
+                            UPDATE strategy_positions
+                            SET status      = 'closed',
+                                close_price = $1,
+                                closed_at   = NOW(),
+                                updated_at  = NOW()
+                            WHERE id = $2
+                            """,
+                            close_price,
+                            existing['id'],
+                        )
+                        logger.info(
+                            f"Closed position {existing['id']} for strategy "
+                            f"{strategy['id']} at {close_price}"
+                        )
                 else:
-                    # Only create a strategy position if the order was successful
-                    await _create_strategy_position(pool, payload, strategy, order_id, result, effective_leverage)
+                    if payload.signal in ("open_long", "open_short"):
+                        await _create_strategy_position(pool, payload, strategy, order_id, result, effective_leverage)
 
     except Exception as e:
         logger.exception(f"Error processing order {order_id}: {e}")
