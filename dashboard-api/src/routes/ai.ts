@@ -520,6 +520,63 @@ router.put('/strategies/:id/risk-config', async (req: Request, res: Response) =>
   }
 });
 
+// ── GET /signals — global AI signal log across all strategies ─────────────────
+
+router.get('/signals', async (req: Request, res: Response) => {
+  const limit  = Math.min(Number(req.query.limit)  || 50, 200);
+  const offset = Math.max(Number(req.query.offset) || 0,  0);
+  const strategyId = req.query.strategy_id as string | undefined;
+  const action     = req.query.action      as string | undefined;
+  const gatePassed = req.query.gate_passed as string | undefined;
+  const webhookFired = req.query.webhook_fired as string | undefined;
+
+  const conditions: string[] = [];
+  const params: any[] = [];
+
+  if (strategyId) {
+    params.push(strategyId);
+    conditions.push(`strategy_id = $${params.length}`);
+  }
+  if (action) {
+    params.push(action);
+    conditions.push(`proposed_action = $${params.length}`);
+  }
+  if (gatePassed !== undefined) {
+    params.push(gatePassed === 'true');
+    conditions.push(`gate_passed = $${params.length}`);
+  }
+  if (webhookFired !== undefined) {
+    params.push(webhookFired === 'true');
+    conditions.push(`webhook_fired = $${params.length}`);
+  }
+
+  const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+
+  try {
+    const [dataResult, countResult] = await Promise.all([
+      getPool().query(
+        `SELECT * FROM ai_signal_log ${where}
+         ORDER BY triggered_at DESC
+         LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+        [...params, limit, offset]
+      ),
+      getPool().query(
+        `SELECT COUNT(*) FROM ai_signal_log ${where}`,
+        params
+      ),
+    ]);
+
+    res.json({
+      signals: dataResult.rows.map(formatSignal),
+      total:   Number(countResult.rows[0].count),
+      limit,
+      offset,
+    });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ── GET /strategies/:id/signals ───────────────────────────────────────────────
 
 router.get('/strategies/:id/signals', async (req: Request, res: Response) => {

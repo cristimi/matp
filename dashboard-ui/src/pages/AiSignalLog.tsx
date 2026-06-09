@@ -1,0 +1,463 @@
+import { useState, useEffect, useCallback } from 'react';
+import { TopBar } from '../components/shared/TopBar';
+import { formatRelative } from '../utils/datetime';
+
+// ── Types ─────────────────────────────────────────────────────────────────────
+
+interface AiSignalRow {
+  id:                    number;
+  strategy_id:           string;
+  triggered_at:          string;
+  trigger_reason:        string;
+  cycle_interval:        string | null;
+  prompt_template:       string | null;
+  data_sources_used:     string[] | null;
+  context_tokens:        number | null;
+  proposed_action:       string | null;
+  confidence:            number | null;
+  reasoning:             string | null;
+  gate_passed:           boolean;
+  gate_rejection_reason: string | null;
+  webhook_fired:         boolean;
+  webhook_status:        number | null;
+  dry_run:               boolean;
+  llm_provider:          string | null;
+  llm_model:             string | null;
+  outcome_pnl:           number | null;
+  outcome_pct:           number | null;
+}
+
+// ── Badge helpers ─────────────────────────────────────────────────────────────
+
+const ACTION_STYLE: Record<string, { bg: string; color: string; border: string }> = {
+  open_long:   { bg: 'rgba(34,197,94,.12)',  color: '#22c55e', border: 'rgba(34,197,94,.3)' },
+  open_short:  { bg: 'var(--red-a)',          color: 'var(--red)', border: 'var(--red-b)' },
+  close_long:  { bg: 'rgba(34,197,94,.07)',  color: '#86efac', border: 'rgba(34,197,94,.2)' },
+  close_short: { bg: 'rgba(239,68,68,.07)',  color: '#fca5a5', border: 'rgba(239,68,68,.2)' },
+  hold:        { bg: 'var(--bg3)',            color: 'var(--muted)', border: 'var(--border)' },
+};
+
+function ActionBadge({ action }: { action: string | null }) {
+  const key = action ?? 'hold';
+  const s = ACTION_STYLE[key] ?? ACTION_STYLE.hold;
+  return (
+    <span style={{
+      fontFamily: 'JetBrains Mono, monospace', fontSize: '10px',
+      fontWeight: 700, letterSpacing: '.04em', textTransform: 'uppercase',
+      borderRadius: 'var(--pill-r)', padding: '2px 7px',
+      border: '1px solid ' + s.border, background: s.bg, color: s.color,
+      whiteSpace: 'nowrap', flexShrink: 0,
+    }}>
+      {key.replace(/_/g, ' ')}
+    </span>
+  );
+}
+
+function GateBadge({ passed, reason }: { passed: boolean; reason: string | null }) {
+  const s = passed
+    ? { bg: 'rgba(34,197,94,.12)', color: '#22c55e', border: 'rgba(34,197,94,.3)', label: 'PASSED' }
+    : { bg: 'var(--red-a)',         color: 'var(--red)', border: 'var(--red-b)',   label: 'BLOCKED' };
+  return (
+    <span title={reason ?? undefined} style={{
+      fontFamily: 'JetBrains Mono, monospace', fontSize: '10px',
+      fontWeight: 700, letterSpacing: '.04em',
+      borderRadius: 'var(--pill-r)', padding: '2px 7px',
+      border: '1px solid ' + s.border, background: s.bg, color: s.color,
+      whiteSpace: 'nowrap', flexShrink: 0, cursor: reason ? 'help' : 'default',
+    }}>
+      {s.label}
+    </span>
+  );
+}
+
+function ConfidenceBar({ value }: { value: number | null }) {
+  if (value == null) return <span style={{ color: 'var(--dim)', fontSize: '11px' }}>—</span>;
+  const pct = Math.round(value * 100);
+  const color = pct >= 85 ? '#22c55e' : pct >= 70 ? '#f59e0b' : 'var(--red)';
+  return (
+    <span style={{ display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0 }}>
+      <span style={{
+        width: '48px', height: '4px', borderRadius: '2px',
+        background: 'var(--border)', overflow: 'hidden', display: 'inline-block',
+      }}>
+        <span style={{
+          display: 'block', height: '100%', width: `${pct}%`,
+          background: color, borderRadius: '2px',
+        }} />
+      </span>
+      <span style={{
+        fontFamily: 'JetBrains Mono, monospace', fontSize: '11px',
+        color, fontWeight: 600, minWidth: '32px',
+      }}>
+        {pct}%
+      </span>
+    </span>
+  );
+}
+
+// ── Row card ──────────────────────────────────────────────────────────────────
+
+function AiSignalCard({ row }: { row: AiSignalRow }) {
+  const [expanded, setExpanded] = useState(false);
+
+  return (
+    <div style={{
+      background: 'var(--bg3)', border: '1px solid var(--border)',
+      borderRadius: 'var(--r)', marginBottom: '6px', overflow: 'hidden',
+    }}>
+      {/* ── Summary row ── */}
+      <div
+        onClick={() => setExpanded(e => !e)}
+        style={{
+          display: 'flex', alignItems: 'center', gap: '8px',
+          padding: '10px 14px', cursor: 'pointer', userSelect: 'none',
+        }}
+      >
+        {/* Timestamp */}
+        <span style={{
+          fontFamily: 'JetBrains Mono, monospace', fontSize: '11px',
+          color: 'var(--muted)', flexShrink: 0, minWidth: '96px',
+        }}>
+          {formatRelative(row.triggered_at)}
+        </span>
+
+        {/* Strategy */}
+        <span style={{
+          fontFamily: 'JetBrains Mono, monospace', fontSize: '11px',
+          fontWeight: 600, color: 'var(--text)', flexShrink: 0,
+          maxWidth: '130px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+        }}>
+          {row.strategy_id}
+        </span>
+
+        {/* Proposed action */}
+        <ActionBadge action={row.proposed_action} />
+
+        {/* Confidence */}
+        <ConfidenceBar value={row.confidence} />
+
+        {/* Gate */}
+        <GateBadge passed={row.gate_passed} reason={row.gate_rejection_reason} />
+
+        {/* Webhook fired */}
+        {row.gate_passed && (
+          <span style={{
+            fontFamily: 'JetBrains Mono, monospace', fontSize: '10px', flexShrink: 0,
+            color: row.webhook_fired ? '#22c55e' : 'var(--dim)',
+          }}>
+            {row.webhook_fired ? `webhook ${row.webhook_status ?? ''}` : row.dry_run ? 'dry run' : 'no webhook'}
+          </span>
+        )}
+
+        {/* Trigger reason */}
+        <span style={{
+          marginLeft: 'auto', fontFamily: 'JetBrains Mono, monospace',
+          fontSize: '10px', color: 'var(--dim)', flexShrink: 0,
+        }}>
+          {row.trigger_reason?.replace(/_/g, ' ')}
+          {row.cycle_interval ? ` · ${row.cycle_interval}` : ''}
+        </span>
+
+        {/* Chevron */}
+        <span style={{
+          fontSize: '10px', color: 'var(--dim)', flexShrink: 0,
+          transform: expanded ? 'rotate(180deg)' : 'none', transition: 'transform .15s',
+        }}>
+          ▾
+        </span>
+      </div>
+
+      {/* ── Expanded detail ── */}
+      {expanded && (
+        <div style={{
+          borderTop: '1px solid var(--border)', padding: '14px',
+          display: 'flex', flexDirection: 'column', gap: '12px',
+        }}>
+
+          {/* Reasoning */}
+          {row.reasoning && (
+            <div>
+              <div style={{
+                fontSize: '10px', fontWeight: 600, textTransform: 'uppercase',
+                letterSpacing: '.1em', color: 'var(--muted)', marginBottom: '6px',
+              }}>
+                LLM Reasoning
+              </div>
+              <div style={{
+                fontFamily: 'JetBrains Mono, monospace', fontSize: '11px',
+                color: 'var(--text)', lineHeight: 1.6, background: 'var(--bg2)',
+                border: '1px solid var(--border)', borderRadius: '6px',
+                padding: '10px', whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+              }}>
+                {row.reasoning}
+              </div>
+            </div>
+          )}
+
+          {/* Gate rejection */}
+          {!row.gate_passed && row.gate_rejection_reason && (
+            <div>
+              <div style={{
+                fontSize: '10px', fontWeight: 600, textTransform: 'uppercase',
+                letterSpacing: '.1em', color: 'var(--red)', marginBottom: '4px',
+              }}>
+                Gate Rejection
+              </div>
+              <div style={{
+                fontFamily: 'JetBrains Mono, monospace', fontSize: '11px',
+                color: 'var(--red)', wordBreak: 'break-word',
+              }}>
+                {row.gate_rejection_reason.replace(/_/g, ' ')}
+              </div>
+            </div>
+          )}
+
+          {/* Meta grid */}
+          <div style={{
+            display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '6px',
+          }}>
+            {[
+              { label: 'LLM',           value: row.llm_model ?? row.llm_provider },
+              { label: 'Template',      value: row.prompt_template },
+              { label: 'Context tokens',value: row.context_tokens != null ? String(row.context_tokens) : null },
+              { label: 'Cycle interval',value: row.cycle_interval },
+              { label: 'Trigger',       value: row.trigger_reason?.replace(/_/g, ' ') },
+              { label: 'Dry run',       value: row.dry_run ? 'yes' : 'no' },
+              { label: 'Webhook status',value: row.webhook_status != null ? String(row.webhook_status) : null },
+              { label: 'Outcome PnL',   value: row.outcome_pnl != null ? row.outcome_pnl.toFixed(4) : null },
+              { label: 'Outcome %',     value: row.outcome_pct != null ? row.outcome_pct.toFixed(2) + '%' : null },
+            ].filter(c => c.value != null).map(cell => (
+              <div key={cell.label} style={{
+                background: 'var(--bg2)', borderRadius: '6px',
+                padding: '6px 10px', border: '1px solid var(--border)',
+              }}>
+                <div style={{
+                  fontSize: '9px', fontWeight: 600, textTransform: 'uppercase',
+                  letterSpacing: '.1em', color: 'var(--dim)', marginBottom: '2px',
+                }}>
+                  {cell.label}
+                </div>
+                <div style={{
+                  fontFamily: 'JetBrains Mono, monospace', fontSize: '11px', color: 'var(--text)',
+                }}>
+                  {cell.value}
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {/* Data sources */}
+          {row.data_sources_used && row.data_sources_used.length > 0 && (
+            <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }}>
+              {row.data_sources_used.map(src => (
+                <span key={src} style={{
+                  fontFamily: 'JetBrains Mono, monospace', fontSize: '9px',
+                  fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.04em',
+                  background: 'var(--blue-a)', color: 'var(--blue)',
+                  border: '1px solid var(--blue-b)', borderRadius: 'var(--pill-r)',
+                  padding: '2px 6px',
+                }}>
+                  {src}
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Filter select ─────────────────────────────────────────────────────────────
+
+function FilterSelect({
+  value, onChange, active, children,
+}: {
+  value: string; onChange: (v: string) => void; active: boolean; children: React.ReactNode;
+}) {
+  return (
+    <select
+      value={value}
+      onChange={e => onChange(e.target.value)}
+      style={{
+        background: active ? 'var(--blue-a)' : 'var(--bg2)',
+        border: `1px solid ${active ? 'var(--blue)' : 'var(--border)'}`,
+        borderRadius: '20px', padding: '5px 12px',
+        fontSize: '10px', fontWeight: 500,
+        color: active ? 'var(--blue)' : 'var(--muted)',
+        cursor: 'pointer', outline: 'none',
+      }}
+    >
+      {children}
+    </select>
+  );
+}
+
+// ── Page ──────────────────────────────────────────────────────────────────────
+
+const PAGE_SIZE = 50;
+
+const ACTIONS = ['open_long', 'open_short', 'close_long', 'close_short', 'hold'];
+
+export default function AiSignalLog() {
+  const [rows,    setRows]    = useState<AiSignalRow[]>([]);
+  const [total,   setTotal]   = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [page,    setPage]    = useState(1);
+
+  const [filterStrategy,   setFilterStrategy]   = useState('all');
+  const [filterAction,     setFilterAction]     = useState('all');
+  const [filterGate,       setFilterGate]       = useState('all');
+  const [filterWebhook,    setFilterWebhook]    = useState('all');
+  const [strategies,       setStrategies]       = useState<{ id: string; name: string }[]>([]);
+
+  useEffect(() => {
+    fetch('/api/dashboard/strategies')
+      .then(r => r.json())
+      .then((data: any[]) => setStrategies(data.map(s => ({ id: s.id, name: s.name }))))
+      .catch(() => {});
+  }, []);
+
+  const fetchRows = useCallback(async (pageNum: number, append: boolean) => {
+    try {
+      const params = new URLSearchParams({
+        limit:  String(PAGE_SIZE),
+        offset: String((pageNum - 1) * PAGE_SIZE),
+      });
+      if (filterStrategy !== 'all') params.set('strategy_id', filterStrategy);
+      if (filterAction   !== 'all') params.set('action',      filterAction);
+      if (filterGate     !== 'all') params.set('gate_passed',  filterGate);
+      if (filterWebhook  !== 'all') params.set('webhook_fired', filterWebhook);
+
+      const res  = await fetch(`/api/dashboard/ai/signals?${params}`);
+      const data = await res.json();
+      setTotal(data.total ?? 0);
+      setRows(prev => append ? [...prev, ...data.signals] : data.signals);
+    } catch {
+      if (!append) setRows([]);
+    } finally {
+      setLoading(false);
+    }
+  }, [filterStrategy, filterAction, filterGate, filterWebhook]);
+
+  useEffect(() => {
+    setLoading(true);
+    setPage(1);
+    fetchRows(1, false);
+    const id = setInterval(() => fetchRows(1, false), 30_000);
+    return () => clearInterval(id);
+  }, [fetchRows]);
+
+  const handleLoadMore = () => {
+    const next = page + 1;
+    setPage(next);
+    fetchRows(next, true);
+  };
+
+  const clearFilters = () => {
+    setFilterStrategy('all');
+    setFilterAction('all');
+    setFilterGate('all');
+    setFilterWebhook('all');
+  };
+
+  const anyFilter =
+    filterStrategy !== 'all' || filterAction !== 'all' ||
+    filterGate !== 'all' || filterWebhook !== 'all';
+
+  if (loading) {
+    return <div style={{ padding: '24px', color: 'var(--dim)' }}>Loading AI signal log…</div>;
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+      <TopBar
+        title="AI Signal Log"
+        right={
+          <span style={{
+            background: 'var(--bg3)', border: '1px solid var(--border)',
+            borderRadius: '20px', padding: '4px 11px',
+            fontFamily: 'JetBrains Mono, monospace', fontSize: '12px',
+            color: 'var(--muted)',
+          }}>
+            {total} total
+          </span>
+        }
+      />
+
+      {/* ── Filters ── */}
+      <div style={{
+        display: 'flex', gap: '6px', padding: '10px 14px',
+        borderBottom: '1px solid var(--border)',
+        overflowX: 'auto', flexShrink: 0, scrollbarWidth: 'none',
+      }}>
+        <FilterSelect value={filterStrategy} onChange={v => { setFilterStrategy(v); setPage(1); }} active={filterStrategy !== 'all'}>
+          <option value="all">All Strategies</option>
+          {strategies.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+        </FilterSelect>
+
+        <FilterSelect value={filterAction} onChange={v => { setFilterAction(v); setPage(1); }} active={filterAction !== 'all'}>
+          <option value="all">All Actions</option>
+          {ACTIONS.map(a => <option key={a} value={a}>{a.replace(/_/g, ' ')}</option>)}
+        </FilterSelect>
+
+        <FilterSelect value={filterGate} onChange={v => { setFilterGate(v); setPage(1); }} active={filterGate !== 'all'}>
+          <option value="all">Gate: All</option>
+          <option value="true">Gate: Passed</option>
+          <option value="false">Gate: Blocked</option>
+        </FilterSelect>
+
+        <FilterSelect value={filterWebhook} onChange={v => { setFilterWebhook(v); setPage(1); }} active={filterWebhook !== 'all'}>
+          <option value="all">Webhook: All</option>
+          <option value="true">Webhook: Fired</option>
+          <option value="false">Webhook: Not fired</option>
+        </FilterSelect>
+
+        {anyFilter && (
+          <span
+            onClick={clearFilters}
+            style={{
+              whiteSpace: 'nowrap', background: 'var(--bg2)',
+              border: '1px solid var(--border)', borderRadius: '20px',
+              padding: '5px 12px', fontSize: '10px', fontWeight: 500,
+              color: 'var(--red)', cursor: 'pointer',
+            }}
+          >
+            ✕ Clear
+          </span>
+        )}
+      </div>
+
+      {/* ── List ── */}
+      <div style={{
+        flex: 1, overflowY: 'auto', padding: '10px 14px 80px',
+        scrollbarWidth: 'none',
+      }}>
+        {rows.length === 0 ? (
+          <p style={{ color: 'var(--dim)', textAlign: 'center', padding: '40px 0' }}>
+            No AI signal log entries found.
+          </p>
+        ) : (
+          rows.map(row => <AiSignalCard key={row.id} row={row} />)
+        )}
+
+        {total > rows.length && (
+          <div style={{ textAlign: 'center', padding: '16px 0 24px' }}>
+            <button
+              onClick={handleLoadMore}
+              style={{
+                padding: '8px 20px',
+                border: '1px solid var(--border)', borderRadius: '20px',
+                background: 'var(--bg2)', fontSize: '12px', fontWeight: 600,
+                color: 'var(--blue)', cursor: 'pointer',
+              }}
+            >
+              Load {Math.min(PAGE_SIZE, total - rows.length)} more
+              &nbsp;({rows.length} / {total})
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
