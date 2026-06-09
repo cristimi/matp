@@ -1,3 +1,66 @@
+# Backlog Task #1: Remove Dead Adapter Layer from order-listener
+
+**Date:** 2026-06-09
+**Status:** COMPLETE
+
+## Files Deleted
+
+- `order-listener/app/adapters/__init__.py`
+- `order-listener/app/adapters/base.py`
+- `order-listener/app/adapters/blofin.py`
+- `order-listener/app/adapters/hyperliquid.py`
+- `order-listener/app/blofin_debug.py`
+- Directory `order-listener/app/adapters/` (now empty, removed)
+
+## Packages Removed from order-listener/requirements.txt
+
+- `eth-account` — used only by the dead Hyperliquid adapter
+- `cryptography==42.0.7` — used only by the dead Blofin adapter (HMAC signing)
+
+`httpx` was kept — still needed by `executor_client.py`.
+
+## Step 1 Verification (no live imports of dead code)
+
+```
+$ grep -r "from app.adapters" order-listener/app/
+order-listener/app/blofin_debug.py:from app.adapters.blofin import BlofinAdapter   ← dead file itself
+order-listener/app/adapters/blofin.py:from app.adapters.base import ExchangeAdapter  ← dead file itself
+order-listener/app/adapters/hyperliquid.py:from app.adapters.base import ExchangeAdapter  ← dead file itself
+
+$ grep -r "import adapters" order-listener/app/
+(no output)
+
+$ grep -r "blofin_debug" order-listener/app/
+(no output)
+```
+
+Only self-references within the dead files. Zero live code paths affected.
+
+## Step 4 Verification (live modules import cleanly)
+
+```
+$ grep "^from app" order-listener/app/main.py
+from app.config import settings
+from app.database import init_db
+from app.redis_client import init_redis
+from app.webhook_handler import router as webhook_router
+from app.orders_api import router as orders_router
+from app.config_api import router as config_router
+
+$ grep "^from app" order-listener/app/webhook_handler.py
+from app.database import get_pool
+from app.models import WebhookPayload, OrderResponse, OrderResult
+from app.redis_client import publish, cache_get, cache_set, cache_delete
+from app.symbol_validator import resolve_symbol, SymbolMismatchError
+
+$ grep "^from app" order-listener/app/executor_client.py
+(no app imports — uses only httpx and standard library)
+```
+
+No broken imports. All live paths intact.
+
+---
+
 # Session 10: End-to-End Dry-Run Validation
 
 **Date:** 2026-06-09
