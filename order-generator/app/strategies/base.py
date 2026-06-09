@@ -32,15 +32,18 @@ class BaseStrategy(ABC):
     name:        str
     symbol:      str
     interval:    str   # "1m", "5m", "1h", etc.
-    platform:    str   # "auto" | "blofin" | "hyperliquid"
+    account_id:  str   # references exchange_accounts.id
+    platform:    str   # "auto" | "blofin" | "hyperliquid" (legacy, kept for compat)
     enabled:     bool
 
     def __init__(self, strategy_id: str, name: str, symbol: str,
-                 interval: str, platform: str, enabled: bool, params: dict):
+                 interval: str, account_id: str, platform: str,
+                 enabled: bool, params: dict):
         self.strategy_id = strategy_id
         self.name = name
         self.symbol = symbol
         self.interval = interval
+        self.account_id = account_id
         self.platform = platform
         self.enabled = enabled
         self.params = params

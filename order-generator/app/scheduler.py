@@ -29,7 +29,6 @@ STRATEGY_CLASSES = {
 }
 
 LISTENER_URL = os.getenv("LISTENER_WEBHOOK_URL", "http://order-listener:8001/webhook")
-WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "")
 DATA_FEED_EXCHANGE = os.getenv("DATA_FEED_EXCHANGE", "binance")
 CONFIG_DIR = os.getenv("STRATEGY_CONFIG_DIR", "/app/strategies_config")
 
@@ -73,6 +72,7 @@ class StrategyScheduler:
                     name=cfg.get("name", cls_name),
                     symbol=cfg["symbol"],
                     interval=cfg["interval"],
+                    account_id=cfg.get("account_id", ""),
                     platform=cfg.get("platform", "auto"),
                     enabled=cfg.get("enabled", True),
                     params=cfg.get("params", {}),
@@ -147,21 +147,26 @@ class StrategyScheduler:
             )
 
         webhook_url = f"{LISTENER_URL.rstrip('/webhook')}/webhook/{strategy.strategy_id}"
-        
+
+        parts = strategy.symbol.split("-", 1)
+        base_asset  = parts[0]
+        quote_asset = parts[1] if len(parts) > 1 else "USDT"
+
         payload = {
-            "symbol":     strategy.symbol,
-            "side":       signal.side,
-            "signal":     signal.signal,
-            "orderType":  "market",
-            "size":       str(signal.size),
-            "platform":   strategy.platform,
-            "timestamp":  datetime.now(timezone.utc).isoformat(),
+            "base_asset":    base_asset,
+            "quote_asset":   quote_asset,
+            "side":          signal.side,
+            "signal":        signal.signal,
+            "order_type":    "market",
+            "size":          str(signal.size),
+            "timestamp":     datetime.now(timezone.utc).isoformat(),
+            "token":         secret,
             "signal_source": "internal",
         }
         if signal.tp_price:
-            payload["tpPrice"] = str(signal.tp_price)
+            payload["tp_price"] = str(signal.tp_price)
         if signal.sl_price:
-            payload["slPrice"] = str(signal.sl_price)
+            payload["sl_price"] = str(signal.sl_price)
 
         headers = {"X-Webhook-Token": secret}
         
@@ -191,6 +196,7 @@ class StrategyScheduler:
                 "name":             s.name,
                 "symbol":           s.symbol,
                 "interval":         s.interval,
+                "account_id":       s.account_id,
                 "platform":         s.platform,
                 "enabled":          s.enabled,
                 "last_signal_time": s.last_signal_time,

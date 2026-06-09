@@ -1,3 +1,80 @@
+# Session: Remove dead positions_api.py from order-listener
+
+**Date:** 2026-06-09  
+**Status:** SUCCESS
+
+## Files changed
+- `order-listener/app/positions_api.py` — DELETED
+- `order-listener/app/main.py` — MODIFIED (removed import + include_router)
+- `docker-compose.yml` — MODIFIED (removed 4 dead env vars from order-listener block: BLOFIN_API_KEY, BLOFIN_API_SECRET, BLOFIN_API_PASSPHRASE, HYPERLIQUID_PRIVATE_KEY)
+- `.env` — MODIFIED (removed BLOFIN_API_KEY, BLOFIN_API_SECRET, BLOFIN_API_PASSPHRASE, HYPERLIQUID_PRIVATE_KEY — no longer consumed by any service)
+
+## Verification
+
+### order-listener health
+```
+curl -s http://localhost:8001/health
+{"status":"ok","service":"order-listener"}
+```
+
+### GET /positions via dashboard-api (port 8003, through nginx)
+```
+curl -s http://localhost/api/dashboard/positions | python3 -m json.tool | head -40
+[
+    {
+        "id": "e2480830-503c-4dd4-966f-60fcba1de6d5",
+        "symbol": "ETH-USDT",
+        "side": "short",
+        "status": "open",
+        "leverage": 10,
+        "margin_mode": "isolated",
+        "strategy_name": "ETHBlofin",
+        "account_id": "acc_blofin_demo_default",
+        "account_label": "Blofin Demo (default)",
+        "account_exchange": "blofin",
+        "opened_at": "2026-06-08T13:54:03.332Z",
+        "closed_at": null,
+        "entry_price": 1686.43,
+        "mark_price": 1683.6945697681665,
+        "close_price": 0,
+        "size": 0.05,
+        "margin": 8.432150000000002,
+        "realized_pnl": 0,
+        "realized_pnl_fees": 0,
+        "unrealized_pnl": 0.1340360813598415,
+        "pnl_pct": 1.5895836928878335,
+        "close_reason": null,
+        "strategy_type": "internal",
+        "destination": "blofin"
+    },
+    ...
+```
+
+### GET http://localhost:8001/positions — must return 404
+```
+curl -s -o /dev/null -w "%{http_code}" http://localhost:8001/positions
+404
+```
+
+### order-listener startup logs (no errors)
+```
+order-listener-1  | INFO:     Started server process [1]
+order-listener-1  | INFO:     Waiting for application startup.
+order-listener-1  | 2026-06-09 04:36:53,471 [INFO] app.main: Starting Order Listener service...
+order-listener-1  | 2026-06-09 04:36:53,749 [INFO] app.database: Database pool initialized.
+order-listener-1  | 2026-06-09 04:36:53,750 [INFO] app.redis_client: Redis client initialized.
+order-listener-1  | 2026-06-09 04:36:53,750 [INFO] app.main: Order Listener ready.
+order-listener-1  | INFO:     Application startup complete.
+order-listener-1  | INFO:     Uvicorn running on http://0.0.0.0:8001 (Press CTRL+C to quit)
+```
+
+## Notes
+- `order-listener/app/adapters/blofin.py` and `order-listener/app/adapters/hyperliquid.py` were NOT touched — they are still used by the webhook/order placement path (the adapters are referenced in `blofin_debug.py` only for debugging; the real execution path through order-executor uses its own adapter copies backed by DB credentials).
+- The correct positions implementation is `dashboard-api/src/routes/positions.ts`, which calls order-executor per account and was already live before this session.
+- dashboard-api is not port-exposed on the host; `/positions` is only reachable via nginx at `http://localhost/api/dashboard/positions`.
+
+---
+
 # Force Rebuild & Verification Report
 
 ## Step 3: Build Output (Last 30 lines)
@@ -54,3 +131,523 @@ matp-redis-1             redis:7-alpine         "docker-entrypoint.s…"   redis
 
 ## Note on Fixes
 During verification, I discovered that `nginx/nginx.conf` was incorrectly pointing to port 80 for `dashboard-ui` while the container listens on port 3000. I have updated the configuration and reloaded Nginx, which resolved the 502 errors.
+
+---
+
+# Session 1: AI Signal Generator — Database Migration
+
+**Date:** 2026-06-08  
+**Migration file:** `db/migrations/006_ai_signal_generator.sql`  
+**Status:** SUCCESS
+
+## Migration Output
+```
+CREATE TABLE
+CREATE TABLE
+CREATE TABLE
+CREATE TABLE
+CREATE INDEX
+CREATE INDEX
+CREATE INDEX
+CREATE INDEX
+CREATE TABLE
+INSERT 0 5
+```
+
+## Verification: \dt ai_*
+```
+               List of relations
+ Schema |         Name         | Type  | Owner 
+--------+----------------------+-------+-------
+ public | ai_prompt_templates  | table | matp
+ public | ai_risk_config       | table | matp
+ public | ai_risk_config_audit | table | matp
+ public | ai_signal_log        | table | matp
+ public | ai_strategy_config   | table | matp
+(5 rows)
+```
+
+## Verification: SELECT id, name FROM ai_prompt_templates ORDER BY id
+```
+       id        |      name       
+-----------------+-----------------
+ breakout        | Breakout Hunter
+ conservative    | Conservative
+ mean_reversion  | Mean Reversion
+ scalper         | Scalper
+ trend_following | Trend Following
+(5 rows)
+```
+
+## Verification: \d ai_risk_config
+```
+                           Table "public.ai_risk_config"
+        Column         |           Type           | Collation | Nullable | Default 
+-----------------------+--------------------------+-----------+----------+---------
+ strategy_id           | character varying(100)   |           | not null | 
+ max_position_size_pct | numeric(5,2)             |           | not null | 5.00
+ max_daily_loss_pct    | numeric(5,2)             |           | not null | 3.00
+ max_drawdown_pct      | numeric(5,2)             |           | not null | 8.00
+ max_concurrent_trades | integer                  |           | not null | 1
+ updated_at            | timestamp with time zone |           | not null | now()
+ updated_by            | character varying(100)   |           |          | 
+Indexes:
+    "ai_risk_config_pkey" PRIMARY KEY, btree (strategy_id)
+Foreign-key constraints:
+    "ai_risk_config_strategy_id_fkey" FOREIGN KEY (strategy_id) REFERENCES strategies(id) ON DELETE CASCADE
+```
+
+## Verification: \d ai_signal_log
+```
+                                            Table "public.ai_signal_log"
+        Column         |           Type           | Collation | Nullable |                  Default                  
+-----------------------+--------------------------+-----------+----------+-------------------------------------------
+ id                    | bigint                   |           | not null | nextval('ai_signal_log_id_seq'::regclass)
+ strategy_id           | character varying(100)   |           | not null | 
+ triggered_at          | timestamp with time zone |           | not null | now()
+ trigger_reason        | character varying(50)    |           | not null | 
+ cycle_interval        | character varying(10)    |           |          | 
+ prompt_template       | character varying(50)    |           |          | 
+ data_sources_used     | text[]                   |           |          | 
+ context_tokens        | integer                  |           |          | 
+ proposed_action       | character varying(20)    |           |          | 
+ confidence            | numeric(4,3)             |           |          | 
+ reasoning             | text                     |           |          | 
+ gate_passed           | boolean                  |           | not null | false
+ gate_rejection_reason | text                     |           |          | 
+ webhook_fired         | boolean                  |           | not null | false
+ webhook_status        | integer                  |           |          | 
+ order_id              | uuid                     |           |          | 
+ dry_run               | boolean                  |           | not null | true
+ outcome_pnl           | numeric                  |           |          | 
+ outcome_pct           | numeric                  |           |          | 
+ outcome_filled_at     | timestamp with time zone |           |          | 
+Indexes:
+    "ai_signal_log_pkey" PRIMARY KEY, btree (id)
+    "ai_sl_confidence_idx" btree (confidence)
+    "ai_sl_proposed_action_idx" btree (proposed_action)
+    "ai_sl_strategy_id_idx" btree (strategy_id)
+    "ai_sl_triggered_at_idx" btree (triggered_at DESC)
+Foreign-key constraints:
+    "ai_signal_log_order_id_fkey" FOREIGN KEY (order_id) REFERENCES orders(id)
+    "ai_signal_log_strategy_id_fkey" FOREIGN KEY (strategy_id) REFERENCES strategies(id)
+```
+
+## Verification: \d ai_strategy_config
+```
+                                                                    Table "public.ai_strategy_config"
+          Column           |           Type           | Collation | Nullable |                                          Default                                          
+---------------------------+--------------------------+-----------+----------+-------------------------------------------------------------------------------------------
+ strategy_id               | character varying(100)   |           | not null | 
+ interval_no_position      | character varying(10)    |           | not null | '4h'::character varying
+ interval_position_open    | character varying(10)    |           | not null | '15m'::character varying
+ interval_at_risk          | character varying(10)    |           | not null | '5m'::character varying
+ at_risk_threshold_pct     | numeric(5,2)             |           | not null | 1.50
+ use_technical             | boolean                  |           | not null | true
+ use_fear_greed            | boolean                  |           | not null | true
+ use_funding_rate          | boolean                  |           | not null | true
+ use_open_interest         | boolean                  |           | not null | true
+ use_news                  | boolean                  |           | not null | true
+ use_economic_calendar     | boolean                  |           | not null | false
+ use_btc_dominance         | boolean                  |           | not null | false
+ use_macro                 | boolean                  |           | not null | false
+ indicators                | text[]                   |           | not null | ARRAY['RSI'::text, 'MACD'::text, 'EMA50'::text, 'EMA200'::text, 'BB'::text, 'VWAP'::text]
+ lookback_days             | integer                  |           | not null | 90
+ confidence_threshold      | numeric(4,3)             |           | not null | 0.720
+ cooldown_entry_minutes    | integer                  |           | not null | 240
+ cooldown_increase_minutes | integer                  |           | not null | 60
+ cooldown_stop_adj_minutes | integer                  |           | not null | 30
+ template_id               | character varying(50)    |           | not null | 'trend_following'::character varying
+ custom_instructions       | text                     |           |          | 
+ trigger_news_high         | boolean                  |           | not null | true
+ trigger_volume_spike      | boolean                  |           | not null | true
+ trigger_funding_spike     | boolean                  |           | not null | true
+ trigger_key_level         | boolean                  |           | not null | true
+ trigger_liquidation       | boolean                  |           | not null | false
+ volume_spike_threshold    | numeric(6,1)             |           | not null | 300.0
+ funding_spike_threshold   | numeric(6,4)             |           | not null | 0.0500
+ dry_run                   | boolean                  |           | not null | true
+ emergency_exit_pct        | numeric(5,2)             |           | not null | 2.50
+ updated_at                | timestamp with time zone |           | not null | now()
+ updated_by                | character varying(100)   |           |          | 
+Indexes:
+    "ai_strategy_config_pkey" PRIMARY KEY, btree (strategy_id)
+Foreign-key constraints:
+    "ai_strategy_config_strategy_id_fkey" FOREIGN KEY (strategy_id) REFERENCES strategies(id) ON DELETE CASCADE
+```
+
+## Summary
+- Migration ran without errors
+- All 5 tables created: `ai_strategy_config`, `ai_risk_config`, `ai_risk_config_audit`, `ai_signal_log`, `ai_prompt_templates`
+- All 4 indexes created on `ai_signal_log`
+- All 5 prompt templates inserted: `trend_following`, `mean_reversion`, `breakout`, `scalper`, `conservative`
+- No existing files were modified
+
+---
+
+# Session 2: AI Signal Generator — Service Skeleton
+
+**Date:** 2026-06-08  
+**Status:** SUCCESS — GET /health returns HTTP 200
+
+## Files Created
+
+```
+ai-signal-generator/
+├── Dockerfile
+├── requirements.txt
+└── app/
+    ├── __init__.py
+    ├── main.py
+    ├── config.py
+    ├── database.py
+    ├── scheduler.py
+    ├── price_monitor.py
+    ├── event_watcher.py
+    ├── graph/
+    │   ├── __init__.py
+    │   ├── state.py
+    │   ├── graph.py
+    │   ├── checkpointer.py
+    │   └── nodes/
+    │       ├── __init__.py
+    │       ├── node_ingest.py
+    │       ├── node_analyze.py
+    │       ├── node_guard.py
+    │       └── node_dispatch.py
+    ├── data/
+    │   ├── __init__.py
+    │   ├── ohlcv.py
+    │   ├── indicators.py
+    │   ├── sentiment.py
+    │   ├── news.py
+    │   └── macro.py
+    ├── prompt/
+    │   ├── __init__.py
+    │   ├── builder.py
+    │   └── templates.py
+    └── webhook/
+        ├── __init__.py
+        ├── signer.py
+        └── dispatcher.py
+```
+
+**Modified:**
+- `docker-compose.yml` — added `ai-signal-generator` service block with port 8005
+- `.env` — appended `GEMINI_API_KEY=` and `CRYPTOPANIC_API_KEY=`
+
+## Build Output (summary)
+```
+Successfully installed: fastapi-0.136.3, uvicorn-0.49.0, asyncpg-0.31.0,
+langgraph-1.2.4, langchain-google-genai-4.2.4, google-generativeai-0.8.6,
+ccxt-4.5.56, pandas-3.0.3, pandas-ta-0.4.71b0, pydantic-2.13.4,
+httpx-0.28.1, yfinance-1.4.1, requests-2.34.2 + all deps
+```
+
+## Verification: curl -s http://localhost:8005/health
+```json
+{"status":"ok","service":"ai-signal-generator"}
+```
+
+## Verification: docker compose ps ai-signal-generator
+```
+NAME                         IMAGE                      COMMAND                  SERVICE               CREATED          STATUS                             PORTS
+matp-ai-signal-generator-1   matp-ai-signal-generator   "uvicorn app.main:ap…"   ai-signal-generator   18 seconds ago   Up 15 seconds (health: starting)   0.0.0.0:8005->8005/tcp, [::]:8005->8005/tcp
+```
+
+## Verification: docker compose logs ai-signal-generator --tail=30
+```
+ai-signal-generator-1  | INFO:     Started server process [1]
+ai-signal-generator-1  | INFO:     Waiting for application startup.
+ai-signal-generator-1  | INFO:     Application startup complete.
+ai-signal-generator-1  | INFO:     Uvicorn running on http://0.0.0.0:8005 (Press CTRL+C to quit)
+ai-signal-generator-1  | INFO:     172.18.0.1:41888 - "GET /health HTTP/1.1" 200 OK
+```
+
+## Verification: ls -la ai-signal-generator/app/
+```
+total 52
+-rw-rw-r-- 1 cristi cristi  566 Jun  8 20:04 config.py
+drwxrwxr-x 2 cristi cristi 4096 Jun  8 20:04 data
+-rw-rw-r-- 1 cristi cristi  489 Jun  8 20:04 database.py
+-rw-rw-r-- 1 cristi cristi   14 Jun  8 20:04 event_watcher.py
+drwxrwxr-x 3 cristi cristi 4096 Jun  8 20:04 graph
+-rw-rw-r-- 1 cristi cristi   14 Jun  8 20:04 __init__.py
+-rw-rw-r-- 1 cristi cristi  447 Jun  8 20:04 main.py
+-rw-rw-r-- 1 cristi cristi   14 Jun  8 20:04 price_monitor.py
+drwxrwxr-x 2 cristi cristi 4096 Jun  8 20:04 prompt
+-rw-rw-r-- 1 cristi cristi   14 Jun  8 20:04 scheduler.py
+drwxrwxr-x 2 cristi cristi 4096 Jun  8 20:04 webhook
+```
+
+## Verification: ls -la ai-signal-generator/app/graph/
+```
+-rw-rw-r-- 1 cristi cristi   14 Jun  8 20:04 checkpointer.py
+-rw-rw-r-- 1 cristi cristi   14 Jun  8 20:04 graph.py
+-rw-rw-r-- 1 cristi cristi   14 Jun  8 20:04 __init__.py
+drwxrwxr-x 2 cristi cristi 4096 Jun  8 20:04 nodes
+-rw-rw-r-- 1 cristi cristi   14 Jun  8 20:04 state.py
+```
+
+## Verification: ls -la ai-signal-generator/app/data/
+```
+-rw-rw-r-- 1 cristi cristi   14 Jun  8 20:04 indicators.py
+-rw-rw-r-- 1 cristi cristi   14 Jun  8 20:04 __init__.py
+-rw-rw-r-- 1 cristi cristi   14 Jun  8 20:04 macro.py
+-rw-rw-r-- 1 cristi cristi   14 Jun  8 20:04 news.py
+-rw-rw-r-- 1 cristi cristi   14 Jun  8 20:04 ohlcv.py
+-rw-rw-r-- 1 cristi cristi   14 Jun  8 20:04 sentiment.py
+```
+
+## Verification: ls -la ai-signal-generator/app/prompt/
+```
+-rw-rw-r-- 1 cristi cristi   14 Jun  8 20:04 builder.py
+-rw-rw-r-- 1 cristi cristi   14 Jun  8 20:04 __init__.py
+-rw-rw-r-- 1 cristi cristi   14 Jun  8 20:04 templates.py
+```
+
+## Verification: ls -la ai-signal-generator/app/webhook/
+```
+-rw-rw-r-- 1 cristi cristi   14 Jun  8 20:04 dispatcher.py
+-rw-rw-r-- 1 cristi cristi   14 Jun  8 20:04 __init__.py
+-rw-rw-r-- 1 cristi cristi   14 Jun  8 20:04 signer.py
+```
+
+## Notes
+- The `docker compose up -d` command triggered a second full pip install (~270s) because `--no-cache` invalidated the layer cache from the first build. On subsequent rebuilds only changed layers will re-run.
+- The spec's `${DATABASE_URL}` env var was given a bash default (`${DATABASE_URL:-postgresql://matp:matp@postgres:5432/matp}`) since `DATABASE_URL` is not defined in `.env` (other services use it hardcoded in docker-compose.yml).
+- Port `8005:8005` was added to the service block (not in spec §10) to allow `curl -s http://localhost:8005/health` from the host.
+- The healthcheck was changed from `python -c "import requests; ..."` to `curl -f ...` for reliability (curl is installed in the image).
+
+---
+
+# Session 3: AI Signal Generator — Data Ingestion (Node 1)
+
+**Date:** 2026-06-08  
+**Status:** SUCCESS — all five data fetcher modules implemented and tested
+
+## Files Modified
+
+| File | Status |
+|------|--------|
+| `ai-signal-generator/app/data/ohlcv.py` | Implemented |
+| `ai-signal-generator/app/data/indicators.py` | Implemented |
+| `ai-signal-generator/app/data/sentiment.py` | Implemented |
+| `ai-signal-generator/app/data/news.py` | Implemented |
+| `ai-signal-generator/app/data/macro.py` | Implemented |
+| `ai-signal-generator/requirements.txt` | Added: `feedparser`, `pydantic-settings` |
+
+**Note on task prompt:** The session prompt was cut off mid-way (at the `fetch_funding_rate` description). The remaining modules (news.py, macro.py) and the Execution/Verification sections were inferred from the spec and task header.
+
+## packages added to requirements.txt
+- `feedparser` — required for CoinDesk/Cointelegraph RSS feeds
+- `pydantic-settings` — required for config.py BaseSettings (was missing from Session 2)
+
+## Standalone Module Test Results
+
+### indicators.py — synthetic candles, no network
+```json
+{
+  "rsi_14": 47.69,
+  "rsi_interpretation": "neutral",
+  "macd_hist": -13.766709,
+  "macd_signal_bars": 0,
+  "ema_50": 64900.136592,
+  "ema_200": 64939.367161,
+  "ema_cross_status": "below",
+  "bb_upper": 66273.051756,
+  "bb_mid": 64857.350225,
+  "bb_lower": 63441.648693,
+  "bb_interpretation": "mid-band (neutral)",
+  "vwap": 64951.233715,
+  "vwap_deviation_pct": -0.86,
+  "vwap_direction": "below",
+  "atr_14": 1135.61685,
+  "atr_pct_of_price": 1.764,
+  "support_1": 62731.368245,
+  "resistance_1": 66281.758575
+}
+```
+**Result:** PASS — all enabled indicators computed, ATR and support/resistance always present
+
+### ohlcv.py — binance BTC/USDT 4h 7d
+```
+symbol:              BTC/USDT
+timeframe:           4h
+candles fetched:     42
+current_price:       63297.9
+price_change_24h:    0.27%
+price_change_7d:     -10.79%
+last candle: {'timestamp': 1780948800000, 'open': 63372.01, 'high': 63432.84, 'low': 63160.31, 'close': 63297.9, 'volume': 662.58594}
+```
+**Result:** PASS
+
+### news.py — CoinGecko + RSS
+```
+INFO: HTTP Request: GET https://api.coingecko.com/api/v3/news "HTTP/1.1 401 Unauthorized"
+Fetched 30 news items:
+  [coindesk       ] Influential research firm that caused AI stock meltdown lays out Hyperliquid...
+  [coindesk       ] Live updates: Bitcoin tops $63,000 as Strategy adds $100 million BTC...
+  [coindesk       ] Sam Bankman-Fried officially asks Trump for a presidential pardon
+  [cointelegraph  ] ...
+```
+**Result:** PASS — CoinGecko 401 is non-fatal, RSS fallback delivers 30 items. CoinGecko now requires API key for /news endpoint.
+
+### macro.py — CoinGecko + yfinance
+```
+BTC Dominance: {'btc_dominance': 56.04, 'btc_dom_trend': 'stable'}
+Macro:         {'dxy': 100.001, 'dxy_trend': 'falling', 'us10y': 4.552, 'us10y_trend': 'rising'}
+```
+**Result:** PASS — `^DXY` ticker was failing (delisted from yfinance); fixed to use `DX-Y.NYB` (ICE US Dollar Index, the authoritative source).
+
+### sentiment.py — alternative.me + binance (for test)
+```
+Fear & Greed:  {'value': 8, 'label': 'Extreme Fear'}
+Funding Rate:  None  (non-fatal: binance spot doesn't support fundingRate — production uses blofin/hyperliquid)
+Open Interest: {'open_interest_usd': 0.0, 'change_24h_pct': 0.0, 'long_short_ratio': None, 'ls_interpretation': 'data unavailable'}
+```
+**Result:** PASS — Fear & Greed works. Funding rate returns None for binance spot (non-fatal, expected — in production exchange_id will be 'blofin' or 'hyperliquid' which support perpetual futures funding rates). Open Interest gracefully returns zero.
+
+## Non-fatal failure summary (all handled correctly)
+| Source | Failure | Handling |
+|--------|---------|----------|
+| CoinGecko /news | 401 Unauthorized (API key now required) | Falls back to RSS feeds |
+| yfinance ^DXY | "possibly delisted" | Fixed: now uses DX-Y.NYB |
+| Binance fundingRate | Spot pairs unsupported | Returns None (correct for non-futures exchange) |
+
+---
+
+# Session 4: AI Signal Generator — Prompt Builder
+
+**Date:** 2026-06-08  
+**Status:** SUCCESS — all four tests pass
+
+## Files Modified/Created
+
+| File | Change |
+|------|--------|
+| `ai-signal-generator/app/prompt/templates.py` | Implemented (was placeholder) |
+| `ai-signal-generator/app/prompt/builder.py` | Implemented (was placeholder) |
+| `ai-signal-generator/app/data/news.py` | Added `fetch_news_digest` wrapper (additive only) |
+| `ai-signal-generator/app/main.py` | Added DB lifespan init + `POST /internal/preview-prompt` endpoint |
+| `dashboard-api/src/routes/strategies.ts` | Added `GET /:id/ai-config/preview-prompt` route |
+
+## Architecture Note
+
+The running container has no volume mount — code is baked into the image. Files were copied into the container with `docker cp` for Python tests. The dashboard-api was fully rebuilt (`docker compose build --no-cache dashboard-api`).
+
+## Test 1: templates.py — DB template loading
+```
+all templates: ['breakout', 'conservative', 'mean_reversion', 'scalper', 'trend_following']
+trend_following name: Trend Following
+system_prompt preview: You are a quantitative crypto analyst specializing in trend-following strategies
+```
+**Result:** PASS — all 5 templates loaded, `load_template` and `load_all_templates` work correctly
+
+## Test 2: builder.py — null state (no data available)
+```
+=== PROMPT PREVIEW (first 500 chars) ===
+═══════════════════════════════════════════════════════════
+MATP AI ANALYSIS — BTC-USDT — 4h
+Generated: 2026-06-08 20:54:46 UTC
+Analysis Trigger: scheduled
+═══════════════════════════════════════════════════════════
+
+PORTFOLIO CONTEXT:
+Account Balance:      (resolved at execution time)
+Today's P&L:          N/A%  (cap: 3.0%)
+Max Position Size:    5.0%
+Last Signal:          N/A
+
+STRATEGY INSTRUCTIONS:
+You are a quantitative crypto analyst specializing in trend-following strategies...
+=== PROMPT PREVIEW (last 200 chars) ===
+...Never output confidence above 0.95.
+
+OUTPUT: Structured JSON only. reasoning field must cite specific indicator values.
+═══════════════════════════════════════════════════════════
+total chars: 1507, estimated tokens: 376
+```
+**Result:** PASS — sections with no data are correctly omitted; header, portfolio, instructions, task always included
+
+## Test 3: builder.py — real data (binance BTC/USDT 4h + fear_greed + news)
+```
+═══════════════════════════════════════════════════════════
+MATP AI ANALYSIS — BTC-USDT — 4h
+Generated: 2026-06-08 20:55:17 UTC
+Analysis Trigger: scheduled
+═══════════════════════════════════════════════════════════
+
+TECHNICAL INDICATORS (4h timeframe):
+Current Price:    63414.0
+24h Change:       0.45%
+7d Change:        -10.63%
+
+RSI(14):          51.14 — neutral
+MACD:             hist 480.42208, signal cross 16 bars ago
+BB:               mid-band (neutral)
+VWAP:             price -11.14% below VWAP
+ATR(14):          1205.099183 (1.9% of price)
+
+Key Levels:
+  Nearest Support:    59130.91
+  Nearest Resistance: 64234.68
+
+SENTIMENT:
+Fear & Greed Index:   8 (Extreme Fear)
+
+NEWS DIGEST (last 24 hours):
+[MEDIUM] Influential research firm that caused AI stock meltdown lays out Hyperliquid...
+[MEDIUM] Live updates: Bitcoin tops $63,000 as Strategy adds $100 million BTC...
+[MEDIUM] Sam Bankman-Fried officially asks Trump for a presidential pardon
+... (10 items total)
+
+PORTFOLIO CONTEXT:
+Account Balance:      (resolved at execution time)
+Today's P&L:          N/A%  (cap: 3.0%)
+Max Position Size:    5.0%
+Last Signal:          N/A
+
+STRATEGY INSTRUCTIONS:
+You are a quantitative crypto analyst specializing in trend-following strategies...
+
+═══════════════════════════════════════════════════════════
+YOUR TASK:
+...
+═══════════════════════════════════════════════════════════
+total chars: 2901, estimated tokens: 725
+```
+**Result:** PASS — all data sections render correctly; EMA cross omitted when < 200 candles (30-day window = ~180 4h candles, insufficient for EMA200); all other indicators present
+
+Note: `fetch_news_digest(lookback_hours=24)` added to `app/data/news.py` (thin wrapper around `fetch_news`) — required by this test and the prompt builder's `news_data` state key. Returns `{'items': [...], 'lookback_hours': int}`.
+
+## Test 4: preview-prompt endpoint (dashboard-api → ai-signal-generator)
+```bash
+# Inserted test AI config row:
+INSERT INTO ai_strategy_config (strategy_id, template_id, dry_run)
+SELECT id, 'trend_following', true FROM strategies LIMIT 1
+ON CONFLICT (strategy_id) DO NOTHING;
+# strategy_id: test_strategy_2
+
+# Endpoint call:
+curl http://localhost/api/dashboard/strategies/test_strategy_2/ai-config/preview-prompt
+```
+Response:
+```json
+{
+  "prompt": "═══...═══\nMATP AI ANALYSIS — ETH-USDT — 4h\n...\n═══...═══",
+  "estimated_tokens": 375
+}
+```
+**Result:** PASS — 
+- dashboard-api loads strategy + ai_strategy_config from DB
+- 404 returned correctly if no ai_strategy_config row exists
+- Builds mock AgentState, POSTs to ai-signal-generator:8005/internal/preview-prompt
+- Python service calls `build_prompt` with pool from lifespan init, returns prompt + tokens
+- Symbol normalization fix applied: `ETH/USDT` → `ETH-USDT` before split (old strategies use `/` separator)
+
+## Notes
+- DB lifespan init added to `main.py` — pool is now available for all endpoints at startup
+- The `/internal/preview-prompt` endpoint uses `PreviewPromptRequest` Pydantic model (strategy_id + mock_state)
+- EMA cross status correctly absent in null-state or low-candle-count scenarios (field only present if both EMA50 and EMA200 computed)
+- `get_estimated_tokens` uses simple `len(prompt) // 4` heuristic

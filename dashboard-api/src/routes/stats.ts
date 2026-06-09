@@ -24,14 +24,18 @@ router.get('/', async (req: Request, res: Response) => {
     // ── Global aggregates ──────────────────────────────────────────
     const globalResult = await pool.query(`
       SELECT
-        COUNT(*)                                          AS total_orders,
-        COUNT(*) FILTER (WHERE status = 'filled')        AS filled,
+        COUNT(*)                                                        AS total_orders,
+        COUNT(*) FILTER (WHERE status = 'filled')                       AS filled,
         COUNT(*) FILTER (WHERE status IN (
-          'route_failed','lag_failed','rejected'))        AS failed,
-        COUNT(*) FILTER (WHERE pnl > 0)                  AS win_count,
-        COUNT(*) FILTER (WHERE pnl < 0)                  AS loss_count,
-        COALESCE(SUM(pnl), 0)                            AS total_pnl,
-        COALESCE(AVG(pnl) FILTER (WHERE pnl IS NOT NULL), 0) AS avg_pnl
+          'route_failed','lag_failed','rejected'))                       AS failed,
+        COUNT(*) FILTER (WHERE pnl > 0)                                 AS win_count,
+        COUNT(*) FILTER (WHERE pnl < 0)                                 AS loss_count,
+        COUNT(*) FILTER (WHERE status = 'filled' AND side = 'buy')      AS long_count,
+        COUNT(*) FILTER (WHERE status = 'filled' AND side = 'sell')     AS short_count,
+        COALESCE(SUM(pnl), 0)                                           AS total_pnl,
+        COALESCE(AVG(pnl) FILTER (WHERE pnl IS NOT NULL), 0)            AS avg_pnl,
+        (SELECT COALESCE(SUM(pnl_unrealized), 0)
+         FROM strategy_positions WHERE status = 'open')                 AS unrealized_pnl
       FROM orders
       WHERE ${filter}
     `);
@@ -130,14 +134,17 @@ router.get('/', async (req: Request, res: Response) => {
 
     res.json({
       period,
-      total_orders: total,
-      filled:       parseInt(g.filled),
-      failed:       parseInt(g.failed),
-      win_count:    wins,
-      loss_count:   losses,
+      total_orders:   total,
+      filled:         parseInt(g.filled),
+      failed:         parseInt(g.failed),
+      win_count:      wins,
+      loss_count:     losses,
+      long_count:     parseInt(g.long_count),
+      short_count:    parseInt(g.short_count),
       win_rate,
-      total_pnl:    parseFloat(g.total_pnl),
-      avg_pnl:      parseFloat(g.avg_pnl),
+      total_pnl:      parseFloat(g.total_pnl),
+      avg_pnl:        parseFloat(g.avg_pnl),
+      unrealized_pnl: parseFloat(g.unrealized_pnl),
       by_account,
       by_strategy,
     });

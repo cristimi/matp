@@ -18,7 +18,7 @@ from fastapi.responses import JSONResponse
 
 from app.database import get_pool
 from app.models import WebhookPayload, OrderResponse, OrderResult
-from app.redis_client import publish
+from app.redis_client import publish, cache_get, cache_set, cache_delete
 from app.symbol_validator import resolve_symbol, SymbolMismatchError
 
 logger = logging.getLogger(__name__)
@@ -42,13 +42,46 @@ async def _log_webhook_call(pool, strategy_id: str, http_status: int, error_mess
         )
 
 
-async def _get_strategy(pool, strategy_id: str):
-    """Retrieve strategy configuration from the database."""
+_STRATEGY_CACHE_TTL = 5   # seconds, per SDD §4.1 / §7.3
+_ACCOUNT_LABEL_TTL  = 60  # account labels rarely change
+
+async def _get_account_label(pool, account_id: str) -> str:
+    """Return the human-readable label for an account, Redis-cached."""
+    if not account_id:
+        return ""
+    cache_key = f"config:account_label:{account_id}"
+    cached = await cache_get(cache_key)
+    if cached is not None:
+        return cached.get("label", "")
     async with pool.acquire() as conn:
-        return await conn.fetchrow(
-            "SELECT * FROM strategies WHERE id = $1 AND COALESCE(is_deleted, false) = false",
-            strategy_id
+        label = await conn.fetchval(
+            "SELECT label FROM exchange_accounts WHERE id = $1", account_id
         )
+    label = label or ""
+    await cache_set(cache_key, {"label": label}, ttl=_ACCOUNT_LABEL_TTL)
+    return label
+
+
+async def _get_strategy(pool, strategy_id: str):
+    """Retrieve strategy configuration, Redis-cached with 5s TTL."""
+    cache_key = f"config:strategy_cache:{strategy_id}"
+
+    cached = await cache_get(cache_key)
+    if cached is not None:
+        return cached
+
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT * FROM strategies WHERE id = $1 AND COALESCE(is_deleted, false) = false",
+            strategy_id,
+        )
+
+    if row:
+        data = dict(row)
+        await cache_set(cache_key, data, ttl=_STRATEGY_CACHE_TTL)
+        return data
+
+    return None
 
 
 async def _check_rate_limit(pool, strategy_id: str, max_signals: int) -> bool:
@@ -158,7 +191,13 @@ async def _log_order(pool, payload: WebhookPayload, order_id: uuid.UUID, strateg
             payload.indicator_price
         )
 
-async def _update_order_status(pool, order_id: uuid.UUID, status: str, payload: WebhookPayload, result: OrderResult = None) -> None:
+async def _update_order_status(
+    pool, order_id: uuid.UUID, status: str, payload: WebhookPayload,
+    result: OrderResult = None,
+    account_id: str = "",
+    account_label: str = "",
+    strategy_id: str = "",
+) -> None:
     async with pool.acquire() as conn:
         await conn.execute(
             """
@@ -181,11 +220,19 @@ async def _update_order_status(pool, order_id: uuid.UUID, status: str, payload: 
 
     # Publish status update to Redis
     await publish(f"orders:{status}", {
-        "event": f"orders:{status}",
-        "order_id": str(order_id),
-        "status": status,
-        "pair": f"{payload.base_asset}-{payload.quote_asset}",
-        "timestamp": datetime.now(timezone.utc).isoformat()
+        "event":              f"orders:{status}",
+        "order_id":           str(order_id),
+        "status":             status,
+        "symbol":             f"{payload.base_asset}-{payload.quote_asset}",
+        "side":               payload.side,
+        "size":               str(payload.size),
+        "signal":             payload.signal,
+        "signal_source":      payload.signal_source or "",
+        "actual_fill_price":  str(result.actual_fill_price) if result and result.actual_fill_price else None,
+        "account_id":         account_id,
+        "account_label":      account_label,
+        "strategy_id":        strategy_id,
+        "timestamp":          datetime.now(timezone.utc).isoformat(),
     })
 
 
@@ -358,12 +405,23 @@ async def receive_webhook(
     await _log_webhook_call(pool, strategy_id, 200)
     await _log_order(pool, payload, order_id, strategy_id, None, resolved.execution_symbol, effective_leverage, effective_margin_mode)
 
+    _acct_id    = strategy.get("account_id") or ""
+    _acct_label = await _get_account_label(pool, _acct_id)
+    _strat_id   = strategy.get("id") or strategy_id
     await publish("orders:received", {
-        "event": "orders:received",
-        "order_id": str(order_id),
-        "status": "received",
-        "pair": f"{payload.base_asset}-{payload.quote_asset}",
-        "timestamp": datetime.now(timezone.utc).isoformat()
+        "event":             "orders:received",
+        "order_id":          str(order_id),
+        "status":            "received",
+        "symbol":            f"{payload.base_asset}-{payload.quote_asset}",
+        "side":              payload.side,
+        "size":              str(payload.size),
+        "signal":            payload.signal,
+        "signal_source":     payload.signal_source or "",
+        "actual_fill_price": None,
+        "account_id":        _acct_id,
+        "account_label":     _acct_label,
+        "strategy_id":       _strat_id,
+        "timestamp":         datetime.now(timezone.utc).isoformat(),
     })
 
     asyncio.create_task(
@@ -371,6 +429,7 @@ async def receive_webhook(
             pool, order_id, payload, strategy, resolved,
             price, tp_price, sl_price, effective_leverage, effective_margin_mode,
             signal_log_id=signal_log_id, start_ms=start_ms,
+            account_id=_acct_id, account_label=_acct_label, strategy_id=_strat_id,
         )
     )
 
@@ -419,6 +478,7 @@ async def _process_order(
     pool, order_id: uuid.UUID, payload: WebhookPayload, strategy: dict, resolved,
     price, tp_price, sl_price, effective_leverage: int, effective_margin_mode: str = "isolated",
     signal_log_id: Optional[int] = None, start_ms: float = 0.0,
+    account_id: str = "", account_label: str = "", strategy_id: str = "",
 ):
     try:
         # Increment daily signal counter (best-effort, non-blocking)
@@ -460,7 +520,7 @@ async def _process_order(
                     f"but no open position found — ignoring"
                 )
                 # We've already returned 200 from receive_webhook, so just update the order status
-                await _update_order_status(pool, order_id, "no_position", payload, None)
+                await _update_order_status(pool, order_id, "no_position", payload, None, account_id, account_label, strategy_id)
                 return
 
             # Use account_id from strategy record
@@ -485,6 +545,9 @@ async def _process_order(
                 close_result.get("status", "route_failed"),
                 payload,
                 flat_order_result,
+                account_id,
+                account_label,
+                strategy_id,
             )
 
             # Close the strategy_positions record if fill succeeded
@@ -575,7 +638,7 @@ async def _process_order(
         result      = OrderResult(**exec_result)
         final_status = result.status
 
-        await _update_order_status(pool, order_id, final_status, payload, result)
+        await _update_order_status(pool, order_id, final_status, payload, result, account_id, account_label, strategy_id)
         await _finalize_signal_log(
             pool, signal_log_id, 200,
             "filled" if result.success else "route_failed",
@@ -649,5 +712,5 @@ async def _process_order(
 
     except Exception as e:
         logger.exception(f"Error processing order {order_id}: {e}")
-        await _update_order_status(pool, order_id, "route_failed", payload, None)
+        await _update_order_status(pool, order_id, "route_failed", payload, None, account_id, account_label, strategy_id)
         await _finalize_signal_log(pool, signal_log_id, 200, "route_failed", str(e), start_ms)

@@ -5,13 +5,20 @@ export interface OrderEvent {
   order_id: string;
   status?: string;
   symbol?: string;
-  platform?: string;
+  side?: string;
+  size?: string;
+  signal?: string;
+  signal_source?: string;
+  actual_fill_price?: string | null;
+  account_id?: string;
+  account_label?: string;
+  strategy_id?: string;
   timestamp: string;
 }
 
 const WS_URL = import.meta.env.VITE_WS_URL || '/ws/orders';
 
-export function useOrderStream(onEvent?: (evt: OrderEvent) => void) {
+export function useOrderStream(onEvent?: (evt: OrderEvent) => void, strategyId?: string) {
   const [connected, setConnected] = useState(false);
   const [events, setEvents] = useState<OrderEvent[]>([]);
   const wsRef = useRef<WebSocket | null>(null);
@@ -32,6 +39,7 @@ export function useOrderStream(onEvent?: (evt: OrderEvent) => void) {
       try {
         const evt: OrderEvent = JSON.parse(e.data);
         if (evt.event === 'connected') return;
+        if (strategyId && evt.strategy_id && evt.strategy_id !== strategyId) return;
         setEvents((prev) => [evt, ...prev].slice(0, 100));
         onEvent?.(evt);
       } catch {}

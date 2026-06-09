@@ -163,16 +163,28 @@ router.get('/comparison', async (req: Request, res: Response) => {
   const interval = PERIOD_FILTER[period] || PERIOD_FILTER['7d'];
   try {
     const query = `
-      SELECT 
-        s.id as strategy_id, 
+      SELECT
+        s.id   AS strategy_id,
         s.name,
-        COALESCE(SUM(st.trades_count), 0)::int as trades_count,
-        COALESCE(AVG(st.win_rate), 0)::float as win_rate,
-        COALESCE(SUM(st.pnl_total), 0)::float as pnl_total,
-        COALESCE(AVG(st.max_drawdown), 0)::float as max_drawdown,
-        (SELECT COUNT(*)::int FROM strategy_positions sp WHERE sp.strategy_id = s.id AND sp.status = 'open') as open_positions
+        COALESCE(SUM(st.trades_count), 0)::int   AS trades_count,
+        COALESCE(SUM(st.trades_won),   0)::int   AS trades_won,
+        COALESCE(SUM(st.trades_lost),  0)::int   AS trades_lost,
+        COALESCE(AVG(st.win_rate),     0)::float AS win_rate,
+        COALESCE(SUM(st.pnl_total),    0)::float AS pnl_total,
+        COALESCE(MAX(st.max_drawdown), 0)::float AS max_drawdown,
+        (SELECT COUNT(*)::int FROM strategy_positions sp
+         WHERE sp.strategy_id = s.id AND sp.status = 'open') AS open_positions,
+        (SELECT ROUND(
+           NULLIF(SUM(o.pnl) FILTER (WHERE o.pnl > 0), 0) /
+           NULLIF(ABS(SUM(o.pnl) FILTER (WHERE o.pnl < 0)), 0),
+         2)::float
+         FROM orders o
+         WHERE o.strategy_id = s.id
+           AND o.received_at >= CURRENT_DATE - ${interval}
+        ) AS profit_factor
       FROM strategies s
-      LEFT JOIN strategy_stats st ON s.id = st.strategy_id AND st.period_date >= CURRENT_DATE - ${interval}
+      LEFT JOIN strategy_stats st
+        ON s.id = st.strategy_id AND st.period_date >= CURRENT_DATE - ${interval}
       GROUP BY s.id, s.name
     `;
     const { rows } = await getPool().query(query);
@@ -214,6 +226,83 @@ router.get('/:id/webhook-info', async (req: Request, res: Response) => {
       webhook_enabled: s.webhook_enabled,
     });
   } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// GET /strategies/:id/ai-config/preview-prompt — assemble prompt preview via AI service
+router.get('/:id/ai-config/preview-prompt', async (req: Request, res: Response) => {
+  try {
+    const [strategyResult, aiConfigResult, riskConfigResult] = await Promise.all([
+      getPool().query(`SELECT id, symbol FROM strategies WHERE id = $1`, [req.params.id]),
+      getPool().query(`SELECT * FROM ai_strategy_config WHERE strategy_id = $1`, [req.params.id]),
+      getPool().query(`SELECT * FROM ai_risk_config WHERE strategy_id = $1`, [req.params.id]),
+    ]);
+
+    if ((strategyResult.rowCount ?? 0) === 0) {
+      return res.status(404).json({ error: `Strategy not found: ${req.params.id}` });
+    }
+    if ((aiConfigResult.rowCount ?? 0) === 0) {
+      return res.status(404).json({ error: 'No AI config for this strategy' });
+    }
+
+    const strategy  = strategyResult.rows[0];
+    const aiConfig  = aiConfigResult.rows[0];
+    const riskConfig = (riskConfigResult.rowCount ?? 0) > 0 ? riskConfigResult.rows[0] : null;
+
+    const [baseAsset = 'BTC', quoteAsset = 'USDT'] = strategy.symbol.replace('/', '-').split('-');
+
+    const mockState = {
+      strategy_config: {
+        base_asset:          baseAsset,
+        quote_asset:         quoteAsset,
+        template_id:         aiConfig.template_id,
+        custom_instructions: aiConfig.custom_instructions ?? null,
+        use_technical:       aiConfig.use_technical,
+        use_fear_greed:      aiConfig.use_fear_greed,
+        use_funding_rate:    aiConfig.use_funding_rate,
+        use_open_interest:   aiConfig.use_open_interest,
+        use_news:            aiConfig.use_news,
+        use_btc_dominance:   aiConfig.use_btc_dominance,
+        use_macro:           aiConfig.use_macro,
+        indicators:          aiConfig.indicators,
+        lookback_days:       aiConfig.lookback_days,
+      },
+      risk_config: {
+        max_position_size_pct: riskConfig ? Number(riskConfig.max_position_size_pct) : 5.0,
+        max_daily_loss_pct:    riskConfig ? Number(riskConfig.max_daily_loss_pct)    : 3.0,
+      },
+      position_open:               false,
+      position_side:               null,
+      position_entry_price:        null,
+      position_unrealized_pnl_pct: null,
+      position_opened_at:          null,
+      original_reasoning:          null,
+      trigger_reason:              'preview',
+      cycle_interval:              aiConfig.interval_no_position,
+      ohlcv_data:                  null,
+      technical_indicators:        null,
+      sentiment_data:              null,
+      news_data:                   null,
+      market_context:              null,
+      data_fetch_errors:           [],
+    };
+
+    const aiResponse = await fetch('http://ai-signal-generator:8005/internal/preview-prompt', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ strategy_id: req.params.id, mock_state: mockState }),
+    });
+
+    if (!aiResponse.ok) {
+      const errText = await aiResponse.text();
+      throw new Error(`AI service error ${aiResponse.status}: ${errText}`);
+    }
+
+    const data = await aiResponse.json();
+    res.json(data);
+  } catch (e: any) {
+    console.error(`Error building preview prompt for ${req.params.id}:`, e);
     res.status(500).json({ error: e.message });
   }
 });
@@ -516,32 +605,46 @@ router.get('/:id/stats', async (req: Request, res: Response) => {
   const period = (req.query.period as string) || '7d';
   const interval = PERIOD_FILTER[period] || PERIOD_FILTER['7d'];
   try {
-    const query = `
-      SELECT 
-        strategy_id,
-        SUM(trades_count)::int as trades_count,
-        SUM(trades_won)::int as trades_won,
-        AVG(win_rate)::float as win_rate,
-        SUM(pnl_total)::float as pnl_total,
-        AVG(pnl_total / NULLIF(trades_count, 0))::float as pnl_avg,
-        MAX(max_drawdown)::float as max_drawdown
-      FROM strategy_stats 
-      WHERE strategy_id = $1 AND period_date >= CURRENT_DATE - ${interval}
-      GROUP BY strategy_id
-    `;
-    const { rows } = await getPool().query(query, [req.params.id]);
-    if (rows.length === 0) {
-      return res.json({
-        strategy_id: req.params.id,
-        trades_count: 0,
-        trades_won: 0,
-        win_rate: 0,
-        pnl_total: 0,
-        pnl_avg: 0,
-        max_drawdown: 0
-      });
-    }
-    res.json(rows[0]);
+    const [statsResult, extraResult] = await Promise.all([
+      getPool().query(`
+        SELECT
+          strategy_id,
+          SUM(trades_count)::int                                  AS trades_count,
+          SUM(trades_won)::int                                    AS trades_won,
+          SUM(trades_lost)::int                                   AS trades_lost,
+          AVG(win_rate)::float                                    AS win_rate,
+          SUM(pnl_total)::float                                   AS pnl_total,
+          AVG(pnl_total / NULLIF(trades_count, 0))::float         AS pnl_avg,
+          MAX(max_drawdown)::float                                AS max_drawdown
+        FROM strategy_stats
+        WHERE strategy_id = $1 AND period_date >= CURRENT_DATE - ${interval}
+        GROUP BY strategy_id
+      `, [req.params.id]),
+      getPool().query(`
+        SELECT
+          COUNT(*) FILTER (WHERE side = 'buy'  AND status = 'filled')::int AS long_count,
+          COUNT(*) FILTER (WHERE side = 'sell' AND status = 'filled')::int AS short_count,
+          ROUND(
+            NULLIF(SUM(pnl) FILTER (WHERE pnl > 0), 0) /
+            NULLIF(ABS(SUM(pnl) FILTER (WHERE pnl < 0)), 0),
+          2)::float AS profit_factor,
+          (SELECT COALESCE(SUM(pnl_unrealized), 0)
+           FROM strategy_positions
+           WHERE strategy_id = $1 AND status = 'open') AS unrealized_pnl
+        FROM orders
+        WHERE strategy_id = $1 AND received_at >= CURRENT_DATE - ${interval}
+      `, [req.params.id]),
+    ]);
+
+    const base = statsResult.rows[0] ?? {
+      strategy_id: req.params.id,
+      trades_count: 0, trades_won: 0, trades_lost: 0,
+      win_rate: 0, pnl_total: 0, pnl_avg: 0, max_drawdown: 0,
+    };
+    const extra = extraResult.rows[0] ?? {
+      long_count: 0, short_count: 0, profit_factor: null, unrealized_pnl: 0,
+    };
+    res.json({ ...base, ...extra });
   } catch (err) {
     console.error(`Error fetching stats for strategy ${req.params.id}:`, err);
     res.status(500).json({ error: 'Database error' });

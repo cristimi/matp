@@ -61,12 +61,7 @@ services:
       DATABASE_URL: postgresql://matp:matp@postgres:5432/matp
       REDIS_URL: redis://redis:6379
       EXECUTOR_URL: http://order-executor:8004
-      WEBHOOK_SECRET: ${WEBHOOK_SECRET}
       MASTER_KEY: ${MASTER_KEY}
-      BLOFIN_API_KEY: ${BLOFIN_API_KEY}
-      BLOFIN_API_SECRET: ${BLOFIN_API_SECRET}
-      BLOFIN_API_PASSPHRASE: ${BLOFIN_API_PASSPHRASE:-}
-      HYPERLIQUID_PRIVATE_KEY: ${HYPERLIQUID_PRIVATE_KEY}
     depends_on:
       postgres:
         condition: service_healthy
@@ -89,7 +84,6 @@ services:
     environment:
       DATABASE_URL: postgresql://matp:matp@postgres:5432/matp
       LISTENER_WEBHOOK_URL: http://order-listener:8001/webhook
-      WEBHOOK_SECRET: ${WEBHOOK_SECRET}
       DATA_FEED_EXCHANGE: ${DATA_FEED_EXCHANGE:-binance}
     volumes:
       - strategy_configs:/app/strategies_config
@@ -151,3 +145,31 @@ services:
         condition: service_healthy
     networks: [matp_net]
     restart: unless-stopped
+
+  ai-signal-generator:
+    build: ./ai-signal-generator
+    ports:
+      - "8005:8005"
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql://matp:matp@postgres:5432/matp}
+      REDIS_URL: redis://redis:6379
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      CRYPTOPANIC_API_KEY: ${CRYPTOPANIC_API_KEY}
+      MATP_LISTENER_URL: http://order-listener:8001
+      MATP_EXECUTOR_URL: http://order-executor:8004
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      order-listener:
+        condition: service_healthy
+      order-executor:
+        condition: service_healthy
+    networks: [matp_net]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8005/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3

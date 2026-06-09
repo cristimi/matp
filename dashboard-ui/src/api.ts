@@ -73,9 +73,12 @@ export interface Stats {
   failed: number;
   win_count: number;
   loss_count: number;
+  long_count: number;
+  short_count: number;
   win_rate: number;
   total_pnl: number;
   avg_pnl: number;
+  unrealized_pnl: number;
   by_platform: Record<string, Stats>;
   by_strategy: Record<string, Stats>;
 }
@@ -113,10 +116,15 @@ export interface StrategyStats {
   period: string;
   trades_count: number;
   trades_won: number;
+  trades_lost: number;
+  long_count: number;
+  short_count: number;
   win_rate: number;
   pnl_total: number;
   pnl_avg: number;
   max_drawdown: number;
+  unrealized_pnl: number;
+  profit_factor: number | null;
 }
 
 export interface EquityCurvePoint {
@@ -129,10 +137,13 @@ export interface StrategyComparison {
   strategy_id: string;
   name: string;
   trades_count: number;
+  trades_won: number;
+  trades_lost: number;
   win_rate: number;
   pnl_total: number;
   max_drawdown: number;
   open_positions: number;
+  profit_factor: number | null;
 }
 
 export async function fetchStrategies(): Promise<Strategy[]> {

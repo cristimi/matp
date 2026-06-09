@@ -17,7 +17,6 @@ from app.redis_client import init_redis
 from app.webhook_handler import router as webhook_router
 from app.orders_api import router as orders_router
 from app.config_api import router as config_router
-from app.positions_api import router as positions_router
 
 logging.basicConfig(
     level=logging.INFO,
@@ -52,7 +51,6 @@ app.add_middleware(
 app.include_router(webhook_router)
 app.include_router(orders_router)
 app.include_router(config_router)
-app.include_router(positions_router)
 
 
 @app.exception_handler(RequestValidationError)

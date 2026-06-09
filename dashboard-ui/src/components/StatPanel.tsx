@@ -1,7 +1,9 @@
+import { ReactNode } from 'react';
+
 interface StatPanelProps {
   label: string;
   value: string | number;
-  sub?: string;
+  sub?: ReactNode;
   color?: 'green' | 'red' | 'blue' | 'default';
 }
 

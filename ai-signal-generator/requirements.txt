@@ -1,0 +1,16 @@
+fastapi
+uvicorn
+asyncpg
+langgraph>=0.2.0
+langchain-google-genai
+google-generativeai
+ccxt
+pandas
+pandas-ta
+pydantic>=2.0
+pydantic-settings
+httpx
+python-dotenv
+yfinance
+requests
+feedparser

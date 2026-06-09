@@ -30,3 +30,26 @@ async def publish(channel: str, data: dict):
         logger.info(f"Published to Redis channel {channel}: {data['event']}")
     except Exception as e:
         logger.warning(f"Redis publish failed on channel {channel}: {e}")
+
+
+async def cache_get(key: str) -> dict | None:
+    try:
+        raw = await get_redis().get(key)
+        return json.loads(raw) if raw else None
+    except Exception as e:
+        logger.warning(f"Redis cache_get failed for {key}: {e}")
+        return None
+
+
+async def cache_set(key: str, data: dict, ttl: int = 5) -> None:
+    try:
+        await get_redis().setex(key, ttl, json.dumps(data, default=str))
+    except Exception as e:
+        logger.warning(f"Redis cache_set failed for {key}: {e}")
+
+
+async def cache_delete(key: str) -> None:
+    try:
+        await get_redis().delete(key)
+    except Exception as e:
+        logger.warning(f"Redis cache_delete failed for {key}: {e}")

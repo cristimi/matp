@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
 import { api, Stats, fetchStrategyComparison, StrategyComparison } from '../api';
 import { StatPanel } from '../components/StatPanel';
@@ -80,7 +81,17 @@ export default function DashboardPage() {
 
       {stats ? (
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          <StatPanel label="Total Orders" value={stats.total_orders ?? 0} />
+          <StatPanel
+            label="Total Orders"
+            value={stats.total_orders ?? 0}
+            sub={
+              <span>
+                <span className="text-emerald-500">{stats.long_count ?? 0} long</span>
+                {' / '}
+                <span className="text-red-500">{stats.short_count ?? 0} short</span>
+              </span>
+            }
+          />
           <StatPanel
             label="Win Rate"
             value={`${Number(stats.win_rate || 0).toFixed(0)}%`}
@@ -90,7 +101,17 @@ export default function DashboardPage() {
           <StatPanel
             label="Total P&L"
             value={`$${Number(stats.total_pnl || 0).toFixed(2)}`}
-            sub={`Avg $${Number(stats.avg_pnl || 0).toFixed(2)} / trade`}
+            sub={
+              (() => {
+                const u = Number(stats.unrealized_pnl || 0);
+                const sign = u >= 0 ? '+' : '';
+                return (
+                  <span className={u >= 0 ? 'text-emerald-500' : 'text-red-500'}>
+                    {sign}${u.toFixed(2)} unrealized
+                  </span>
+                );
+              })()
+            }
             color={pnlColor}
           />
           <StatPanel label="Failed Orders" value={stats.failed ?? 0} color={(stats.failed ?? 0) > 0 ? 'red' : 'default'} />
@@ -107,22 +128,37 @@ export default function DashboardPage() {
               <th className="py-2 text-left">Strategy</th>
               <th className="py-2 text-right">Trades</th>
               <th className="py-2 text-right">Win Rate</th>
+              <th className="py-2 text-right hidden md:table-cell">W / L</th>
+              <th className="py-2 text-right hidden md:table-cell">Max DD</th>
+              <th className="py-2 text-right hidden md:table-cell">PF</th>
               <th className="py-2 text-right">P&L</th>
-              <th className="py-2 text-center">Status</th>
+              <th className="py-2 text-center">●</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
             {(strategies || []).slice(0, 5).map(s => {
               const pnl = Number(s.pnl_total || 0);
+              const pf  = s.profit_factor != null ? Number(s.profit_factor).toFixed(2) : '—';
               return (
                 <tr key={s.strategy_id} className="table-row-hover">
                   <td className="py-3">
-                    <a href={`/strategy/${s.strategy_id}`} className="font-semibold text-indigo-600 dark:text-indigo-400 hover:underline">
+                    <Link to={`/strategy/${s.strategy_id}`} className="font-semibold text-indigo-600 dark:text-indigo-400 hover:underline">
                       {s.name}
-                    </a>
+                    </Link>
                   </td>
                   <td className="py-3 text-right font-mono text-gray-600 dark:text-gray-300">{s.trades_count || 0}</td>
                   <td className="py-3 text-right font-mono text-gray-600 dark:text-gray-300">{Number(s.win_rate || 0).toFixed(0)}%</td>
+                  <td className="py-3 text-right font-mono text-gray-500 dark:text-gray-400 text-xs hidden md:table-cell">
+                    <span className="text-emerald-600 dark:text-emerald-400">{s.trades_won || 0}</span>
+                    {' / '}
+                    <span className="text-red-500 dark:text-red-400">{s.trades_lost || 0}</span>
+                  </td>
+                  <td className="py-3 text-right font-mono text-gray-500 dark:text-gray-400 text-xs hidden md:table-cell">
+                    {Number(s.max_drawdown || 0).toFixed(1)}%
+                  </td>
+                  <td className="py-3 text-right font-mono text-gray-500 dark:text-gray-400 text-xs hidden md:table-cell">
+                    {pf !== '—' ? `${pf}×` : '—'}
+                  </td>
                   <td className={`py-3 text-right font-mono font-semibold ${pnl >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'}`}>
                     {pnl >= 0 ? '+' : ''}${Number(pnl).toFixed(0)}
                   </td>
@@ -135,9 +171,9 @@ export default function DashboardPage() {
           </tbody>
         </table>
         {(strategies || []).length > 5 && (
-          <a href="/strategies" className="block text-center text-xs text-indigo-600 dark:text-indigo-400 hover:underline pt-4">
+          <Link to="/strategies" className="block text-center text-xs text-indigo-600 dark:text-indigo-400 hover:underline pt-4">
             View All Strategies →
-          </a>
+          </Link>
         )}
       </div>
 
