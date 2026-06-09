@@ -1,3 +1,54 @@
+# PWA Setup for MATP Dashboard
+
+**Date:** 2026-06-09
+**Status:** COMPLETE
+
+## Files Created/Modified
+
+- `dashboard-ui/public/manifest.json` — created (PWA manifest)
+- `dashboard-ui/public/icon-192.png` — created (192×192, dark bg, white "M")
+- `dashboard-ui/public/icon-512.png` — created (512×512, dark bg, white "M")
+- `dashboard-ui/index.html` — added manifest link and 5 PWA meta tags
+
+## Meta tags added to index.html
+
+```html
+<link rel="manifest" href="/manifest.json">
+<meta name="theme-color" content="#0f172a">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="MATP">
+```
+
+## Verification
+
+```
+$ curl -s http://localhost/manifest.json
+{
+    "name": "MATP Dashboard",
+    "short_name": "MATP",
+    "start_url": "/positions",
+    "display": "standalone",
+    "background_color": "#ffffff",
+    "theme_color": "#0f172a",
+    "icons": [
+        { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png" },
+        { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png" }
+    ]
+}
+
+$ curl -o /dev/null -w "%{http_code}" http://localhost/icon-192.png
+200
+
+$ curl -o /dev/null -w "%{http_code}" http://localhost/icon-512.png
+200
+```
+
+Note: Pillow was not pre-installed; installed with `pip install Pillow --break-system-packages` before icon generation.
+
+---
+
 # Backlog Task #1: Remove Dead Adapter Layer from order-listener
 
 **Date:** 2026-06-09
