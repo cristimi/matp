@@ -33,6 +33,9 @@ async def node_dispatch(state: AgentState) -> AgentState:
     if isinstance(triggered_at, str):
         triggered_at = datetime.fromisoformat(triggered_at)
 
+    llm_provider = sc.get('llm_provider', 'google')
+    llm_model    = sc.get('llm_model',    'gemini-2.0-flash')
+
     # ── 1. Always write ai_signal_log ────────────────────────────────────
     signal_log_id = None
     try:
@@ -43,8 +46,9 @@ async def node_dispatch(state: AgentState) -> AgentState:
                     strategy_id, triggered_at, trigger_reason, cycle_interval,
                     prompt_template, data_sources_used, context_tokens,
                     proposed_action, confidence, reasoning,
-                    gate_passed, gate_rejection_reason, dry_run
-                ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+                    gate_passed, gate_rejection_reason, dry_run,
+                    llm_provider, llm_model
+                ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
                 RETURNING id
                 """,
                 state['strategy_id'],
@@ -60,6 +64,8 @@ async def node_dispatch(state: AgentState) -> AgentState:
                 bool(state.get('gate_passed', False)),
                 state.get('gate_rejection_reason'),
                 bool(sc.get('dry_run', True)),
+                llm_provider,
+                llm_model,
             )
     except Exception as exc:
         logger.error("Failed to write ai_signal_log: %s", exc)

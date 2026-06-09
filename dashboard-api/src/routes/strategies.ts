@@ -36,9 +36,60 @@ router.get('/', async (_req: Request, res: Response) => {
           FROM strategy_positions sp
           WHERE sp.strategy_id = s.id
           AND sp.status = 'closed'
-        ), 0)::numeric     AS realized_pnl
+        ), 0)::numeric     AS realized_pnl,
+        COALESCE((
+          SELECT COUNT(*)
+          FROM strategy_positions sp
+          WHERE sp.strategy_id = s.id
+          AND sp.status = 'closed'
+          AND sp.side = 'long'
+        ), 0)::int         AS closed_long_count,
+        COALESCE((
+          SELECT COUNT(*)
+          FROM strategy_positions sp
+          WHERE sp.strategy_id = s.id
+          AND sp.status = 'closed'
+          AND sp.side = 'short'
+        ), 0)::int         AS closed_short_count,
+        CASE
+          WHEN COALESCE((
+            SELECT COUNT(*) FROM strategy_positions sp
+            WHERE sp.strategy_id = s.id AND sp.status = 'closed'
+          ), 0) = 0 THEN 0::float
+          ELSE ROUND(
+            COALESCE((
+              SELECT COUNT(*) FROM strategy_positions sp
+              WHERE sp.strategy_id = s.id
+              AND sp.status = 'closed'
+              AND sp.pnl_realized > 0
+            ), 0)::numeric * 100.0 /
+            COALESCE((
+              SELECT COUNT(*) FROM strategy_positions sp
+              WHERE sp.strategy_id = s.id AND sp.status = 'closed'
+            ), 1)::numeric,
+          1)::float
+        END                AS win_rate,
+        CASE
+          WHEN COALESCE(s.capital_allocation_percent, 0) = 0 THEN 0::float
+          ELSE ROUND(
+            COALESCE((
+              SELECT SUM(sp.pnl_realized)
+              FROM strategy_positions sp
+              WHERE sp.strategy_id = s.id AND sp.status = 'closed'
+            ), 0)::numeric /
+            NULLIF(s.capital_allocation_percent, 0)::numeric * 100,
+          2)::float
+        END                AS total_return,
+        aic.dry_run                AS ai_dry_run,
+        aic.llm_model              AS ai_llm_model,
+        aic.llm_provider           AS ai_llm_provider,
+        aic.interval_no_position   AS ai_interval_no_position,
+        aic.interval_position_open AS ai_interval_position_open,
+        aic.interval_at_risk       AS ai_interval_at_risk,
+        aic.at_risk_threshold_pct::float AS ai_at_risk_threshold_pct
       FROM strategies s
       LEFT JOIN exchange_accounts ea ON ea.id = s.account_id
+      LEFT JOIN ai_strategy_config aic ON aic.strategy_id = s.id
       WHERE COALESCE(s.is_deleted, false) = false
       ORDER BY s.created_at DESC
     `;
@@ -67,6 +118,7 @@ router.post('/', async (req: Request, res: Response) => {
     capital_allocation_percent = 100,
     allow_quote_variants       = false,
     allow_cross_charting       = false,
+    strategy_source            = 'tradingview',
   } = req.body;
 
   if (!name || !symbol || !account_id) {
@@ -116,7 +168,7 @@ router.post('/', async (req: Request, res: Response) => {
         max_position_size, max_leverage, max_daily_signals,
         max_daily_drawdown_percent, capital_allocation_percent,
         allow_quote_variants, allow_cross_charting,
-        enabled
+        strategy_source, enabled
       ) VALUES (
         $1, $2, $3, $4, $5, $6,
         'webhook', '',
@@ -124,7 +176,7 @@ router.post('/', async (req: Request, res: Response) => {
         $8, $9, $10, $11, $12,
         $13, $14,
         $15, $16,
-        true
+        $17, true
       )`,
       [
         id, name, normalisedSymbol, account_id, interval, description,
@@ -133,6 +185,7 @@ router.post('/', async (req: Request, res: Response) => {
         max_position_size, max_leverage, max_daily_signals,
         max_daily_drawdown_percent, capital_allocation_percent,
         allow_quote_variants, allow_cross_charting,
+        strategy_source,
       ]
     );
 

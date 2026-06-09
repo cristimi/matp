@@ -9,8 +9,13 @@ from datetime import datetime, timezone
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
+from app.config import settings
 from app.database import init_db, get_pool
+from app.graph.graph import build_graph
 from app.prompt.builder import build_prompt, get_estimated_tokens
+from app.scheduler import start_all_schedulers, stop_all_schedulers
+from app.price_monitor import start_all_price_monitors
+from app.event_watcher import start_all_event_watchers
 
 logging.basicConfig(
     level=logging.INFO,
@@ -22,7 +27,30 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
+    pool  = get_pool()
+    graph = build_graph()
+
+    schedulers     = await start_all_schedulers(pool, graph)
+    monitor_tasks  = await start_all_price_monitors(pool, settings.matp_listener_url)
+    watcher_tasks  = await start_all_event_watchers(pool, graph, schedulers)
+
+    app.state.schedulers    = schedulers
+    app.state.monitor_tasks = monitor_tasks
+    app.state.watcher_tasks = watcher_tasks
+    app.state.graph         = graph
+
     yield
+
+    # ── Shutdown ──────────────────────────────────────────────────────────────
+    await stop_all_schedulers(schedulers)
+
+    import asyncio
+    for task in monitor_tasks + watcher_tasks:
+        task.cancel()
+    if monitor_tasks or watcher_tasks:
+        await asyncio.gather(*(monitor_tasks + watcher_tasks), return_exceptions=True)
+
+    logger.info("AI Signal Generator shutdown complete")
 
 
 app = FastAPI(
@@ -58,6 +86,23 @@ async def internal_preview_prompt(body: PreviewPromptRequest):
         raise HTTPException(status_code=500, detail=str(exc))
 
 
+# ── /internal/models ─────────────────────────────────────────────────────────
+
+@app.get("/internal/models")
+async def list_models(provider: str):
+    try:
+        from app.models_registry import get_available_models
+        models = await get_available_models(provider)
+        return {
+            "provider":       provider,
+            "models":         models,
+            "key_configured": len(models) > 0 or provider == "anthropic",
+        }
+    except Exception as exc:
+        logger.error("Failed to list models for %s: %s", provider, exc)
+        return {"provider": provider, "models": [], "key_configured": False, "error": str(exc)}
+
+
 # ── /internal/trigger ────────────────────────────────────────────────────────
 
 class TriggerRequest(BaseModel):
@@ -85,7 +130,8 @@ async def internal_trigger(body: TriggerRequest):
                 a.indicators, a.lookback_days, a.confidence_threshold,
                 a.cooldown_entry_minutes, a.cooldown_increase_minutes,
                 a.cooldown_stop_adj_minutes, a.template_id, a.custom_instructions,
-                a.dry_run, a.emergency_exit_pct
+                a.dry_run, a.emergency_exit_pct,
+                a.llm_provider, a.llm_model
             FROM strategies s
             JOIN ai_strategy_config a ON a.strategy_id = s.id
             WHERE s.id = $1
@@ -192,6 +238,46 @@ async def internal_trigger(body: TriggerRequest):
         'dry_run':                True,
         'data_fetch_errors':      final.get('data_fetch_errors', []),
     }
+
+
+# ── /internal/schedulers ─────────────────────────────────────────────────────
+
+@app.get("/internal/schedulers")
+async def list_schedulers():
+    schedulers = getattr(app.state, 'schedulers', {})
+    result = []
+    for sid, sched in schedulers.items():
+        result.append({
+            'strategy_id':    sid,
+            'running':        sched._running,
+            'last_trigger':   sched._last_trigger.isoformat() if sched._last_trigger else None,
+            'last_interval_s': sched._last_interval,
+        })
+    return {'schedulers': result, 'count': len(result)}
+
+
+class TriggerSchedulerRequest(BaseModel):
+    trigger_reason: str = 'manual'
+
+
+@app.post("/internal/schedulers/{strategy_id}/trigger")
+async def trigger_scheduler(strategy_id: str, body: TriggerSchedulerRequest):
+    schedulers = getattr(app.state, 'schedulers', {})
+    sched = schedulers.get(strategy_id)
+    if not sched:
+        raise HTTPException(status_code=404, detail=f"No running scheduler for strategy {strategy_id}")
+    import asyncio
+    asyncio.create_task(sched._trigger_cycle(body.trigger_reason))
+    return {'strategy_id': strategy_id, 'trigger_reason': body.trigger_reason, 'status': 'queued'}
+
+
+@app.post("/internal/schedulers/{strategy_id}/config-reload")
+async def config_reload(strategy_id: str):
+    schedulers = getattr(app.state, 'schedulers', {})
+    if strategy_id not in schedulers:
+        return {'status': 'not_found'}
+    # Scheduler reloads config from DB on each _get_interval() call — just acknowledge
+    return {'status': 'ok', 'strategy_id': strategy_id}
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────

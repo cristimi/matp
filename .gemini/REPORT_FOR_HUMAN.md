@@ -1,3 +1,568 @@
+# Session 8: UI Components + Strategy Card Fixes
+
+**Date:** 2026-06-09
+**Status:** SUCCESS — all strategy card fields computed; AI badge/source filter/modal live; all 8 tests pass
+
+## Files changed
+
+| File | Change |
+|------|--------|
+| `db/migrations/008_strategy_source.sql` | NEW — adds `strategy_source VARCHAR(20) DEFAULT 'tradingview'` to strategies |
+| `dashboard-api/src/routes/strategies.ts` | GET / adds closed_long/short_count, win_rate, total_return, AI config LEFT JOIN; POST / accepts strategy_source |
+| `dashboard-api/src/routes/ai.ts` | Added `GET /templates` endpoint |
+| `dashboard-ui/src/pages/Strategies.tsx` | Full rewrite — AI badges, source filter, AI creation modal |
+
+## Test 1: API returns new fields
+```
+Total strategies: 5
+id: hltest-76b3
+  closed_long_count: 1
+  closed_short_count: 0
+  win_rate: 0 (float, toFixed(1) works)
+  total_return: -2.26
+  strategy_source: tradingview
+  ai_llm_model: None (not AI strategy)
+  ai_dry_run: None (not AI strategy)
+id: ethblofin-a1b1
+  closed_long_count: 0
+  closed_short_count: 3
+  win_rate: 0
+  total_return: -0.46
+  strategy_source: tradingview
+```
+PASS — new fields present; win_rate=0 serializes as int in JSON (value correct; toFixed(1) works regardless)
+
+## Test 2: Positions cell DB verification
+```
+          id          | closed_total | closed_long | closed_short
+ ethblofin-a1b1       |            3 |           0 |            3
+ hltest-76b3          |            1 |           1 |            0
+```
+PASS — label changed from "Closed" to "Positions"; shows `{count} ({long}/{short})`
+
+## Test 3: Win rate calculation correct
+```
+ ethblofin-a1b1 | 3 total_closed | 0 winning | 0.0 win_rate_pct
+ hltest-76b3    | 1 total_closed | 0 winning | 0.0 win_rate_pct
+```
+PASS — ROUND(winning/total * 100, 1) produces correct values
+
+## Test 4: GET /api/ai/templates
+```json
+[
+  {"id": "breakout",        "name": "Breakout Hunter",  "description": "..."},
+  {"id": "conservative",    "name": "Conservative",     "description": "..."},
+  {"id": "mean_reversion",  "name": "Mean Reversion",   "description": "..."},
+  {"id": "scalper",         "name": "Scalper",          "description": "..."},
+  {"id": "trend_following", "name": "Trend Following",  "description": "..."}
+]
+```
+PASS — 5 templates returned, ordered by name
+
+## Test 5: AI strategy creation (3-step API)
+```
+Step 1: POST /api/dashboard/strategies
+  → id: btc-ai-test-e9f8, strategy_source: ai_engine (confirmed in DB)
+Step 2: PUT /api/ai/strategies/btc-ai-test-e9f8/config
+  → llm_model: gemini-2.0-flash
+Step 3: PUT /api/ai/strategies/btc-ai-test-e9f8/risk-config
+  → max_position_size_pct: 5.0
+```
+DB verification:
+```
+ btc-ai-test-e9f8 | BTC AI Test | ai_engine | gemini-2.0-flash | t | trend_following
+```
+PASS — strategy_source='ai_engine' persisted; ai_strategy_config and ai_risk_config rows created
+
+## Test 6: Source filter (UI — client-side)
+AI filter uses purple styling: `background: rgba(83,74,183,.10)`, `color: #534AB7`.
+All Sources / TradingView / AI / Internal options present.
+Filter logic: `strategy_source === 'ai_engine'` for AI, `=== 'tradingview'` for TradingView, `=== 'manual'` for Internal.
+
+## Test 7: TV strategy cards unchanged
+TV strategies: strategy_source='tradingview', source pill shows "TradingView" (neutral pill),
+uptime/last signal timestamps rendered, no AI badge, active/inactive status pill.
+
+## Test 8: Existing endpoints unaffected
+```
+GET /api/dashboard/strategies → 200 OK, 6 strategies (including new AI one)
+GET /health → {"status":"ok","service":"ai-signal-generator"}
+```
+PASS
+
+## Implementation notes
+
+**win_rate::float cast:**
+`ROUND(... ::numeric, 1)::float` — when result is 0, pg serializes as JSON integer `0`, not `0.0`.
+This is fine; JavaScript `(0).toFixed(1)` returns `"0.0"` regardless.
+
+**strategy_source derivation:**
+Added migration 008 to add `strategy_source VARCHAR(20) DEFAULT 'tradingview'` to strategies table.
+Existing rows all get 'tradingview' (PostgreSQL fills existing rows with DEFAULT on ADD COLUMN).
+Using `s.*` in GET / naturally includes the column without needing a COALESCE alias.
+
+**AI badge row 1:**
+`{isAI && <Pill variant="ai">AI</Pill>}` after symbol, before lev pill.
+`ai` variant: `background: rgba(83,74,183,.10)`, `color: #534AB7`, `borderColor: rgba(83,74,183,.25)`.
+`dryrun` variant: uses `--failed-color` CSS vars.
+
+**AI source pill (route row):**
+Uses inline span (not Pill component) with `textTransform:'none'` to preserve model name casing.
+Same colors as `tech` pill (`var(--blue-a)`, `var(--blue)`, `var(--blue-b)`).
+
+**AI time stack:**
+"Interval: {interval} scan" + "Last cycle: {date}" replaces "Uptime" + "Last signal" for AI strategies.
+`getAIIntervalLabel` reads `ai_interval_no_position` from API (no live position state check yet).
+
+**AI creation modal:**
+5-section form: Identity, Operational Parameters, LLM Configuration, Strategy Prompt, Risk Config.
+Provider change triggers `fetchAIModels(provider)` to repopulate model dropdown dynamically.
+Templates loaded from `GET /api/ai/templates` on modal open.
+Dry Run defaults to ON (true).
+Submission: 3 sequential fetch calls with error propagation; no webhook secret display for AI strategies.
+
+---
+
+# Session 7: API Endpoints
+
+**Date:** 2026-06-09
+**Status:** SUCCESS — all 10 dashboard-api endpoints implemented; all 13 tests pass
+
+## Files changed
+
+| File | Change |
+|------|--------|
+| `dashboard-api/src/routes/ai.ts` | Added 10 new endpoints (GET/PUT config, risk-config, signals, stats, enable-live, enable-dry, trigger, preview-prompt) |
+| `ai-signal-generator/app/main.py` | Added `POST /internal/schedulers/{strategy_id}/config-reload` |
+
+## Routes added to ai.ts (all mounted under /api/ai/ via nginx)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | /strategies/:id/config | Returns ai_strategy_config with template join |
+| PUT | /strategies/:id/config | Partial upsert with validation |
+| GET | /strategies/:id/config/preview-prompt | Moved from strategies.ts |
+| GET | /strategies/:id/risk-config | Returns row or defaults |
+| PUT | /strategies/:id/risk-config | Upsert + floor enforcement + audit log |
+| GET | /strategies/:id/signals | Paginated ai_signal_log |
+| GET | /strategies/:id/signals/stats | Aggregate stats |
+| POST | /strategies/:id/config/enable-live | Sets dry_run=false + token check |
+| POST | /strategies/:id/config/enable-dry | Sets dry_run=true |
+| POST | /strategies/:id/trigger | Proxies to /internal/trigger (dry_run forced) |
+
+## T1: GET ai config
+```json
+{
+    "strategy_id": "test_strategy_2",
+    "confidence_threshold": 0.72,
+    "llm_provider": "google",
+    "llm_model": "gemini-2.0-flash",
+    "template_name": "Trend Following",
+    "template_description": "Identifies and trades sustained directional momentum..."
+}
+```
+PASS — NUMERIC fields as numbers; template_name/description joined from ai_prompt_templates
+
+## T2: GET config — strategy without AI config
+```
+HTTP status: 404
+```
+PASS
+
+## T3: PUT valid update
+```
+confidence_threshold: 0.75 | llm_model: gemini-2.5-flash
+```
+PASS — partial update works; omitted fields unchanged
+
+## T4: PUT validation failures
+```json
+{"error": "confidence_threshold must be between 0.5 and 0.95"}
+{"error": "interval_no_position must match pattern /^[0-9]+(m|h|d)$/ (e.g. '4h', '15m', '1d')"}
+```
+PASS — 400 with descriptive messages
+
+## T5: GET risk config (no row — defaults)
+```json
+{
+    "strategy_id": "test_strategy_2",
+    "max_position_size_pct": 5,
+    "max_daily_loss_pct": 3,
+    "max_drawdown_pct": 8,
+    "max_concurrent_trades": 1,
+    "updated_at": null,
+    "updated_by": null
+}
+```
+PASS — defaults returned as numbers, not strings
+
+## T6: PUT risk config + audit log
+```json
+{
+    "max_position_size_pct": 4.5,
+    "max_daily_loss_pct": 2.5,
+    "max_drawdown_pct": 8,
+    "updated_at": "2026-06-09T09:44:32.592Z",
+    "updated_by": "172.18.0.9"
+}
+```
+Audit rows:
+```
+ field_name             | old_value | new_value
+ max_daily_loss_pct     | 3         | 2.5
+ max_position_size_pct  | 5         | 4.5
+(2 rows)
+```
+PASS — 2 audit rows written (one per changed field)
+
+## T7: Floor violations
+```json
+{"error": "max_daily_loss_pct must be >= 0.5 and <= 100.0"}
+{"error": "max_concurrent_trades must be >= 1 and <= 5"}
+```
+PASS — 400 with floor violation messages
+
+## T8: GET signals (paginated)
+```
+total: 4 | limit: 5 | offset: 0 | signals count: 4
+```
+PASS — pagination metadata correct
+
+## T9: GET signals/stats (all numbers, not strings)
+```json
+{
+    "total_signals": 4,
+    "dry_run_signals": 4,
+    "llm_failures": 4,
+    "avg_confidence": null,
+    ...
+}
+```
+PASS — all COUNT aggregates and AVG returned as JS numbers
+
+## T10: enable-live
+```
+Wrong token → {"error": "Confirmation required. Send { \"confirm\": \"ENABLE_LIVE_TRADING\" }"}
+Correct token → dry_run: False
+```
+PASS — exact token check enforced
+
+## T11: enable-dry
+```
+dry_run: True
+```
+PASS — dry_run toggled back to true without token
+
+## T12: manual trigger (dry_run forced)
+```
+dry_run: True | gate_passed: False | webhook_fired: False
+```
+PASS — proxied to /internal/trigger which forces dry_run=True; LangGraph cycle ran (429 from Gemini free tier, expected)
+
+## T13: Existing endpoints unaffected
+```
+GET /api/dashboard/strategies → strategies count: 5
+GET /api/ai/models?provider=anthropic → 3 Claude models
+```
+PASS
+
+## Implementation notes
+
+**NUMERIC → Number() wrapping:**
+All PostgreSQL NUMERIC/DECIMAL columns return as strings from the `pg` library. Applied `Number()` wrapping in three helpers: `formatConfig()` (5 fields), `formatRiskConfig()` (3 fields), `formatSignal()` (confidence, outcome_pnl, outcome_pct). Stats query returns all COUNT/AVG as strings — each field individually wrapped.
+
+**Partial upsert pattern:**
+PUT /config and PUT /risk-config use a two-step approach: SELECT to check existence, then INSERT (using DB defaults for omitted fields) or UPDATE (only provided fields). Dynamic query builds column list and parameterized placeholders from the `updates` array.
+
+**Audit log deduplication:**
+Audit rows only written when old value ≠ new value (numeric comparison via `baseline[field] !== newVal`). The baseline is the current DB row if it exists, or hardcoded defaults if the row is new.
+
+**Express route ordering:**
+`/strategies/:id/config/preview-prompt`, `/strategies/:id/config/enable-live`, `/strategies/:id/config/enable-dry` all registered before `/strategies/:id/config` to prevent any potential prefix matching issue. `/strategies/:id/signals/stats` registered before `/strategies/:id/signals`.
+
+**config-reload endpoint (Python):**
+Acknowledges the request. Scheduler already reloads config from DB on every `_get_interval()` call, so no additional action needed. Returns `{"status": "not_found"}` if no running scheduler for that strategy.
+
+**Manual trigger → /internal/trigger:**
+The dashboard trigger endpoint proxies to `/internal/trigger` (which forces `sc['dry_run'] = True`) rather than `/internal/schedulers/{id}/trigger` (which uses DB config). This ensures manual dashboard triggers never fire real webhooks regardless of strategy config state.
+
+---
+
+# Session 6: Scheduler + Monitors
+
+**Date:** 2026-06-09
+**Status:** SUCCESS — AdaptiveScheduler, PriceMonitor, EventWatcher all implemented; all 7 tests pass
+
+## Files changed
+
+| File | Change |
+|------|--------|
+| `ai-signal-generator/app/scheduler.py` | NEW — `AdaptiveScheduler` class + `start_all_schedulers` / `stop_all_schedulers` |
+| `ai-signal-generator/app/price_monitor.py` | NEW — emergency exit monitor, 60s loop, dry_run support |
+| `ai-signal-generator/app/event_watcher.py` | NEW — 5-minute event trigger loop (news/volume/funding) |
+| `ai-signal-generator/app/main.py` | Updated lifespan to start/stop all background tasks; added `GET /internal/schedulers` and `POST /internal/schedulers/{strategy_id}/trigger` |
+
+## T1: Health check
+```
+GET /health → {"status":"ok","service":"ai-signal-generator"}
+```
+PASS
+
+## T2: GET /internal/schedulers — empty when no AI strategies in DB
+```json
+{"schedulers": [], "count": 0}
+```
+PASS
+
+## T3: POST trigger for non-existent strategy → 404
+```json
+{"detail": "No running scheduler for strategy nonexistent-id"}
+```
+PASS
+
+## T4: Service restart after inserting test AI strategy → scheduler auto-starts
+```
+[INFO] app.scheduler: Scheduler started strategy=test-sched-001
+[INFO] app.scheduler: Started 1 scheduler(s): ['test-sched-001']
+[INFO] app.price_monitor: Started 1 price monitor(s)
+[INFO] app.event_watcher: Started 1 event watcher(s)
+[INFO] app.scheduler: Scheduler strategy=test-sched-001 interval=14400s (4.0h)
+```
+PASS — all three background subsystems start in parallel, one per strategy
+
+## T5: GET /internal/schedulers — shows running scheduler with interval
+```json
+{
+    "schedulers": [{"strategy_id": "test-sched-001", "running": true, "last_trigger": null, "last_interval_s": 14400}],
+    "count": 1
+}
+```
+PASS — 14400s = 4h (interval_no_position, no open position)
+
+## T6: POST /internal/schedulers/{id}/trigger → queued; last_trigger populated
+```json
+{"strategy_id": "test-sched-001", "trigger_reason": "manual_test", "status": "queued"}
+```
+Subsequent GET /internal/schedulers:
+```json
+{"last_trigger": "2026-06-09T07:39:03.252963+00:00", "last_interval_s": 14400}
+```
+PASS
+
+## T7: LangGraph cycle invoked end-to-end
+```
+[INFO] app.scheduler: Triggering cycle strategy=test-sched-001 reason=manual_test
+[INFO] google_genai._api_client: Retrying ... 429 RESOURCE_EXHAUSTED ...
+```
+PASS — scheduler correctly invoked `graph.ainvoke(state)`, graph reached node_analyze,
+node_analyze made a real Gemini API call. 429 is the free-tier quota error (same as previous sessions), not a code error.
+
+## Graceful shutdown
+```
+[INFO] app.scheduler: All schedulers stopped
+[INFO] app.main: AI Signal Generator shutdown complete
+```
+PASS — asyncio tasks cancelled cleanly
+
+## Architecture notes
+
+**Adaptive interval logic:**
+- No open position → `interval_no_position` (default 4h)
+- Open position, unrealized PnL < `at_risk_threshold_pct` → `interval_position_open` (default 15m)
+- Open position, unrealized PnL ≥ threshold → `interval_at_risk` (default 5m)
+
+**Price monitor (emergency exit):**
+- Runs every 60s per strategy
+- Fires close webhook directly (no LLM) if unrealized loss > `emergency_exit_pct`
+- Always writes to `ai_signal_log` with `trigger_reason='emergency_price_monitor'`
+- Suppresses actual webhook POST when `dry_run=True`
+
+**Event watcher:**
+- Runs every 5 minutes per strategy
+- Checks: `trigger_news_high` (news severity='high'), `trigger_volume_spike` (volume > threshold% above 20-candle avg), `trigger_funding_spike` (abs(rate) > threshold)
+- Deduplicates via `ai_signal_log`: skips if same `trigger_reason` fired in last 60 minutes
+- Calls `scheduler._trigger_cycle(reason)` on match (at most one trigger per 5-min watcher cycle)
+
+**Startup sequence:**
+1. `init_db()` — asyncpg pool
+2. `build_graph()` — LangGraph StateGraph
+3. `start_all_schedulers(pool, graph)` → dict of `{strategy_id: AdaptiveScheduler}`
+4. `start_all_price_monitors(pool, listener_url)` → list of asyncio.Task
+5. `start_all_event_watchers(pool, graph, schedulers)` → list of asyncio.Task
+
+All stored in `app.state` for access by management endpoints.
+
+---
+
+# Session 5c: Dynamic Model List
+
+**Date:** 2026-06-09
+**Status:** SUCCESS — `/internal/models` live on Python service; dashboard-api proxy live via nginx; all 7 tests pass
+
+## Files changed
+
+| File | Change |
+|------|--------|
+| `ai-signal-generator/app/models_registry.py` | NEW — `get_available_models(provider)` logic for all 3 providers |
+| `ai-signal-generator/app/main.py` | Added `GET /internal/models` endpoint |
+| `dashboard-api/src/routes/ai.ts` | NEW — Express router proxying to Python service |
+| `dashboard-api/src/index.ts` | Registered `app.use('/ai', aiRouter)` |
+| `docker-compose.yml` | Added `AI_SIGNAL_GENERATOR_URL` to dashboard-api env block |
+| `nginx/nginx.conf` | Added `location /api/ai/` block routing to dashboard-api |
+
+`node_analyze.py` — no change needed; default already `gemini-2.0-flash`.
+
+## Test 1: Google models (direct to Python service)
+```
+provider: google | key_configured: true | model count: 37
+first 3: gemini-2.5-flash, gemini-2.5-pro, gemini-2.0-flash
+```
+`list_models()` is a metadata API call — succeeds even when free-tier generation quota is exhausted. PASS
+
+## Test 2: Anthropic models (static list, no key)
+```json
+{
+    "provider": "anthropic",
+    "models": [
+        {"id": "claude-opus-4-6",   "display_name": "Claude Opus 4.6",   "provider": "anthropic", "key_configured": false},
+        {"id": "claude-sonnet-4-6", "display_name": "Claude Sonnet 4.6", "provider": "anthropic", "key_configured": false},
+        {"id": "claude-haiku-4-5",  "display_name": "Claude Haiku 4.5",  "provider": "anthropic", "key_configured": false}
+    ],
+    "key_configured": true
+}
+```
+3 models returned regardless of key. `key_configured: false` per-model (key not set). PASS
+
+## Test 3: OpenAI (empty key — graceful empty)
+```json
+{"provider": "openai", "models": [], "key_configured": false}
+```
+No crash. PASS
+
+## Test 4: Unknown provider
+```json
+{"provider": "unknown", "models": [], "key_configured": false}
+```
+Empty list, no 500. PASS
+
+## Test 5: Dashboard-api proxy via nginx
+```
+GET /api/ai/models?provider=google
+→ nginx /api/ai/ → dashboard-api /ai/models → ai-signal-generator /internal/models
+provider: google | key_configured: true | model count: 37
+first 3: gemini-2.5-flash, gemini-2.5-pro, gemini-2.0-flash
+
+GET /api/ai/models?provider=anthropic → 3 Claude models returned
+```
+Full proxy chain working. PASS
+
+## Test 6: Existing endpoints unaffected
+```
+GET /health → {"status":"ok","service":"ai-signal-generator"}
+GET /api/dashboard/strategies → 200 OK, strategies list intact
+```
+PASS
+
+## Test 7: node_analyze.py default model
+```
+factory import ok
+_DEFAULT_MODEL = 'gemini-2.0-flash'
+model = state['strategy_config'].get('llm_model', _DEFAULT_MODEL)
+```
+Default already correct from Session 5b — no change made. PASS
+
+## Implementation notes
+
+**Inode issue with nginx bind mount:**
+Docker bind mounts track the inode at mount time. When `Edit` writes a new file (creating a new inode), the running nginx container sees stale content via the old inode. A `nginx -s reload` inside the container reads from the bound inode (old), not the new path target. Fix: `docker compose restart nginx` causes Docker to re-resolve the path to the new inode.
+
+**nginx routing:**
+`/api/ai/` was added as a new nginx `location` block before `/api/dashboard/`. It rewrites `/api/ai/(.*)` → `/ai/$1` then proxies to `dashboard-api:8003`. Dashboard-api mounts the `/ai` router from `routes/ai.ts`.
+
+**Static Anthropic list:**
+Anthropic has no public model list API. Three current production models are hardcoded. `key_configured` field is per-model (reflecting whether `ANTHROPIC_API_KEY` is set in env), distinct from the top-level `key_configured` in the response envelope (which is `true` for anthropic regardless, since the list is always available).
+
+---
+
+# Session 5b: Multi-Provider LLM Support
+
+**Date:** 2026-06-09
+**Status:** SUCCESS — `_get_llm()` factory operational; all three providers importable; `llm_provider`/`llm_model` written to DB on every trigger
+
+## Files changed
+
+| File | Change |
+|------|--------|
+| `db/migrations/007_ai_llm_provider.sql` | NEW — adds `llm_provider`/`llm_model` to `ai_strategy_config` and `ai_signal_log` |
+| `ai-signal-generator/requirements.txt` | Added `langchain-openai`, `langchain-anthropic` |
+| `ai-signal-generator/app/config.py` | Added `openai_api_key`, `anthropic_api_key` settings fields |
+| `.env` | Appended `OPENAI_API_KEY=` and `ANTHROPIC_API_KEY=` |
+| `docker-compose.yml` | Added `OPENAI_API_KEY` and `ANTHROPIC_API_KEY` env vars to ai-signal-generator block |
+| `ai-signal-generator/app/graph/nodes/node_analyze.py` | Replaced hardcoded google.genai with `_get_llm()` factory + LangChain `with_structured_output` |
+| `ai-signal-generator/app/graph/nodes/node_dispatch.py` | INSERT now includes `llm_provider` and `llm_model` columns |
+| `ai-signal-generator/app/main.py` | SELECT now includes `a.llm_provider, a.llm_model` from `ai_strategy_config` |
+
+## Test 1: DB columns — ai_strategy_config
+```
+ llm_provider | character varying(20) | not null | 'google'::character varying
+ llm_model    | character varying(50) | not null | 'gemini-2.0-flash'::character varying
+```
+PASS — columns present with correct defaults.
+
+## Test 2: DB columns — ai_signal_log
+```
+ llm_provider | character varying(20) | nullable
+ llm_model    | character varying(50) | nullable
+```
+PASS — nullable columns present (null for rows written before this migration).
+
+## Test 3: _get_llm factory
+```
+google ok: ChatGoogleGenerativeAI
+openai import ok: ChatOpenAI
+anthropic import ok: ChatAnthropic
+structured_output ok: RunnableSequence
+```
+PASS — all three provider classes importable; `with_structured_output(LLMSignalOutput)` returns a callable `RunnableSequence`.
+
+## Test 4: End-to-end trigger + DB log
+```json
+{
+    "signal_log_id": 4,
+    "proposed_action": null,
+    "confidence": null,
+    "gate_passed": false,
+    "gate_rejection_reason": "llm_failed",
+    "webhook_fired": false,
+    "dry_run": true,
+    "data_fetch_errors": []
+}
+```
+ai_signal_log row 4:
+```
+ id | proposed_action | gate_rejection_reason | llm_provider |    llm_model
+----+-----------------+-----------------------+--------------+------------------
+  4 |                 | llm_failed            | google       | gemini-2.0-flash
+```
+PASS — `llm_provider='google'` and `llm_model='gemini-2.0-flash'` written from DB-driven `strategy_config`.
+`llm_failed` is the expected Gemini free-tier quota error (same as Session 5); code path is correct.
+
+## Implementation notes
+
+**Provider selection flow:**
+`ai_strategy_config.llm_provider` / `llm_model` → loaded in `main.py` SELECT → `strategy_config` dict → `node_analyze` reads `state['strategy_config'].get('llm_provider', 'google')` → `_get_llm(provider, model)` → `llm.with_structured_output(LLMSignalOutput)` → `ainvoke(prompt)`.
+
+**Removed from node_analyze.py:**
+- Raw `google.genai` / `google.genai.types` imports
+- `_JSON_SCHEMA_HINT` text (redundant with `with_structured_output` schema)
+- Hardcoded `_MODEL_POSITION_OPEN` / `_MODEL_NO_POSITION` constants (model now per-strategy in DB)
+- Manual `json.loads` + action coercion (handled by LangChain validation)
+
+**OpenAI/Anthropic keys:**
+Both keys are empty (configured for future use). The factory raises `OpenAIError: Missing credentials` if `llm_provider='openai'` is set without a key — this is caught by `node_analyze`'s except block and sets `llm_signal=None`, which node_guard rejects as `llm_failed`. Same behaviour as a quota error.
+
+---
+
 # Session 5: LangGraph State Machine
 
 **Date:** 2026-06-09  

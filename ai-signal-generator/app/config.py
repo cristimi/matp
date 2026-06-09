@@ -9,6 +9,8 @@ class Settings(BaseSettings):
     database_url:           str = "postgresql://matp:matp@postgres:5432/matp"
     redis_url:              str = "redis://redis:6379"
     gemini_api_key:         str = ""
+    openai_api_key:         str = ""
+    anthropic_api_key:      str = ""
     cryptopanic_api_key:    str = ""
     matp_listener_url:      str = "http://order-listener:8001"
     matp_executor_url:      str = "http://order-executor:8004"

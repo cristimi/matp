@@ -24,7 +24,6 @@ interface Strategy {
   max_daily_drawdown_percent?: number;
   signals_today:        number;
   pnl_total:            string;
-  // From strategy_stats if available — default to 0/null if missing
   open_positions?:      number;
   win_positions?:       number;
   loss_positions?:      number;
@@ -35,9 +34,20 @@ interface Strategy {
   uptime_label?:        string;
   last_signal_at?:      string;
   stopped_at?:          string;
+  // Computed position breakdown
+  closed_long_count?:        number;
+  closed_short_count?:       number;
+  // AI strategy fields
+  strategy_source?:          'tradingview' | 'ai_engine' | 'manual';
+  ai_dry_run?:               boolean;
+  ai_llm_model?:             string;
+  ai_llm_provider?:          string;
+  ai_interval_no_position?:  string;
+  ai_interval_position_open?: string;
+  ai_interval_at_risk?:      string;
+  ai_at_risk_threshold_pct?: number;
 }
 
-// Relative date formatter
 function formatRelativeDate(isoString: string): string {
   const date = new Date(isoString);
   const now = new Date();
@@ -46,24 +56,25 @@ function formatRelativeDate(isoString: string): string {
   yesterday.setDate(yesterday.getDate() - 1);
 
   const hhmm = date.toTimeString().slice(0, 5);
-  if (date >= today)       return `Today ${hhmm}`;
-  if (date >= yesterday)   return `Yesterday ${hhmm}`;
+  if (date >= today)     return `Today ${hhmm}`;
+  if (date >= yesterday) return `Yesterday ${hhmm}`;
   return date.toLocaleDateString('en-GB', {
     day:'2-digit', month:'2-digit', year:'2-digit'
   });
 }
 
-// Pill component
-type PillVariant = 'lev' | 'tech' | 'open' | 'closed' | 'neutral';
+type PillVariant = 'lev' | 'tech' | 'open' | 'closed' | 'neutral' | 'ai' | 'dryrun';
 function Pill({ variant, children }: {
   variant: PillVariant; children: React.ReactNode
 }) {
   const styles: Record<PillVariant, React.CSSProperties> = {
-    lev:     { background:'var(--blue-a)',   color:'var(--blue)',  borderColor:'var(--blue-b)',  textTransform:'lowercase' },
-    tech:    { background:'var(--blue-a)',   color:'var(--blue)',  borderColor:'var(--blue-b)' },
-    open:    { background:'var(--green-a)',  color:'var(--green)', borderColor:'var(--green-b)' },
-    closed:  { background:'var(--gray-a)',   color:'var(--gray)',  borderColor:'var(--gray-b)' },
-    neutral: { background:'var(--bg2)',      color:'var(--muted)', borderColor:'var(--border)', textTransform:'none' as const },
+    lev:    { background:'var(--blue-a)',   color:'var(--blue)',  borderColor:'var(--blue-b)',  textTransform:'lowercase' },
+    tech:   { background:'var(--blue-a)',   color:'var(--blue)',  borderColor:'var(--blue-b)' },
+    open:   { background:'var(--green-a)',  color:'var(--green)', borderColor:'var(--green-b)' },
+    closed: { background:'var(--gray-a)',   color:'var(--gray)',  borderColor:'var(--gray-b)' },
+    neutral:{ background:'var(--bg2)',      color:'var(--muted)', borderColor:'var(--border)', textTransform:'none' as const },
+    ai:     { background:'rgba(83,74,183,.10)', color:'#534AB7', borderColor:'rgba(83,74,183,.25)' },
+    dryrun: { background:'var(--failed-color-a)', color:'var(--failed-color)', borderColor:'var(--failed-color-b)' },
   };
   return (
     <span style={{
@@ -79,7 +90,6 @@ function Pill({ variant, children }: {
   );
 }
 
-// Grid cell component
 function GridCell({ label, children, last }: {
   label: string; children: React.ReactNode; last?: boolean
 }) {
@@ -100,7 +110,6 @@ function GridCell({ label, children, last }: {
   );
 }
 
-// Coupling toggle
 function CouplingToggle({ label, checked, onChange, warn }: {
   label: string; checked: boolean;
   onChange: (v: boolean) => void; warn?: boolean;
@@ -127,6 +136,11 @@ function CouplingToggle({ label, checked, onChange, warn }: {
   );
 }
 
+function getAIIntervalLabel(strategy: Strategy): string {
+  const interval = strategy.ai_interval_no_position ?? '4h';
+  return `${interval} scan`;
+}
+
 function StrategyCard({
   strategy,
   onCouplingChange,
@@ -143,24 +157,23 @@ function StrategyCard({
   onDelete: (id: string) => void;
 }) {
   const isActive = strategy.enabled;
+  const isAI = strategy.strategy_source === 'ai_engine';
   const barColor = isActive ? 'var(--green)' : 'var(--gray)';
 
-  const wins   = strategy.win_positions  ?? 0;
-  const losses = strategy.loss_positions ?? 0;
+  const closedLong  = strategy.closed_long_count  ?? 0;
+  const closedShort = strategy.closed_short_count ?? 0;
   const closedCount = strategy.closed_positions_count ?? 0;
-  const winRate = strategy.win_rate ?? 0;
-  const allocated = strategy.allocated ?? 0;
+  const winRate     = strategy.win_rate    ?? 0;
+  const allocated   = strategy.allocated   ?? 0;
   const realizedPnl = Number(strategy.realized_pnl ?? 0);
-  const pnlFees = strategy.pnl_fees ?? 0;
+  const pnlFees     = strategy.pnl_fees    ?? 0;
   const totalReturn = strategy.total_return ?? 0;
 
-  const pnlColor = realizedPnl >= 0 ? 'var(--green)' : 'var(--red)';
+  const pnlColor    = realizedPnl >= 0 ? 'var(--green)' : 'var(--red)';
   const returnColor = totalReturn >= 0 ? 'var(--green)' : 'var(--red)';
-  const pnlSign = realizedPnl >= 0 ? '+' : '';
-  const returnSign = totalReturn >= 0 ? '+' : '';
+  const pnlSign     = realizedPnl >= 0 ? '+' : '';
+  const returnSign  = totalReturn >= 0 ? '+' : '';
 
-  // Source → destination from account info
-  const source = 'TradingView';
   const destination = strategy.account_exchange
     ? `${strategy.account_exchange}${strategy.account_mode === 'demo' ? '(demo)' : ''}`
     : (strategy.account_id || '—');
@@ -177,19 +190,19 @@ function StrategyCard({
 
   return (
     <div style={{
-      background:   'var(--bg3)',
-      borderRadius: 'var(--r)',
-      border:       `1px solid ${isActive ? 'var(--border)' : 'var(--border-hi)'}`,
-      marginBottom: '10px',
-      position:     'relative',
-      display:      'flex',
-      flexDirection:'column',
-      overflow:     'hidden',
+      background:    'var(--bg3)',
+      borderRadius:  'var(--r)',
+      border:        `1px solid ${isActive ? 'var(--border)' : 'var(--border-hi)'}`,
+      marginBottom:  '10px',
+      position:      'relative',
+      display:       'flex',
+      flexDirection: 'column',
+      overflow:      'hidden',
     }}>
       {/* Left bar */}
       <div style={{
-        position:  'absolute', left:0, top:0, bottom:0,
-        width:     '4px', background: barColor, zIndex: 1,
+        position:'absolute', left:0, top:0, bottom:0,
+        width:'4px', background:barColor, zIndex:1,
       }} />
 
       {/* Row 1: symbol + pills */}
@@ -197,7 +210,6 @@ function StrategyCard({
         display:'flex', alignItems:'center', gap:'6px',
         padding:'12px 12px 0 18px', lineHeight:1,
       }}>
-        {/* Active dot — only when positions are open */}
         {(strategy.open_positions_count ?? 0) > 0 && (
           <span style={{
             width:'8px', height:'8px', borderRadius:'50%',
@@ -212,14 +224,21 @@ function StrategyCard({
         }}>
           {strategy.symbol}
         </span>
+        {isAI && <Pill variant="ai">AI</Pill>}
         <Pill variant="lev">
           {strategy.default_leverage ?? 1}x / {strategy.max_leverage ?? 10}x
         </Pill>
         <Pill variant="tech">Cross</Pill>
         <div style={{ marginLeft:'auto' }}>
-          <Pill variant={isActive ? 'open' : 'closed'}>
-            {isActive ? 'active' : 'inactive'}
-          </Pill>
+          {isAI ? (
+            <Pill variant={strategy.ai_dry_run ? 'dryrun' : 'open'}>
+              {strategy.ai_dry_run ? 'dry run' : 'live'}
+            </Pill>
+          ) : (
+            <Pill variant={isActive ? 'open' : 'closed'}>
+              {isActive ? 'active' : 'inactive'}
+            </Pill>
+          )}
         </div>
       </div>
 
@@ -247,7 +266,6 @@ function StrategyCard({
         }}>
           ID: {strategy.id.slice(0, 8)}
         </span>
-        {/* Cross-charting warning badge */}
         {strategy.allow_cross_charting && (
           <span style={{
             fontFamily:   'JetBrains Mono, monospace',
@@ -268,7 +286,20 @@ function StrategyCard({
         padding:'5px 12px 4px 18px',
       }}>
         <div style={{ display:'flex', alignItems:'center', gap:'4px' }}>
-          <Pill variant="neutral">{source}</Pill>
+          {isAI ? (
+            <span style={{
+              fontFamily:'JetBrains Mono, monospace', fontSize:'10px',
+              fontWeight:600, textTransform:'none' as const,
+              borderRadius:'var(--pill-r)', padding:'2px 6px',
+              border:'1px solid var(--blue-b)', display:'inline-block',
+              lineHeight:1, flexShrink:0, letterSpacing:'.04em',
+              background:'var(--blue-a)', color:'var(--blue)',
+            }}>
+              {strategy.ai_llm_model ?? 'ai'}
+            </span>
+          ) : (
+            <Pill variant="neutral">TradingView</Pill>
+          )}
           <span style={{
             fontSize:'10px', color:'var(--dim)',
             fontFamily:'monospace', fontWeight:'bold',
@@ -279,19 +310,41 @@ function StrategyCard({
           display:'flex', flexDirection:'column',
           alignItems:'flex-end', gap:'2px',
         }}>
-          <span style={{
-            fontFamily:'JetBrains Mono, monospace', fontSize:'10px',
-            fontWeight:500, color:'var(--muted)', lineHeight:1.1,
-          }}>
-            {uptimeLabel}
-          </span>
-          {lastSignal && (
-            <span style={{
-              fontFamily:'JetBrains Mono, monospace', fontSize:'10px',
-              fontWeight:500, color:'var(--muted)', lineHeight:1.1,
-            }}>
-              {lastSignal}
-            </span>
+          {isAI ? (
+            <>
+              <span style={{
+                fontFamily:'JetBrains Mono, monospace', fontSize:'10px',
+                fontWeight:500, color:'var(--muted)', lineHeight:1.1,
+              }}>
+                Interval: {getAIIntervalLabel(strategy)}
+              </span>
+              <span style={{
+                fontFamily:'JetBrains Mono, monospace', fontSize:'10px',
+                fontWeight:500, color:'var(--muted)', lineHeight:1.1,
+              }}>
+                Last cycle:{' '}
+                {strategy.last_signal_at
+                  ? formatRelativeDate(strategy.last_signal_at)
+                  : '—'}
+              </span>
+            </>
+          ) : (
+            <>
+              <span style={{
+                fontFamily:'JetBrains Mono, monospace', fontSize:'10px',
+                fontWeight:500, color:'var(--muted)', lineHeight:1.1,
+              }}>
+                {uptimeLabel}
+              </span>
+              {lastSignal && (
+                <span style={{
+                  fontFamily:'JetBrains Mono, monospace', fontSize:'10px',
+                  fontWeight:500, color:'var(--muted)', lineHeight:1.1,
+                }}>
+                  {lastSignal}
+                </span>
+              )}
+            </>
           )}
         </div>
       </div>
@@ -307,15 +360,15 @@ function StrategyCard({
         {/* Top row */}
         <div style={{ display:'flex', width:'100%',
                       borderBottom:'1px solid var(--border)' }}>
-          <GridCell label="Closed">
+          <GridCell label="Positions">
             <span style={{
               fontFamily:'JetBrains Mono, monospace', fontSize:'13px',
               fontWeight:700, color:'var(--text)',
             }}>
               {closedCount}
-              {(wins > 0 || losses > 0) && (
+              {(closedLong > 0 || closedShort > 0) && (
                 <span style={{ fontSize:'11px', fontWeight:500, color:'var(--dim)' }}>
-                  {' '}(<span style={{ color:'var(--green)' }}>{wins}</span>/<span style={{ color:'var(--red)' }}>{losses}</span>)
+                  {' '}(<span style={{ color:'var(--green)' }}>{closedLong}</span>/<span style={{ color:'var(--red)' }}>{closedShort}</span>)
                 </span>
               )}
             </span>
@@ -349,7 +402,7 @@ function StrategyCard({
             <div style={{ display:'flex', alignItems:'baseline', gap:'4px' }}>
               <span style={{
                 fontFamily:'JetBrains Mono, monospace', fontSize:'13px',
-                fontWeight:700, color: pnlColor,
+                fontWeight:700, color:pnlColor,
               }}>
                 {pnlSign}{realizedPnl.toFixed(1)}
               </span>
@@ -366,7 +419,7 @@ function StrategyCard({
           <GridCell label="Total Return" last>
             <span style={{
               fontFamily:'JetBrains Mono, monospace', fontSize:'13px',
-              fontWeight:700, color: returnColor,
+              fontWeight:700, color:returnColor,
             }}>
               {returnSign}{totalReturn.toFixed(2)}%
             </span>
@@ -476,30 +529,108 @@ function FieldRow({ label, children }: {
   );
 }
 
+function SectionDivider({ label }: { label: string }) {
+  return (
+    <p style={{
+      fontSize:'10px', fontWeight:700, letterSpacing:'.1em',
+      textTransform:'uppercase', color:'var(--dim)',
+      marginBottom:'12px', marginTop:'4px',
+      borderBottom:'1px solid var(--border)', paddingBottom:'6px',
+    }}>
+      {label}
+    </p>
+  );
+}
+
+interface AiModel { id: string; display_name: string; }
+
+const PROVIDERS = [
+  { value: 'google',     label: 'Google Gemini' },
+  { value: 'openai',    label: 'OpenAI' },
+  { value: 'anthropic', label: 'Anthropic' },
+];
+
+const DATA_SOURCES: { key: keyof AiFormState; label: string }[] = [
+  { key:'use_technical',    label:'Technical Indicators' },
+  { key:'use_fear_greed',   label:'Fear & Greed Index' },
+  { key:'use_funding_rate', label:'Funding Rate & OI' },
+  { key:'use_news',         label:'Crypto News' },
+  { key:'use_btc_dominance',label:'BTC Dominance' },
+  { key:'use_macro',        label:'Macro (DXY, US10Y)' },
+];
+
+interface AiFormState {
+  interval_no_position:   string;
+  interval_position_open: string;
+  interval_at_risk:       string;
+  use_technical:          boolean;
+  use_fear_greed:         boolean;
+  use_funding_rate:       boolean;
+  use_open_interest:      boolean;
+  use_news:               boolean;
+  use_btc_dominance:      boolean;
+  use_macro:              boolean;
+  confidence_threshold:   string;
+  cooldown_entry_minutes: string;
+  llm_provider:           string;
+  llm_model:              string;
+  template_id:            string;
+  custom_instructions:    string;
+  dry_run:                boolean;
+  max_position_size_pct:  string;
+  max_daily_loss_pct:     string;
+  max_drawdown_pct:       string;
+}
+
+const AI_FORM_DEFAULTS: AiFormState = {
+  interval_no_position:   '4h',
+  interval_position_open: '15m',
+  interval_at_risk:       '5m',
+  use_technical:          true,
+  use_fear_greed:         true,
+  use_funding_rate:       true,
+  use_open_interest:      true,
+  use_news:               true,
+  use_btc_dominance:      false,
+  use_macro:              false,
+  confidence_threshold:   '0.72',
+  cooldown_entry_minutes: '240',
+  llm_provider:           'google',
+  llm_model:              '',
+  template_id:            '',
+  custom_instructions:    '',
+  dry_run:                true,
+  max_position_size_pct:  '5.0',
+  max_daily_loss_pct:     '3.0',
+  max_drawdown_pct:       '8.0',
+};
+
+const TV_FORM_DEFAULTS = {
+  name: '', symbol: '', account_id: '', interval: '1h',
+  default_leverage: '1',
+  max_position_size: '1.0', max_leverage: '10',
+  max_daily_signals: '500', max_daily_drawdown_percent: '20',
+  allow_quote_variants: false, allow_cross_charting: false,
+};
+
 export default function Strategies() {
   const [strategies, setStrategies] = useState<Strategy[]>([]);
   const [loading, setLoading]       = useState(true);
 
   const [filterPair,   setFilterPair]   = useState<string>('all');
   const [filterStatus, setFilterStatus] = useState<string>('all');
+  const [filterSource, setFilterSource] = useState<string>('all');
 
-  const [showAdd, setShowAdd]         = useState(false);
-  const [addForm, setAddForm]         = useState({
-    name:                       '',
-    symbol:                     '',
-    account_id:                 '',
-    interval:                   '1h',
-    default_leverage:           '1',
-    max_position_size:          '1.0',
-    max_leverage:               '10',
-    max_daily_signals:          '500',
-    max_daily_drawdown_percent: '20',
-    allow_quote_variants:       false,
-    allow_cross_charting:       false,
-  });
-  const [accounts, setAccounts]       = useState<{id:string; label:string; exchange:string; mode:string}[]>([]);
-  const [addError, setAddError]       = useState<string | null>(null);
-  const [addLoading, setAddLoading]   = useState(false);
+  const [showAdd, setShowAdd] = useState(false);
+  const [addType, setAddType] = useState<'tradingview' | 'ai'>('tradingview');
+  const [addForm, setAddForm] = useState({ ...TV_FORM_DEFAULTS });
+  const [aiForm,  setAiForm]  = useState<AiFormState>({ ...AI_FORM_DEFAULTS });
+  const [aiTemplates, setAiTemplates] = useState<{id:string; name:string; description:string}[]>([]);
+  const [aiModels,    setAiModels]    = useState<AiModel[]>([]);
+
+  const [accounts,  setAccounts]  = useState<{id:string; label:string; exchange:string; mode:string}[]>([]);
+  const [addError,  setAddError]  = useState<string | null>(null);
+  const [addLoading,setAddLoading]= useState(false);
   const [createdSecret, setCreatedSecret] = useState<{id:string; secret:string; url:string} | null>(null);
 
   const fetchStrategies = useCallback(async () => {
@@ -522,20 +653,75 @@ export default function Strategies() {
     } catch {}
   }, []);
 
+  const fetchAITemplates = useCallback(async () => {
+    try {
+      const res  = await fetch('/api/ai/templates');
+      const data = await res.json();
+      if (Array.isArray(data)) {
+        setAiTemplates(data);
+        if (data.length > 0) {
+          setAiForm(f => ({ ...f, template_id: data[0].id }));
+        }
+      }
+    } catch {}
+  }, []);
+
+  const fetchAIModels = useCallback(async (provider: string) => {
+    try {
+      const res  = await fetch(`/api/ai/models?provider=${provider}`);
+      const data = await res.json();
+      const models: AiModel[] = Array.isArray(data.models)
+        ? data.models.map((m: any) => typeof m === 'string' ? { id: m, display_name: m } : m)
+        : [];
+      setAiModels(models);
+      setAiForm(f => ({ ...f, llm_model: models[0]?.id ?? '' }));
+    } catch {
+      setAiModels([]);
+    }
+  }, []);
+
+  const fetchEditAiModels = useCallback(async (provider: string) => {
+    try {
+      const res    = await fetch(`/api/ai/models?provider=${provider}`);
+      const data   = await res.json();
+      const models: AiModel[] = Array.isArray(data.models)
+        ? data.models.map((m: any) => typeof m === 'string' ? { id: m, display_name: m } : m)
+        : [];
+      setEditAiModels(models);
+      setAiEditForm(f => ({ ...f, llm_model: f.llm_model || (models[0]?.id ?? '') }));
+    } catch {
+      setEditAiModels([]);
+    }
+  }, []);
+
   useEffect(() => {
     fetchStrategies();
     fetchAccounts();
-    const interval = setInterval(fetchStrategies, 30000);
-    return () => clearInterval(interval);
+    const iv = setInterval(fetchStrategies, 30000);
+    return () => clearInterval(iv);
   }, [fetchStrategies, fetchAccounts]);
 
-  const uniquePairs = Array.from(
-    new Set(strategies.map(s => s.symbol))
-  ).sort();
+  const handleOpenAdd = () => {
+    setShowAdd(true);
+    setAddType('tradingview');
+    setAddError(null);
+    fetchAITemplates();
+    fetchAIModels('google');
+  };
 
-  const [stopTarget, setStopTarget]   = useState<Strategy | null>(null);
-  const [stopping, setStopping]       = useState(false);
-  const [stopError, setStopError]     = useState<string | null>(null);
+  const resetAddModal = () => {
+    setShowAdd(false);
+    setAddType('tradingview');
+    setAddError(null);
+    setAddForm({ ...TV_FORM_DEFAULTS });
+    setAiForm({ ...AI_FORM_DEFAULTS });
+  };
+
+  const uniquePairs = Array.from(new Set(strategies.map(s => s.symbol))).sort();
+
+  const [stopTarget, setStopTarget] = useState<Strategy | null>(null);
+  const [stopping,   setStopping]   = useState(false);
+  const [stopError,  setStopError]  = useState<string | null>(null);
 
   const handleStop = (strategy: Strategy) => {
     setStopTarget(strategy);
@@ -546,34 +732,22 @@ export default function Strategies() {
     if (!stopTarget) return;
     setStopping(true);
     setStopError(null);
-
     try {
-      // If user chose to close positions first
       if (closePositions && (stopTarget.open_positions_count ?? 0) > 0) {
-        const closeRes = await fetch(
-          `/api/dashboard/positions?strategy_id=${stopTarget.id}`
-        );
+        const closeRes  = await fetch(`/api/dashboard/positions?strategy_id=${stopTarget.id}`);
         const closeData = await closeRes.json();
         const openPositions = (closeData.items ?? closeData ?? [])
           .filter((p: any) => p.status === 'open');
-
         for (const pos of openPositions) {
-          await fetch(`/api/dashboard/positions/${pos.id}/close`,
-            { method: 'POST' });
+          await fetch(`/api/dashboard/positions/${pos.id}/close`, { method: 'POST' });
         }
       }
-
-      // Stop the strategy
-      const res = await fetch(
-        `/api/dashboard/strategies/${stopTarget.id}/stop`,
-        { method: 'POST' }
-      );
+      const res = await fetch(`/api/dashboard/strategies/${stopTarget.id}/stop`, { method: 'POST' });
       if (!res.ok) {
         const err = await res.json();
         setStopError(err.error || 'Failed to stop strategy');
         return;
       }
-
       setStopTarget(null);
       fetchStrategies();
     } catch (e: any) {
@@ -583,11 +757,13 @@ export default function Strategies() {
     }
   };
 
-  const [editTarget, setEditTarget]   = useState<Strategy | null>(null);
-  const [editForm, setEditForm]       = useState<any>({});
+  const [editTarget,  setEditTarget]  = useState<Strategy | null>(null);
+  const [editForm,    setEditForm]    = useState<any>({});
   const [editLoading, setEditLoading] = useState(false);
-  const [editError, setEditError]     = useState<string | null>(null);
+  const [editError,   setEditError]   = useState<string | null>(null);
   const [webhookInfo, setWebhookInfo] = useState<any>(null);
+  const [aiEditForm,   setAiEditForm]   = useState<AiFormState>({ ...AI_FORM_DEFAULTS });
+  const [editAiModels, setEditAiModels] = useState<AiModel[]>([]);
 
   const handleEdit = async (strategy: Strategy) => {
     setEditTarget(strategy);
@@ -605,13 +781,50 @@ export default function Strategies() {
       allow_quote_variants:       strategy.allow_quote_variants ?? false,
       allow_cross_charting:       strategy.allow_cross_charting ?? false,
     });
-    // Fetch webhook info for display
-    try {
-      const res  = await fetch(`/api/dashboard/strategies/${strategy.id}/webhook-info`);
-      const data = await res.json();
-      setWebhookInfo(data);
-    } catch {
-      setWebhookInfo(null);
+
+    if (strategy.strategy_source === 'ai_engine') {
+      try {
+        const [configRes, riskRes] = await Promise.all([
+          fetch(`/api/ai/strategies/${strategy.id}/config`),
+          fetch(`/api/ai/strategies/${strategy.id}/risk-config`),
+        ]);
+        const config = await configRes.json();
+        const risk   = await riskRes.json();
+        setAiEditForm({
+          interval_no_position:   config.interval_no_position   ?? '4h',
+          interval_position_open: config.interval_position_open ?? '15m',
+          interval_at_risk:       config.interval_at_risk       ?? '5m',
+          use_technical:          config.use_technical          ?? true,
+          use_fear_greed:         config.use_fear_greed         ?? true,
+          use_funding_rate:       config.use_funding_rate       ?? true,
+          use_open_interest:      config.use_open_interest      ?? true,
+          use_news:               config.use_news               ?? true,
+          use_btc_dominance:      config.use_btc_dominance      ?? false,
+          use_macro:              config.use_macro              ?? false,
+          confidence_threshold:   String(config.confidence_threshold   ?? '0.72'),
+          cooldown_entry_minutes: String(config.cooldown_entry_minutes ?? '240'),
+          llm_provider:           config.llm_provider           ?? 'google',
+          llm_model:              config.llm_model              ?? '',
+          template_id:            String(config.template_id     ?? ''),
+          custom_instructions:    config.custom_instructions    ?? '',
+          dry_run:                config.dry_run                ?? true,
+          max_position_size_pct:  String(risk.max_position_size_pct ?? '5.0'),
+          max_daily_loss_pct:     String(risk.max_daily_loss_pct    ?? '3.0'),
+          max_drawdown_pct:       String(risk.max_drawdown_pct      ?? '8.0'),
+        });
+        fetchEditAiModels(config.llm_provider ?? 'google');
+        if (aiTemplates.length === 0) fetchAITemplates();
+      } catch {
+        setAiEditForm({ ...AI_FORM_DEFAULTS });
+      }
+    } else {
+      try {
+        const res  = await fetch(`/api/dashboard/strategies/${strategy.id}/webhook-info`);
+        const data = await res.json();
+        setWebhookInfo(data);
+      } catch {
+        setWebhookInfo(null);
+      }
     }
   };
 
@@ -620,26 +833,78 @@ export default function Strategies() {
     setEditLoading(true);
     setEditError(null);
     try {
-      const res = await fetch(`/api/dashboard/strategies/${editTarget.id}`, {
-        method:  'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({
-          ...editForm,
-          default_leverage:           parseInt(editForm.default_leverage),
-          max_leverage:               parseInt(editForm.max_leverage),
-          max_position_size:          parseFloat(editForm.max_position_size),
-          max_daily_signals:          parseInt(editForm.max_daily_signals),
-          max_daily_drawdown_percent: parseFloat(editForm.max_daily_drawdown_percent),
-        }),
-      });
-      if (!res.ok) {
-        const err = await res.json();
-        setEditError(err.error || 'Failed to update strategy');
-        return;
+      if (editTarget.strategy_source === 'ai_engine') {
+        const s1 = await fetch(`/api/dashboard/strategies/${editTarget.id}`, {
+          method: 'PUT', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name:             editForm.name,
+            symbol:           editForm.symbol,
+            account_id:       editForm.account_id,
+            margin_mode:      editForm.margin_mode,
+            default_leverage: parseInt(editForm.default_leverage),
+          }),
+        });
+        if (!s1.ok) { setEditError((await s1.json()).error || 'Failed to update strategy'); return; }
+
+        const s2 = await fetch(`/api/ai/strategies/${editTarget.id}/config`, {
+          method: 'PUT', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            interval_no_position:   aiEditForm.interval_no_position,
+            interval_position_open: aiEditForm.interval_position_open,
+            interval_at_risk:       aiEditForm.interval_at_risk,
+            use_technical:          aiEditForm.use_technical,
+            use_fear_greed:         aiEditForm.use_fear_greed,
+            use_funding_rate:       aiEditForm.use_funding_rate,
+            use_open_interest:      aiEditForm.use_open_interest,
+            use_news:               aiEditForm.use_news,
+            use_btc_dominance:      aiEditForm.use_btc_dominance,
+            use_macro:              aiEditForm.use_macro,
+            confidence_threshold:   parseFloat(aiEditForm.confidence_threshold),
+            cooldown_entry_minutes: parseInt(aiEditForm.cooldown_entry_minutes),
+            llm_provider:           aiEditForm.llm_provider,
+            llm_model:              aiEditForm.llm_model,
+            template_id:            aiEditForm.template_id || null,
+            custom_instructions:    aiEditForm.custom_instructions || null,
+            dry_run:                aiEditForm.dry_run,
+          }),
+        });
+        if (!s2.ok) { setEditError((await s2.json()).error || 'Failed to update AI config'); return; }
+
+        const s3 = await fetch(`/api/ai/strategies/${editTarget.id}/risk-config`, {
+          method: 'PUT', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            max_position_size_pct: parseFloat(aiEditForm.max_position_size_pct),
+            max_daily_loss_pct:    parseFloat(aiEditForm.max_daily_loss_pct),
+            max_drawdown_pct:      parseFloat(aiEditForm.max_drawdown_pct),
+          }),
+        });
+        if (!s3.ok) { setEditError((await s3.json()).error || 'Failed to update risk config'); return; }
+
+        setEditTarget(null);
+        setWebhookInfo(null);
+        fetchStrategies();
+      } else {
+        const res = await fetch(`/api/dashboard/strategies/${editTarget.id}`, {
+          method:  'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body:    JSON.stringify({
+            ...editForm,
+            default_leverage:           parseInt(editForm.default_leverage),
+            max_leverage:               parseInt(editForm.max_leverage),
+            max_position_size:          parseFloat(editForm.max_position_size),
+            max_daily_signals:          parseInt(editForm.max_daily_signals),
+            max_daily_drawdown_percent: parseFloat(editForm.max_daily_drawdown_percent),
+          }),
+        });
+        if (!res.ok) {
+          const err = await res.json();
+          setEditError(err.error || 'Failed to update strategy');
+          return;
+        }
+        setEditTarget(null);
+        setWebhookInfo(null);
+        fetchStrategies();
       }
-      setEditTarget(null);
-      setWebhookInfo(null);
-      fetchStrategies();
     } catch (e: any) {
       setEditError(e.message);
     } finally {
@@ -650,9 +915,7 @@ export default function Strategies() {
   const handleDelete = async (id: string) => {
     if (!confirm('Permanently delete this strategy? This cannot be undone.')) return;
     try {
-      const res = await fetch(`/api/dashboard/strategies/${id}`, {
-        method: 'DELETE',
-      });
+      const res = await fetch(`/api/dashboard/strategies/${id}`, { method: 'DELETE' });
       if (!res.ok) {
         const err = await res.json();
         alert(err.error || 'Delete failed');
@@ -669,15 +932,7 @@ export default function Strategies() {
     fetchStrategies();
   };
 
-  const handleToggle = async (id: string, enable: boolean) => {
-    const endpoint = enable ? 'enable' : 'disable';
-    await fetch(`/api/dashboard/strategies/${id}/${endpoint}`, { method: 'POST' });
-    fetchStrategies();
-  };
-
-  const handleCouplingChange = async (
-    id: string, field: string, value: boolean
-  ) => {
+  const handleCouplingChange = async (id: string, field: string, value: boolean) => {
     await fetch(`/api/dashboard/strategies/${id}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
@@ -690,39 +945,100 @@ export default function Strategies() {
     setAddError(null);
     setAddLoading(true);
     try {
-      const res = await fetch('/api/dashboard/strategies', {
-        method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({
-          ...addForm,
-          default_leverage:           parseInt(addForm.default_leverage),
-          max_position_size:          parseFloat(addForm.max_position_size),
-          max_leverage:               parseInt(addForm.max_leverage),
-          max_daily_signals:          parseInt(addForm.max_daily_signals),
-          max_daily_drawdown_percent: parseFloat(addForm.max_daily_drawdown_percent),
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        setAddError(data.error || 'Failed to create strategy');
-        return;
+      if (addType === 'tradingview') {
+        const res = await fetch('/api/dashboard/strategies', {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body:    JSON.stringify({
+            ...addForm,
+            strategy_source:            'tradingview',
+            default_leverage:           parseInt(addForm.default_leverage),
+            max_position_size:          parseFloat(addForm.max_position_size),
+            max_leverage:               parseInt(addForm.max_leverage),
+            max_daily_signals:          parseInt(addForm.max_daily_signals),
+            max_daily_drawdown_percent: parseFloat(addForm.max_daily_drawdown_percent),
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          setAddError(data.error || 'Failed to create strategy');
+          return;
+        }
+        const host = window.location.host;
+        setCreatedSecret({
+          id:     data.id,
+          secret: data.webhook_secret,
+          url:    `http://${host}/api/listener/webhook/${data.id}`,
+        });
+        resetAddModal();
+        fetchStrategies();
+      } else {
+        // AI strategy: three sequential calls
+        const stratRes = await fetch('/api/dashboard/strategies', {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body:    JSON.stringify({
+            name:             addForm.name,
+            symbol:           addForm.symbol,
+            account_id:       addForm.account_id,
+            default_leverage: parseInt(addForm.default_leverage),
+            strategy_source:  'ai_engine',
+          }),
+        });
+        const stratData = await stratRes.json();
+        if (!stratRes.ok) {
+          setAddError(stratData.error || 'Failed to create strategy');
+          return;
+        }
+        const stratId = stratData.id;
+
+        const configRes = await fetch(`/api/ai/strategies/${stratId}/config`, {
+          method:  'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body:    JSON.stringify({
+            interval_no_position:   aiForm.interval_no_position,
+            interval_position_open: aiForm.interval_position_open,
+            interval_at_risk:       aiForm.interval_at_risk,
+            use_technical:          aiForm.use_technical,
+            use_fear_greed:         aiForm.use_fear_greed,
+            use_funding_rate:       aiForm.use_funding_rate,
+            use_open_interest:      aiForm.use_open_interest,
+            use_news:               aiForm.use_news,
+            use_btc_dominance:      aiForm.use_btc_dominance,
+            use_macro:              aiForm.use_macro,
+            confidence_threshold:   parseFloat(aiForm.confidence_threshold),
+            cooldown_entry_minutes: parseInt(aiForm.cooldown_entry_minutes),
+            llm_provider:           aiForm.llm_provider,
+            llm_model:              aiForm.llm_model,
+            template_id:            aiForm.template_id || null,
+            custom_instructions:    aiForm.custom_instructions || null,
+            dry_run:                aiForm.dry_run,
+          }),
+        });
+        const configData = await configRes.json();
+        if (!configRes.ok) {
+          setAddError(configData.error || 'Failed to save AI config');
+          return;
+        }
+
+        const riskRes = await fetch(`/api/ai/strategies/${stratId}/risk-config`, {
+          method:  'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body:    JSON.stringify({
+            max_position_size_pct: parseFloat(aiForm.max_position_size_pct),
+            max_daily_loss_pct:    parseFloat(aiForm.max_daily_loss_pct),
+            max_drawdown_pct:      parseFloat(aiForm.max_drawdown_pct),
+          }),
+        });
+        const riskData = await riskRes.json();
+        if (!riskRes.ok) {
+          setAddError(riskData.error || 'Failed to save risk config');
+          return;
+        }
+
+        resetAddModal();
+        fetchStrategies();
       }
-      // Show the webhook secret — it will not be shown again
-      const host = window.location.host;
-      setCreatedSecret({
-        id:     data.id,
-        secret: data.webhook_secret,
-        url:    `http://${host}/api/listener/webhook/${data.id}`,
-      });
-      setShowAdd(false);
-      setAddForm({
-        name: '', symbol: '', account_id: '', interval: '1h',
-        default_leverage: '1',
-        max_position_size: '1.0', max_leverage: '10',
-        max_daily_signals: '500', max_daily_drawdown_percent: '20',
-        allow_quote_variants: false, allow_cross_charting: false,
-      });
-      fetchStrategies();
     } catch (e: any) {
       setAddError(e.message);
     } finally {
@@ -731,21 +1047,26 @@ export default function Strategies() {
   };
 
   const filtered = strategies.filter(s => {
-    if (filterPair   !== 'all' && s.symbol  !== filterPair)   return false;
+    if (filterPair   !== 'all' && s.symbol !== filterPair)              return false;
     if (filterStatus !== 'all' && filterStatus === 'active'   && !s.enabled) return false;
     if (filterStatus !== 'all' && filterStatus === 'inactive' &&  s.enabled) return false;
+    if (filterSource !== 'all') {
+      const src = s.strategy_source ?? 'tradingview';
+      if (filterSource === 'ai'          && src !== 'ai_engine')   return false;
+      if (filterSource === 'tradingview' && src !== 'tradingview') return false;
+      if (filterSource === 'manual'      && src !== 'manual')      return false;
+    }
     return true;
   });
   const active   = filtered.filter(s =>  s.enabled);
   const inactive = filtered.filter(s => !s.enabled);
 
   if (loading) {
-    return (
-      <div style={{ padding:'24px', color:'var(--dim)' }}>
-        Loading strategies...
-      </div>
-    );
+    return <div style={{ padding:'24px', color:'var(--dim)' }}>Loading strategies...</div>;
   }
+
+  const isAIFilter = filterSource === 'ai';
+  const anyFilterActive = filterPair !== 'all' || filterStatus !== 'all' || filterSource !== 'all';
 
   return (
     <div style={{ display:'flex', flexDirection:'column', height:'100%' }}>
@@ -756,9 +1077,7 @@ export default function Strategies() {
         padding:'18px 20px 12px', background:'var(--bg2)',
         borderBottom:'1px solid var(--border)', flexShrink:0,
       } as any}>
-        <span style={{
-          fontSize:'23px', fontWeight:800, letterSpacing:'-.02em',
-        }}>
+        <span style={{ fontSize:'23px', fontWeight:800, letterSpacing:'-.02em' }}>
           Strategies
         </span>
         <div style={{ display:'flex', alignItems:'center', gap:'6px' }}>
@@ -771,7 +1090,7 @@ export default function Strategies() {
             {active.length} Active
           </span>
           <button
-            onClick={() => setShowAdd(true)}
+            onClick={handleOpenAdd}
             style={{
               display:'flex', alignItems:'center', gap:'5px',
               background:'var(--bg3)', border:'1px solid var(--border)',
@@ -790,7 +1109,6 @@ export default function Strategies() {
         borderBottom:'1px solid var(--border)',
         overflowX:'auto', flexShrink:0, scrollbarWidth:'none',
       }}>
-        {/* Pair filter */}
         <select
           value={filterPair}
           onChange={e => setFilterPair(e.target.value)}
@@ -803,12 +1121,9 @@ export default function Strategies() {
             cursor:'pointer', outline:'none',
           }}>
           <option value="all">All Pairs</option>
-          {uniquePairs.map(p => (
-            <option key={p} value={p}>{p}</option>
-          ))}
+          {uniquePairs.map(p => <option key={p} value={p}>{p}</option>)}
         </select>
 
-        {/* Status filter */}
         <select
           value={filterStatus}
           onChange={e => setFilterStatus(e.target.value)}
@@ -825,10 +1140,30 @@ export default function Strategies() {
           <option value="inactive">Inactive</option>
         </select>
 
-        {/* Clear button — only show when a filter is active */}
-        {(filterPair !== 'all' || filterStatus !== 'all') && (
+        <select
+          value={filterSource}
+          onChange={e => setFilterSource(e.target.value)}
+          style={{
+            background: isAIFilter ? 'rgba(83,74,183,.10)'
+                        : filterSource !== 'all' ? 'var(--blue-a)' : 'var(--bg2)',
+            border: `1px solid ${
+              isAIFilter ? 'rgba(83,74,183,.25)'
+              : filterSource !== 'all' ? 'var(--blue)' : 'var(--border)'}`,
+            borderRadius:'20px', padding:'5px 12px',
+            fontSize:'10px', fontWeight:500,
+            color: isAIFilter ? '#534AB7'
+                   : filterSource !== 'all' ? 'var(--blue)' : 'var(--muted)',
+            cursor:'pointer', outline:'none',
+          }}>
+          <option value="all">All Sources</option>
+          <option value="tradingview">TradingView</option>
+          <option value="ai">AI</option>
+          <option value="manual">Internal</option>
+        </select>
+
+        {anyFilterActive && (
           <span
-            onClick={() => { setFilterPair('all'); setFilterStatus('all'); }}
+            onClick={() => { setFilterPair('all'); setFilterStatus('all'); setFilterSource('all'); }}
             style={{
               whiteSpace:'nowrap', background:'var(--bg2)',
               border:'1px solid var(--border)', borderRadius:'20px',
@@ -846,8 +1181,8 @@ export default function Strategies() {
         borderBottom:'1px solid var(--border)', flexShrink:0,
       }}>
         {[
-          { count: active.length,   label: 'Active',   variant: 'live'   },
-          { count: inactive.length, label: 'Inactive', variant: 'closed' },
+          { count:active.length,   label:'Active',   variant:'live'   },
+          { count:inactive.length, label:'Inactive', variant:'closed' },
         ].map((cell, i, arr) => (
           <div key={cell.label} style={{
             flex:1, display:'flex', flexDirection:'column',
@@ -868,7 +1203,6 @@ export default function Strategies() {
             }}>
               {cell.label}
             </span>
-            {/* Bottom accent line */}
             <div style={{
               position:'absolute', bottom:0, left:'18%', right:'18%',
               height:'2px', borderRadius:'2px',
@@ -883,52 +1217,34 @@ export default function Strategies() {
         flex:1, overflowY:'auto', padding:'14px 14px 80px',
         scrollbarWidth:'none',
       }}>
-
-        {/* Active section */}
         {active.length > 0 && (
           <>
             <SectionHeader label="Active" count={active.length} variant="live" />
             {active.map(s => (
-              <StrategyCard
-                key={s.id}
-                strategy={s}
-                onCouplingChange={handleCouplingChange}
-                onStop={handleStop}
-                onStart={handleStart}
-                onEdit={handleEdit}
-                onDelete={handleDelete}
-              />
+              <StrategyCard key={s.id} strategy={s}
+                onCouplingChange={handleCouplingChange} onStop={handleStop}
+                onStart={handleStart} onEdit={handleEdit} onDelete={handleDelete} />
             ))}
           </>
         )}
-
-        {/* Inactive section */}
         {inactive.length > 0 && (
           <>
             <SectionHeader label="Inactive" count={inactive.length} variant="closed" />
             {inactive.map(s => (
-              <StrategyCard
-                key={s.id}
-                strategy={s}
-                onCouplingChange={handleCouplingChange}
-                onStop={handleStop}
-                onStart={handleStart}
-                onEdit={handleEdit}
-                onDelete={handleDelete}
-              />
+              <StrategyCard key={s.id} strategy={s}
+                onCouplingChange={handleCouplingChange} onStop={handleStop}
+                onStart={handleStart} onEdit={handleEdit} onDelete={handleDelete} />
             ))}
           </>
         )}
-
         {strategies.length === 0 && (
-          <p style={{ color:'var(--dim)', textAlign:'center',
-                      padding:'40px 0' }}>
+          <p style={{ color:'var(--dim)', textAlign:'center', padding:'40px 0' }}>
             No strategies configured.
           </p>
         )}
       </div>
 
-      {/* Add Strategy Modal */}
+      {/* ── Add Strategy Modal ── */}
       {showAdd && (
         <div style={{
           position:'fixed', inset:0, background:'rgba(0,0,0,.45)',
@@ -937,8 +1253,9 @@ export default function Strategies() {
         }}>
           <div style={{
             background:'var(--bg2)', borderRadius:'var(--r)',
-            padding:'28px', width:'420px', maxWidth:'95vw',
+            padding:'28px', width:'460px', maxWidth:'95vw',
             boxShadow:'0 20px 60px rgba(0,0,0,.2)',
+            maxHeight:'90vh', overflowY:'auto',
           }}>
             <h2 style={{
               fontSize:'18px', fontWeight:700, color:'var(--text)',
@@ -947,200 +1264,386 @@ export default function Strategies() {
               Add Strategy
             </h2>
 
-            {addError && (
-              <p style={{ color:'var(--red)', fontSize:'13px',
-                          marginBottom:'12px' }}>{addError}</p>
-            )}
-
-            {/* Name */}
-            <div style={{ marginBottom:'14px' }}>
-              <label style={{
-                display:'block', fontSize:'11px', fontWeight:600,
-                textTransform:'uppercase', letterSpacing:'.08em',
-                color:'var(--dim)', marginBottom:'4px',
-              }}>Strategy Name *</label>
-              <input
-                value={addForm.name}
-                onChange={e => setAddForm(f => ({ ...f, name: e.target.value }))}
-                placeholder="e.g. BTC RSI 5m"
-                style={{
-                  width:'100%', padding:'8px 12px',
-                  border:'1px solid var(--border)', borderRadius:'8px',
-                  fontSize:'13px', background:'var(--bg3)',
-                  color:'var(--text)', outline:'none', boxSizing:'border-box',
-                }}
-              />
-            </div>
-
-            {/* Symbol */}
-            <div style={{ marginBottom:'14px' }}>
-              <label style={{
-                display:'block', fontSize:'11px', fontWeight:600,
-                textTransform:'uppercase', letterSpacing:'.08em',
-                color:'var(--dim)', marginBottom:'4px',
-              }}>Execution Symbol *</label>
-              <input
-                value={addForm.symbol}
-                onChange={e => setAddForm(f => ({ ...f, symbol: e.target.value }))}
-                placeholder="e.g. BTC-USDT"
-                style={{
-                  width:'100%', padding:'8px 12px',
-                  border:'1px solid var(--border)', borderRadius:'8px',
-                  fontSize:'13px', fontFamily:'JetBrains Mono, monospace',
-                  background:'var(--bg3)', color:'var(--text)',
-                  outline:'none', boxSizing:'border-box',
-                }}
-              />
-              <p style={{ fontSize:'11px', color:'var(--dim)', marginTop:'4px' }}>
-                The symbol used on the exchange. Use dash format: BTC-USDT
-              </p>
-            </div>
-
-            {/* Account selector */}
-            <div style={{ marginBottom:'14px' }}>
-              <label style={{
-                display:'block', fontSize:'11px', fontWeight:600,
-                textTransform:'uppercase', letterSpacing:'.08em',
-                color:'var(--dim)', marginBottom:'4px',
-              }}>Exchange Account *</label>
-              <select
-                value={addForm.account_id}
-                onChange={e => setAddForm(f => ({ ...f, account_id: e.target.value }))}
-                style={{
-                  width:'100%', padding:'8px 12px',
-                  border:'1px solid var(--border)', borderRadius:'8px',
-                  fontSize:'13px', background:'var(--bg3)',
-                  color:'var(--text)', outline:'none', boxSizing:'border-box',
-                }}>
-                <option value="">— Select account —</option>
-                {accounts.map(a => (
-                  <option key={a.id} value={a.id}>
-                    {a.label} ({a.exchange} / {a.mode})
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            {/* Interval */}
-            <div style={{ marginBottom:'14px' }}>
-              <label style={{
-                display:'block', fontSize:'11px', fontWeight:600,
-                textTransform:'uppercase', letterSpacing:'.08em',
-                color:'var(--dim)', marginBottom:'4px',
-              }}>Interval</label>
-              <select
-                value={addForm.interval}
-                onChange={e => setAddForm(f => ({ ...f, interval: e.target.value }))}
-                style={{
-                  width:'100%', padding:'8px 12px',
-                  border:'1px solid var(--border)', borderRadius:'8px',
-                  fontSize:'13px', background:'var(--bg3)',
-                  color:'var(--text)', outline:'none', boxSizing:'border-box',
-                }}>
-                {['1m','3m','5m','15m','30m','1h','2h','4h','6h','12h','1d'].map(i => (
-                  <option key={i} value={i}>{i}</option>
-                ))}
-              </select>
-            </div>
-
-            {/* Default Leverage */}
-            <div style={{ marginBottom:'14px' }}>
-              <label style={{
-                display:'block', fontSize:'11px', fontWeight:600,
-                textTransform:'uppercase', letterSpacing:'.08em',
-                color:'var(--dim)', marginBottom:'4px',
-              }}>Default Leverage</label>
-              <input
-                type="number"
-                value={addForm.default_leverage}
-                onChange={e => setAddForm(f => ({ ...f, default_leverage: e.target.value }))}
-                style={{
-                  width:'100%', padding:'8px 12px',
-                  border:'1px solid var(--border)', borderRadius:'8px',
-                  fontSize:'13px', background:'var(--bg3)',
-                  color:'var(--text)', outline:'none', boxSizing:'border-box',
-                }}
-              />
-            </div>
-
-            {/* Risk fields — compact 2-column grid */}
+            {/* Source type toggle */}
             <div style={{
-              display:'grid', gridTemplateColumns:'1fr 1fr', gap:'10px',
-              marginBottom:'14px',
+              display:'flex', gap:'4px', marginBottom:'20px',
+              padding:'4px', background:'var(--bg3)',
+              borderRadius:'10px', border:'1px solid var(--border)',
             }}>
-              {[
-                { key:'max_position_size',          label:'Max Size',       placeholder:'1.0' },
-                { key:'max_leverage',               label:'Max Leverage',   placeholder:'10' },
-                { key:'max_daily_signals',          label:'Daily Signals',  placeholder:'500' },
-                { key:'max_daily_drawdown_percent', label:'Drawdown %',     placeholder:'20' },
-              ].map(field => (
-                <div key={field.key}>
-                  <label style={{
-                    display:'block', fontSize:'10px', fontWeight:600,
-                    textTransform:'uppercase', letterSpacing:'.07em',
-                    color:'var(--dim)', marginBottom:'3px',
-                  }}>{field.label}</label>
-                  <input
-                    type="number"
-                    value={(addForm as any)[field.key]}
-                    onChange={e => setAddForm(f => ({ ...f, [field.key]: e.target.value }))}
-                    placeholder={field.placeholder}
-                    style={{
-                      width:'100%', padding:'7px 10px',
-                      border:'1px solid var(--border)', borderRadius:'8px',
-                      fontSize:'12px', fontFamily:'JetBrains Mono, monospace',
-                      background:'var(--bg3)', color:'var(--text)',
-                      outline:'none', boxSizing:'border-box',
-                    }}
-                  />
-                </div>
+              {(['tradingview', 'ai'] as const).map(type => (
+                <button
+                  key={type}
+                  onClick={() => setAddType(type)}
+                  style={{
+                    flex:1, padding:'7px 10px',
+                    border:'none', borderRadius:'7px',
+                    fontSize:'11px', fontWeight:700,
+                    letterSpacing:'.05em', textTransform:'uppercase',
+                    cursor:'pointer',
+                    background: addType === type
+                      ? (type === 'ai' ? '#534AB7' : 'var(--blue)')
+                      : 'transparent',
+                    color: addType === type ? '#fff' : 'var(--muted)',
+                    transition:'all .12s',
+                  }}>
+                  {type === 'tradingview' ? 'TradingView' : 'AI Autonomous'}
+                </button>
               ))}
             </div>
 
-            {/* Symbol coupling toggles */}
-            <div style={{
-              display:'flex', gap:'20px', marginBottom:'20px',
-              padding:'12px 14px',
-              background:'var(--bg3)', borderRadius:'8px',
-              border:'1px solid var(--border)',
-            }}>
-              <label style={{ display:'flex', alignItems:'center', gap:'7px',
-                               cursor:'pointer', userSelect:'none' }}>
-                <input
-                  type="checkbox"
-                  checked={addForm.allow_quote_variants}
-                  onChange={e => setAddForm(f =>
-                    ({ ...f, allow_quote_variants: e.target.checked }))}
-                />
-                <span style={{ fontSize:'11px', fontWeight:600,
-                                letterSpacing:'.06em', textTransform:'uppercase',
-                                color:'var(--dim)' }}>
-                  Quote Variants
-                </span>
-              </label>
-              <label style={{ display:'flex', alignItems:'center', gap:'7px',
-                               cursor:'pointer', userSelect:'none' }}>
-                <input
-                  type="checkbox"
-                  checked={addForm.allow_cross_charting}
-                  onChange={e => setAddForm(f =>
-                    ({ ...f, allow_cross_charting: e.target.checked }))}
-                />
-                <span style={{
-                  fontSize:'11px', fontWeight:600,
-                  letterSpacing:'.06em', textTransform:'uppercase',
-                  color: addForm.allow_cross_charting
-                    ? 'var(--failed-color)' : 'var(--dim)',
+            {addError && (
+              <p style={{ color:'var(--red)', fontSize:'13px', marginBottom:'12px' }}>
+                {addError}
+              </p>
+            )}
+
+            {/* ── TradingView form ── */}
+            {addType === 'tradingview' && (
+              <>
+                <div style={{ marginBottom:'14px' }}>
+                  <label style={labelStyle}>Strategy Name *</label>
+                  <input
+                    value={addForm.name}
+                    onChange={e => setAddForm(f => ({ ...f, name: e.target.value }))}
+                    placeholder="e.g. BTC RSI 5m"
+                    style={inputStyle}
+                  />
+                </div>
+
+                <div style={{ marginBottom:'14px' }}>
+                  <label style={labelStyle}>Execution Symbol *</label>
+                  <input
+                    value={addForm.symbol}
+                    onChange={e => setAddForm(f => ({ ...f, symbol: e.target.value }))}
+                    placeholder="e.g. BTC-USDT"
+                    style={{ ...inputStyle, fontFamily:'JetBrains Mono, monospace' }}
+                  />
+                  <p style={{ fontSize:'11px', color:'var(--dim)', marginTop:'4px' }}>
+                    Use dash format: BTC-USDT
+                  </p>
+                </div>
+
+                <div style={{ marginBottom:'14px' }}>
+                  <label style={labelStyle}>Exchange Account *</label>
+                  <select
+                    value={addForm.account_id}
+                    onChange={e => setAddForm(f => ({ ...f, account_id: e.target.value }))}
+                    style={inputStyle}>
+                    <option value="">— Select account —</option>
+                    {accounts.map(a => (
+                      <option key={a.id} value={a.id}>
+                        {a.label} ({a.exchange} / {a.mode})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div style={{ marginBottom:'14px' }}>
+                  <label style={labelStyle}>Interval</label>
+                  <select
+                    value={addForm.interval}
+                    onChange={e => setAddForm(f => ({ ...f, interval: e.target.value }))}
+                    style={inputStyle}>
+                    {['1m','3m','5m','15m','30m','1h','2h','4h','6h','12h','1d'].map(i => (
+                      <option key={i} value={i}>{i}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div style={{ marginBottom:'14px' }}>
+                  <label style={labelStyle}>Default Leverage</label>
+                  <input type="number"
+                    value={addForm.default_leverage}
+                    onChange={e => setAddForm(f => ({ ...f, default_leverage: e.target.value }))}
+                    style={inputStyle}
+                  />
+                </div>
+
+                <div style={{
+                  display:'grid', gridTemplateColumns:'1fr 1fr', gap:'10px',
+                  marginBottom:'14px',
                 }}>
-                  Cross-Charting {addForm.allow_cross_charting ? '⚠' : ''}
-                </span>
-              </label>
-            </div>
+                  {[
+                    { key:'max_position_size',          label:'Max Size',      placeholder:'1.0' },
+                    { key:'max_leverage',               label:'Max Leverage',  placeholder:'10' },
+                    { key:'max_daily_signals',          label:'Daily Signals', placeholder:'500' },
+                    { key:'max_daily_drawdown_percent', label:'Drawdown %',    placeholder:'20' },
+                  ].map(field => (
+                    <div key={field.key}>
+                      <label style={{ ...labelStyle, fontSize:'10px' }}>{field.label}</label>
+                      <input type="number"
+                        value={(addForm as any)[field.key]}
+                        onChange={e => setAddForm(f => ({ ...f, [field.key]: e.target.value }))}
+                        placeholder={field.placeholder}
+                        style={{ ...inputStyle, fontFamily:'JetBrains Mono, monospace', fontSize:'12px' }}
+                      />
+                    </div>
+                  ))}
+                </div>
+
+                <div style={{
+                  display:'flex', gap:'20px', marginBottom:'20px',
+                  padding:'12px 14px',
+                  background:'var(--bg3)', borderRadius:'8px',
+                  border:'1px solid var(--border)',
+                }}>
+                  <label style={{ display:'flex', alignItems:'center', gap:'7px', cursor:'pointer', userSelect:'none' }}>
+                    <input type="checkbox" checked={addForm.allow_quote_variants}
+                      onChange={e => setAddForm(f => ({ ...f, allow_quote_variants: e.target.checked }))} />
+                    <span style={{ fontSize:'11px', fontWeight:600, letterSpacing:'.06em',
+                                    textTransform:'uppercase', color:'var(--dim)' }}>
+                      Quote Variants
+                    </span>
+                  </label>
+                  <label style={{ display:'flex', alignItems:'center', gap:'7px', cursor:'pointer', userSelect:'none' }}>
+                    <input type="checkbox" checked={addForm.allow_cross_charting}
+                      onChange={e => setAddForm(f => ({ ...f, allow_cross_charting: e.target.checked }))} />
+                    <span style={{
+                      fontSize:'11px', fontWeight:600, letterSpacing:'.06em', textTransform:'uppercase',
+                      color: addForm.allow_cross_charting ? 'var(--failed-color)' : 'var(--dim)',
+                    }}>
+                      Cross-Charting {addForm.allow_cross_charting ? '⚠' : ''}
+                    </span>
+                  </label>
+                </div>
+              </>
+            )}
+
+            {/* ── AI Autonomous form ── */}
+            {addType === 'ai' && (
+              <>
+                {/* Section 1: Identity */}
+                <SectionDivider label="Identity" />
+                <div style={{ marginBottom:'14px' }}>
+                  <label style={labelStyle}>Strategy Name *</label>
+                  <input value={addForm.name}
+                    onChange={e => setAddForm(f => ({ ...f, name: e.target.value }))}
+                    placeholder="e.g. BTC AI Trend"
+                    style={inputStyle} />
+                </div>
+                <div style={{ marginBottom:'14px' }}>
+                  <label style={labelStyle}>Symbol *</label>
+                  <input value={addForm.symbol}
+                    onChange={e => setAddForm(f => ({ ...f, symbol: e.target.value }))}
+                    placeholder="e.g. BTC-USDT"
+                    style={{ ...inputStyle, fontFamily:'JetBrains Mono, monospace' }} />
+                </div>
+                <div style={{ marginBottom:'14px' }}>
+                  <label style={labelStyle}>Exchange Account *</label>
+                  <select value={addForm.account_id}
+                    onChange={e => setAddForm(f => ({ ...f, account_id: e.target.value }))}
+                    style={inputStyle}>
+                    <option value="">— Select account —</option>
+                    {accounts.map(a => (
+                      <option key={a.id} value={a.id}>{a.label} ({a.exchange} / {a.mode})</option>
+                    ))}
+                  </select>
+                </div>
+                <div style={{
+                  display:'grid', gridTemplateColumns:'1fr 1fr', gap:'10px',
+                  marginBottom:'14px',
+                }}>
+                  <div>
+                    <label style={labelStyle}>Default Leverage</label>
+                    <input type="number" value={addForm.default_leverage}
+                      onChange={e => setAddForm(f => ({ ...f, default_leverage: e.target.value }))}
+                      style={inputStyle} />
+                  </div>
+                  <div>
+                    <label style={labelStyle}>Margin Mode</label>
+                    <select style={inputStyle}>
+                      <option value="isolated">Isolated</option>
+                      <option value="cross">Cross</option>
+                    </select>
+                  </div>
+                </div>
+
+                {/* Section 2: Operational Parameters */}
+                <SectionDivider label="Operational Parameters" />
+                <p style={{ fontSize:'10px', fontWeight:600, textTransform:'uppercase',
+                             letterSpacing:'.08em', color:'var(--dim)', marginBottom:'8px' }}>
+                  Analysis Intervals
+                </p>
+                <div style={{
+                  display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:'8px',
+                  marginBottom:'14px',
+                }}>
+                  {([
+                    { key:'interval_no_position'   as const, label:'No Position', opts:['1h','2h','4h','8h','1d'] },
+                    { key:'interval_position_open' as const, label:'Position Open', opts:['5m','10m','15m','30m'] },
+                    { key:'interval_at_risk'       as const, label:'At Risk', opts:['1m','5m','10m'] },
+                  ]).map(f => (
+                    <div key={f.key}>
+                      <label style={{ ...labelStyle, fontSize:'10px' }}>{f.label}</label>
+                      <select value={aiForm[f.key] as string}
+                        onChange={e => setAiForm(af => ({ ...af, [f.key]: e.target.value }))}
+                        style={{ ...inputStyle, fontSize:'12px' }}>
+                        {f.opts.map(o => <option key={o} value={o}>{o}</option>)}
+                      </select>
+                    </div>
+                  ))}
+                </div>
+
+                <p style={{ fontSize:'10px', fontWeight:600, textTransform:'uppercase',
+                             letterSpacing:'.08em', color:'var(--dim)', marginBottom:'8px' }}>
+                  Data Sources
+                </p>
+                <div style={{
+                  display:'grid', gridTemplateColumns:'1fr 1fr', gap:'6px',
+                  marginBottom:'14px', padding:'10px 12px',
+                  background:'var(--bg3)', borderRadius:'8px',
+                  border:'1px solid var(--border)',
+                }}>
+                  {DATA_SOURCES.map(f => (
+                    <label key={f.key} style={{
+                      display:'flex', alignItems:'center', gap:'6px',
+                      cursor:'pointer', userSelect:'none',
+                    }}>
+                      <input type="checkbox"
+                        checked={aiForm[f.key] as boolean}
+                        onChange={e => setAiForm(af => ({ ...af, [f.key]: e.target.checked }))} />
+                      <span style={{ fontSize:'11px', color:'var(--muted)' }}>{f.label}</span>
+                    </label>
+                  ))}
+                </div>
+
+                <div style={{
+                  display:'grid', gridTemplateColumns:'1fr 1fr', gap:'10px',
+                  marginBottom:'14px',
+                }}>
+                  <div>
+                    <label style={labelStyle}>Confidence Threshold</label>
+                    <input type="number" step="0.01" min="0.5" max="0.95"
+                      value={aiForm.confidence_threshold}
+                      onChange={e => setAiForm(f => ({ ...f, confidence_threshold: e.target.value }))}
+                      style={inputStyle} />
+                  </div>
+                  <div>
+                    <label style={labelStyle}>Entry Cooldown (min)</label>
+                    <input type="number"
+                      value={aiForm.cooldown_entry_minutes}
+                      onChange={e => setAiForm(f => ({ ...f, cooldown_entry_minutes: e.target.value }))}
+                      style={inputStyle} />
+                  </div>
+                </div>
+
+                {/* Section 3: LLM Configuration */}
+                <SectionDivider label="LLM Configuration" />
+                <div style={{ marginBottom:'14px' }}>
+                  <label style={labelStyle}>Provider</label>
+                  <select value={aiForm.llm_provider}
+                    onChange={e => {
+                      const p = e.target.value;
+                      setAiForm(f => ({ ...f, llm_provider: p, llm_model: '' }));
+                      fetchAIModels(p);
+                    }}
+                    style={inputStyle}>
+                    {PROVIDERS.map(p => (
+                      <option key={p.value} value={p.value}>{p.label}</option>
+                    ))}
+                  </select>
+                </div>
+                <div style={{ marginBottom:'14px' }}>
+                  <label style={labelStyle}>Model</label>
+                  <select value={aiForm.llm_model}
+                    onChange={e => setAiForm(f => ({ ...f, llm_model: e.target.value }))}
+                    style={inputStyle}>
+                    {aiModels.length === 0
+                      ? <option value="">Loading models...</option>
+                      : aiModels.map(m => <option key={m.id} value={m.id}>{m.display_name}</option>)
+                    }
+                  </select>
+                </div>
+
+                {/* Section 4: Strategy Prompt */}
+                <SectionDivider label="Strategy Prompt" />
+                <div style={{ marginBottom:'14px' }}>
+                  <label style={labelStyle}>Base Template</label>
+                  <select value={aiForm.template_id}
+                    onChange={e => setAiForm(f => ({ ...f, template_id: e.target.value }))}
+                    style={inputStyle}>
+                    <option value="">— No template —</option>
+                    {aiTemplates.map(t => (
+                      <option key={t.id} value={t.id}>{t.name}</option>
+                    ))}
+                  </select>
+                  {aiForm.template_id && (() => {
+                    const tmpl = aiTemplates.find(t => t.id === aiForm.template_id);
+                    return tmpl
+                      ? <p style={{ fontSize:'11px', color:'var(--dim)', marginTop:'4px' }}>{tmpl.description}</p>
+                      : null;
+                  })()}
+                </div>
+                <div style={{ marginBottom:'14px' }}>
+                  <label style={labelStyle}>Custom Instructions (optional)</label>
+                  <textarea
+                    value={aiForm.custom_instructions}
+                    onChange={e => setAiForm(f => ({ ...f, custom_instructions: e.target.value }))}
+                    placeholder="Additional instructions for the LLM..."
+                    rows={3}
+                    style={{ ...inputStyle, resize:'vertical', fontFamily:'inherit' }}
+                  />
+                </div>
+
+                {/* Section 5: Risk Config */}
+                <SectionDivider label="Risk Config" />
+                <div style={{
+                  display:'grid', gridTemplateColumns:'1fr 1fr', gap:'10px',
+                  marginBottom:'14px',
+                }}>
+                  <div>
+                    <label style={labelStyle}>Max Position Size %</label>
+                    <input type="number" step="0.1"
+                      value={aiForm.max_position_size_pct}
+                      onChange={e => setAiForm(f => ({ ...f, max_position_size_pct: e.target.value }))}
+                      style={inputStyle} />
+                  </div>
+                  <div>
+                    <label style={labelStyle}>Daily Loss Cap %</label>
+                    <input type="number" step="0.1"
+                      value={aiForm.max_daily_loss_pct}
+                      onChange={e => setAiForm(f => ({ ...f, max_daily_loss_pct: e.target.value }))}
+                      style={inputStyle} />
+                  </div>
+                  <div>
+                    <label style={labelStyle}>Max Drawdown %</label>
+                    <input type="number" step="0.1"
+                      value={aiForm.max_drawdown_pct}
+                      onChange={e => setAiForm(f => ({ ...f, max_drawdown_pct: e.target.value }))}
+                      style={inputStyle} />
+                  </div>
+                  <div>
+                    <label style={labelStyle}>Dry Run Mode</label>
+                    <div style={{
+                      display:'flex', gap:'12px', padding:'9px 12px',
+                      border:'1px solid var(--border)', borderRadius:'8px',
+                      background:'var(--bg3)',
+                    }}>
+                      {([true, false] as const).map(v => (
+                        <label key={String(v)} style={{
+                          display:'flex', alignItems:'center', gap:'5px', cursor:'pointer',
+                        }}>
+                          <input type="radio"
+                            checked={aiForm.dry_run === v}
+                            onChange={() => setAiForm(f => ({ ...f, dry_run: v }))} />
+                          <span style={{
+                            fontSize:'11px', fontWeight:600,
+                            color: v ? 'var(--failed-color)' : 'var(--green)',
+                          }}>
+                            {v ? 'ON' : 'OFF'}
+                          </span>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </>
+            )}
 
             {/* Buttons */}
-            <div style={{ display:'flex', gap:'10px' }}>
+            <div style={{ display:'flex', gap:'10px', marginTop:'4px' }}>
               <button
-                onClick={() => { setShowAdd(false); setAddError(null); }}
+                onClick={resetAddModal}
                 style={{
                   flex:1, padding:'10px',
                   border:'1px solid var(--border)', borderRadius:'8px',
@@ -1151,10 +1654,15 @@ export default function Strategies() {
               </button>
               <button
                 onClick={handleAddStrategy}
-                disabled={addLoading || !addForm.name || !addForm.symbol || !addForm.account_id}
+                disabled={
+                  addLoading ||
+                  !addForm.name || !addForm.symbol || !addForm.account_id ||
+                  (addType === 'ai' && !aiForm.llm_model)
+                }
                 style={{
                   flex:1, padding:'10px', border:'none', borderRadius:'8px',
-                  background:'var(--blue)', fontSize:'13px', fontWeight:600,
+                  background: addType === 'ai' ? '#534AB7' : 'var(--blue)',
+                  fontSize:'13px', fontWeight:600,
                   cursor:'pointer', color:'#fff',
                   opacity: addLoading ? 0.7 : 1,
                 }}>
@@ -1165,7 +1673,7 @@ export default function Strategies() {
         </div>
       )}
 
-      {/* Edit Strategy Modal */}
+      {/* ── Edit Strategy Modal ── */}
       {editTarget && (
         <div style={{
           position:'fixed', inset:0, background:'rgba(0,0,0,.5)',
@@ -1174,8 +1682,9 @@ export default function Strategies() {
         }}>
           <div style={{
             background:'var(--bg2)', borderRadius:'var(--r)',
-            padding:'28px', width:'480px', maxWidth:'95vw',
+            padding:'28px', width:'460px', maxWidth:'95vw',
             boxShadow:'0 20px 60px rgba(0,0,0,.25)',
+            maxHeight:'90vh', overflowY:'auto',
           }}>
             <h2 style={{ fontSize:'18px', fontWeight:700,
                          color:'var(--text)', marginBottom:'20px' }}>
@@ -1187,189 +1696,369 @@ export default function Strategies() {
                           marginBottom:'12px' }}>{editError}</p>
             )}
 
-            {/* Name */}
-            <FieldRow label="Name">
-              <input value={editForm.name}
-                onChange={e => setEditForm((f:any) => ({ ...f, name: e.target.value }))}
-                style={inputStyle} />
-            </FieldRow>
-
-            {/* Symbol */}
-            <FieldRow label="Symbol">
-              <input value={editForm.symbol}
-                onChange={e => setEditForm((f:any) => ({ ...f, symbol: e.target.value }))}
-                style={{ ...inputStyle, fontFamily:'JetBrains Mono, monospace' }} />
-            </FieldRow>
-
-            {/* Account */}
-            <FieldRow label="Account">
-              <select value={editForm.account_id}
-                onChange={e => setEditForm((f:any) => ({ ...f, account_id: e.target.value }))}
-                style={inputStyle}>
-                {accounts.map(a => (
-                  <option key={a.id} value={a.id}>
-                    {a.label} ({a.exchange} / {a.mode})
-                  </option>
-                ))}
-              </select>
-            </FieldRow>
-
-            {/* Leverage + Margin Mode */}
-            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr',
-                          gap:'10px', marginBottom:'14px' }}>
-              <FieldRow label="Default Leverage">
-                <input type="number" value={editForm.default_leverage}
-                  onChange={e => setEditForm((f:any) =>
-                    ({ ...f, default_leverage: e.target.value }))}
-                  style={inputStyle} />
-              </FieldRow>
-              <FieldRow label="Max Leverage">
-                <input type="number" value={editForm.max_leverage}
-                  onChange={e => setEditForm((f:any) =>
-                    ({ ...f, max_leverage: e.target.value }))}
-                  style={inputStyle} />
-              </FieldRow>
-              <FieldRow label="Margin Mode">
-                <select value={editForm.margin_mode}
-                  onChange={e => setEditForm((f:any) =>
-                    ({ ...f, margin_mode: e.target.value }))}
-                  style={inputStyle}>
-                  <option value="isolated">Isolated</option>
-                  <option value="cross">Cross</option>
-                </select>
-              </FieldRow>
-            </div>
-
-            {/* Risk fields */}
-            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr',
-                          gap:'10px', marginBottom:'14px' }}>
-              {[
-                { key:'max_position_size',          label:'Max Size' },
-                { key:'max_daily_signals',          label:'Daily Signals' },
-                { key:'max_daily_drawdown_percent', label:'Drawdown %' },
-              ].map(field => (
-                <div key={field.key}>
-                  <label style={labelStyle}>{field.label}</label>
-                  <input type="number"
-                    value={editForm[field.key]}
-                    onChange={e => setEditForm((f:any) =>
-                      ({ ...f, [field.key]: e.target.value }))}
+            {editTarget.strategy_source === 'ai_engine' ? (
+              <>
+                {/* Section 1: Identity */}
+                <SectionDivider label="Identity" />
+                <div style={{ marginBottom:'14px' }}>
+                  <label style={labelStyle}>Strategy Name</label>
+                  <input value={editForm.name}
+                    onChange={e => setEditForm((f:any) => ({ ...f, name: e.target.value }))}
                     style={inputStyle} />
                 </div>
-              ))}
-            </div>
+                <div style={{ marginBottom:'14px' }}>
+                  <label style={labelStyle}>Symbol</label>
+                  <input value={editForm.symbol}
+                    onChange={e => setEditForm((f:any) => ({ ...f, symbol: e.target.value }))}
+                    style={{ ...inputStyle, fontFamily:'JetBrains Mono, monospace' }} />
+                </div>
+                <div style={{ marginBottom:'14px' }}>
+                  <label style={labelStyle}>Exchange Account</label>
+                  <select value={editForm.account_id}
+                    onChange={e => setEditForm((f:any) => ({ ...f, account_id: e.target.value }))}
+                    style={inputStyle}>
+                    {accounts.map(a => (
+                      <option key={a.id} value={a.id}>{a.label} ({a.exchange} / {a.mode})</option>
+                    ))}
+                  </select>
+                </div>
+                <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'10px', marginBottom:'14px' }}>
+                  <div>
+                    <label style={labelStyle}>Default Leverage</label>
+                    <input type="number" value={editForm.default_leverage}
+                      onChange={e => setEditForm((f:any) => ({ ...f, default_leverage: e.target.value }))}
+                      style={inputStyle} />
+                  </div>
+                  <div>
+                    <label style={labelStyle}>Margin Mode</label>
+                    <select value={editForm.margin_mode}
+                      onChange={e => setEditForm((f:any) => ({ ...f, margin_mode: e.target.value }))}
+                      style={inputStyle}>
+                      <option value="isolated">Isolated</option>
+                      <option value="cross">Cross</option>
+                    </select>
+                  </div>
+                </div>
 
-            {/* Coupling toggles */}
-            <div style={{
-              display:'flex', gap:'20px', marginBottom:'20px',
-              padding:'10px 14px', background:'var(--bg3)',
-              borderRadius:'8px', border:'1px solid var(--border)',
-            }}>
-              <label style={{ display:'flex', alignItems:'center',
-                               gap:'7px', cursor:'pointer' }}>
-                <input type="checkbox"
-                  checked={editForm.allow_quote_variants}
-                  onChange={e => setEditForm((f:any) =>
-                    ({ ...f, allow_quote_variants: e.target.checked }))} />
-                <span style={{ fontSize:'11px', fontWeight:600,
-                                textTransform:'uppercase', letterSpacing:'.06em',
-                                color:'var(--dim)' }}>Quote Variants</span>
-              </label>
-              <label style={{ display:'flex', alignItems:'center',
-                               gap:'7px', cursor:'pointer' }}>
-                <input type="checkbox"
-                  checked={editForm.allow_cross_charting}
-                  onChange={e => setEditForm((f:any) =>
-                    ({ ...f, allow_cross_charting: e.target.checked }))} />
-                <span style={{
-                  fontSize:'11px', fontWeight:600,
-                  textTransform:'uppercase', letterSpacing:'.06em',
-                  color: editForm.allow_cross_charting
-                    ? 'var(--failed-color)' : 'var(--dim)',
+                {/* Section 2: Operational Parameters */}
+                <SectionDivider label="Operational Parameters" />
+                <p style={{ fontSize:'10px', fontWeight:600, textTransform:'uppercase',
+                             letterSpacing:'.08em', color:'var(--dim)', marginBottom:'8px' }}>
+                  Analysis Intervals
+                </p>
+                <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:'8px', marginBottom:'14px' }}>
+                  {([
+                    { key:'interval_no_position'   as const, label:'No Position', opts:['1h','2h','4h','8h','1d'] },
+                    { key:'interval_position_open' as const, label:'Position Open', opts:['5m','10m','15m','30m'] },
+                    { key:'interval_at_risk'       as const, label:'At Risk', opts:['1m','5m','10m'] },
+                  ]).map(f => (
+                    <div key={f.key}>
+                      <label style={{ ...labelStyle, fontSize:'10px' }}>{f.label}</label>
+                      <select value={aiEditForm[f.key] as string}
+                        onChange={e => setAiEditForm(af => ({ ...af, [f.key]: e.target.value }))}
+                        style={{ ...inputStyle, fontSize:'12px' }}>
+                        {f.opts.map(o => <option key={o} value={o}>{o}</option>)}
+                      </select>
+                    </div>
+                  ))}
+                </div>
+
+                <p style={{ fontSize:'10px', fontWeight:600, textTransform:'uppercase',
+                             letterSpacing:'.08em', color:'var(--dim)', marginBottom:'8px' }}>
+                  Data Sources
+                </p>
+                <div style={{
+                  display:'grid', gridTemplateColumns:'1fr 1fr', gap:'6px',
+                  marginBottom:'14px', padding:'10px 12px',
+                  background:'var(--bg3)', borderRadius:'8px', border:'1px solid var(--border)',
                 }}>
-                  Cross-Charting {editForm.allow_cross_charting ? '⚠' : ''}
-                </span>
-              </label>
-            </div>
-
-            {/* Webhook info section */}
-            {webhookInfo && (
-              <div style={{
-                background:'var(--bg3)', borderRadius:'8px',
-                border:'1px solid var(--border)',
-                padding:'14px', marginBottom:'20px',
-              }}>
-                <p style={{ fontSize:'10px', fontWeight:700,
-                             textTransform:'uppercase', letterSpacing:'.1em',
-                             color:'var(--dim)', marginBottom:'10px' }}>
-                  TradingView Webhook Configuration
-                </p>
-
-                {/* URL */}
-                <p style={{ fontSize:'10px', color:'var(--dim)',
-                             marginBottom:'4px', fontWeight:600 }}>
-                  Webhook URL
-                </p>
-                <div style={{ display:'flex', gap:'6px', marginBottom:'10px' }}>
-                  <code style={{
-                    flex:1, padding:'6px 10px', background:'var(--bg2)',
-                    border:'1px solid var(--border)', borderRadius:'6px',
-                    fontSize:'11px', fontFamily:'JetBrains Mono, monospace',
-                    color:'var(--text)', wordBreak:'break-all',
-                  }}>
-                    {webhookInfo.webhook_url}
-                  </code>
-                  <button
-                    onClick={() => navigator.clipboard.writeText(webhookInfo.webhook_url)}
-                    style={{
-                      padding:'6px 10px', border:'1px solid var(--border)',
-                      borderRadius:'6px', background:'var(--bg2)',
-                      fontSize:'11px', color:'var(--blue)',
-                      fontWeight:600, cursor:'pointer', whiteSpace:'nowrap',
+                  {DATA_SOURCES.map(f => (
+                    <label key={f.key} style={{
+                      display:'flex', alignItems:'center', gap:'6px',
+                      cursor:'pointer', userSelect:'none',
                     }}>
-                    Copy
-                  </button>
+                      <input type="checkbox"
+                        checked={aiEditForm[f.key] as boolean}
+                        onChange={e => setAiEditForm(af => ({ ...af, [f.key]: e.target.checked }))} />
+                      <span style={{ fontSize:'11px', color:'var(--muted)' }}>{f.label}</span>
+                    </label>
+                  ))}
                 </div>
 
-                {/* Secret */}
-                <p style={{ fontSize:'10px', color:'var(--dim)',
-                             marginBottom:'4px', fontWeight:600 }}>
-                  Token (webhook secret)
-                </p>
-                <div style={{ display:'flex', gap:'6px', marginBottom:'10px' }}>
-                  <code style={{
-                    flex:1, padding:'6px 10px', background:'var(--bg2)',
-                    border:'1px solid var(--border)', borderRadius:'6px',
-                    fontSize:'11px', fontFamily:'JetBrains Mono, monospace',
-                    color:'var(--text)', wordBreak:'break-all',
-                  }}>
-                    {webhookInfo.webhook_secret}
-                  </code>
-                  <button
-                    onClick={() => navigator.clipboard.writeText(webhookInfo.webhook_secret)}
-                    style={{
-                      padding:'6px 10px', border:'1px solid var(--border)',
-                      borderRadius:'6px', background:'var(--bg2)',
-                      fontSize:'11px', color:'var(--blue)',
-                      fontWeight:600, cursor:'pointer', whiteSpace:'nowrap',
-                    }}>
-                    Copy
-                  </button>
+                <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'10px', marginBottom:'14px' }}>
+                  <div>
+                    <label style={labelStyle}>Confidence Threshold</label>
+                    <input type="number" step="0.01" min="0.5" max="0.95"
+                      value={aiEditForm.confidence_threshold}
+                      onChange={e => setAiEditForm(f => ({ ...f, confidence_threshold: e.target.value }))}
+                      style={inputStyle} />
+                  </div>
+                  <div>
+                    <label style={labelStyle}>Entry Cooldown (min)</label>
+                    <input type="number"
+                      value={aiEditForm.cooldown_entry_minutes}
+                      onChange={e => setAiEditForm(f => ({ ...f, cooldown_entry_minutes: e.target.value }))}
+                      style={inputStyle} />
+                  </div>
                 </div>
 
-                {/* TradingView JSON template */}
-                <p style={{ fontSize:'10px', color:'var(--dim)',
-                             marginBottom:'4px', fontWeight:600 }}>
-                  Alert Message (paste into TradingView)
-                </p>
-                <div style={{ position:'relative' }}>
-                  <pre style={{
-                    padding:'10px 12px', background:'var(--bg2)',
-                    border:'1px solid var(--border)', borderRadius:'6px',
-                    fontSize:'10px', fontFamily:'JetBrains Mono, monospace',
-                    color:'var(--text)', overflowX:'auto', margin:0,
-                    whiteSpace:'pre',
+                {/* Section 3: LLM Configuration */}
+                <SectionDivider label="LLM Configuration" />
+                <div style={{ marginBottom:'14px' }}>
+                  <label style={labelStyle}>Provider</label>
+                  <select value={aiEditForm.llm_provider}
+                    onChange={e => {
+                      const p = e.target.value;
+                      setAiEditForm(f => ({ ...f, llm_provider: p, llm_model: '' }));
+                      fetchEditAiModels(p);
+                    }}
+                    style={inputStyle}>
+                    {PROVIDERS.map(p => (
+                      <option key={p.value} value={p.value}>{p.label}</option>
+                    ))}
+                  </select>
+                </div>
+                <div style={{ marginBottom:'14px' }}>
+                  <label style={labelStyle}>Model</label>
+                  <select value={aiEditForm.llm_model}
+                    onChange={e => setAiEditForm(f => ({ ...f, llm_model: e.target.value }))}
+                    style={inputStyle}>
+                    {editAiModels.length === 0
+                      ? <option value="">Loading models...</option>
+                      : editAiModels.map(m => <option key={m.id} value={m.id}>{m.display_name}</option>)
+                    }
+                  </select>
+                </div>
+
+                {/* Section 4: Strategy Prompt */}
+                <SectionDivider label="Strategy Prompt" />
+                <div style={{ marginBottom:'14px' }}>
+                  <label style={labelStyle}>Base Template</label>
+                  <select value={aiEditForm.template_id}
+                    onChange={e => setAiEditForm(f => ({ ...f, template_id: e.target.value }))}
+                    style={inputStyle}>
+                    <option value="">— No template —</option>
+                    {aiTemplates.map(t => (
+                      <option key={t.id} value={t.id}>{t.name}</option>
+                    ))}
+                  </select>
+                  {aiEditForm.template_id && (() => {
+                    const tmpl = aiTemplates.find(t => t.id === aiEditForm.template_id);
+                    return tmpl
+                      ? <p style={{ fontSize:'11px', color:'var(--dim)', marginTop:'4px' }}>{tmpl.description}</p>
+                      : null;
+                  })()}
+                </div>
+                <div style={{ marginBottom:'14px' }}>
+                  <label style={labelStyle}>Custom Instructions (optional)</label>
+                  <textarea
+                    value={aiEditForm.custom_instructions}
+                    onChange={e => setAiEditForm(f => ({ ...f, custom_instructions: e.target.value }))}
+                    placeholder="Additional instructions for the LLM..."
+                    rows={3}
+                    style={{ ...inputStyle, resize:'vertical', fontFamily:'inherit' }}
+                  />
+                </div>
+
+                {/* Section 5: Risk Configuration */}
+                <SectionDivider label="Risk Configuration" />
+                <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'10px', marginBottom:'14px' }}>
+                  <div>
+                    <label style={labelStyle}>Max Position Size %</label>
+                    <input type="number" step="0.1"
+                      value={aiEditForm.max_position_size_pct}
+                      onChange={e => setAiEditForm(f => ({ ...f, max_position_size_pct: e.target.value }))}
+                      style={inputStyle} />
+                  </div>
+                  <div>
+                    <label style={labelStyle}>Daily Loss Cap %</label>
+                    <input type="number" step="0.1"
+                      value={aiEditForm.max_daily_loss_pct}
+                      onChange={e => setAiEditForm(f => ({ ...f, max_daily_loss_pct: e.target.value }))}
+                      style={inputStyle} />
+                  </div>
+                  <div>
+                    <label style={labelStyle}>Max Drawdown %</label>
+                    <input type="number" step="0.1"
+                      value={aiEditForm.max_drawdown_pct}
+                      onChange={e => setAiEditForm(f => ({ ...f, max_drawdown_pct: e.target.value }))}
+                      style={inputStyle} />
+                  </div>
+                  <div>
+                    <label style={labelStyle}>Dry Run Mode</label>
+                    <div style={{
+                      display:'flex', gap:'12px', padding:'9px 12px',
+                      border:'1px solid var(--border)', borderRadius:'8px',
+                      background:'var(--bg3)',
+                    }}>
+                      {([true, false] as const).map(v => (
+                        <label key={String(v)} style={{
+                          display:'flex', alignItems:'center', gap:'5px', cursor:'pointer',
+                        }}>
+                          <input type="radio"
+                            checked={aiEditForm.dry_run === v}
+                            onChange={() => setAiEditForm(f => ({ ...f, dry_run: v }))} />
+                          <span style={{
+                            fontSize:'11px', fontWeight:600,
+                            color: v ? 'var(--failed-color)' : 'var(--green)',
+                          }}>
+                            {v ? 'ON' : 'OFF'}
+                          </span>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </>
+            ) : (
+              <>
+                <FieldRow label="Name">
+                  <input value={editForm.name}
+                    onChange={e => setEditForm((f:any) => ({ ...f, name: e.target.value }))}
+                    style={inputStyle} />
+                </FieldRow>
+
+                <FieldRow label="Symbol">
+                  <input value={editForm.symbol}
+                    onChange={e => setEditForm((f:any) => ({ ...f, symbol: e.target.value }))}
+                    style={{ ...inputStyle, fontFamily:'JetBrains Mono, monospace' }} />
+                </FieldRow>
+
+                <FieldRow label="Account">
+                  <select value={editForm.account_id}
+                    onChange={e => setEditForm((f:any) => ({ ...f, account_id: e.target.value }))}
+                    style={inputStyle}>
+                    {accounts.map(a => (
+                      <option key={a.id} value={a.id}>
+                        {a.label} ({a.exchange} / {a.mode})
+                      </option>
+                    ))}
+                  </select>
+                </FieldRow>
+
+                <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr',
+                              gap:'10px', marginBottom:'14px' }}>
+                  <FieldRow label="Default Leverage">
+                    <input type="number" value={editForm.default_leverage}
+                      onChange={e => setEditForm((f:any) => ({ ...f, default_leverage: e.target.value }))}
+                      style={inputStyle} />
+                  </FieldRow>
+                  <FieldRow label="Max Leverage">
+                    <input type="number" value={editForm.max_leverage}
+                      onChange={e => setEditForm((f:any) => ({ ...f, max_leverage: e.target.value }))}
+                      style={inputStyle} />
+                  </FieldRow>
+                  <FieldRow label="Margin Mode">
+                    <select value={editForm.margin_mode}
+                      onChange={e => setEditForm((f:any) => ({ ...f, margin_mode: e.target.value }))}
+                      style={inputStyle}>
+                      <option value="isolated">Isolated</option>
+                      <option value="cross">Cross</option>
+                    </select>
+                  </FieldRow>
+                </div>
+
+                <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr',
+                              gap:'10px', marginBottom:'14px' }}>
+                  {[
+                    { key:'max_position_size',          label:'Max Size' },
+                    { key:'max_daily_signals',          label:'Daily Signals' },
+                    { key:'max_daily_drawdown_percent', label:'Drawdown %' },
+                  ].map(field => (
+                    <div key={field.key}>
+                      <label style={labelStyle}>{field.label}</label>
+                      <input type="number"
+                        value={editForm[field.key]}
+                        onChange={e => setEditForm((f:any) => ({ ...f, [field.key]: e.target.value }))}
+                        style={inputStyle} />
+                    </div>
+                  ))}
+                </div>
+
+                <div style={{
+                  display:'flex', gap:'20px', marginBottom:'20px',
+                  padding:'10px 14px', background:'var(--bg3)',
+                  borderRadius:'8px', border:'1px solid var(--border)',
+                }}>
+                  <label style={{ display:'flex', alignItems:'center', gap:'7px', cursor:'pointer' }}>
+                    <input type="checkbox" checked={editForm.allow_quote_variants}
+                      onChange={e => setEditForm((f:any) => ({ ...f, allow_quote_variants: e.target.checked }))} />
+                    <span style={{ fontSize:'11px', fontWeight:600,
+                                    textTransform:'uppercase', letterSpacing:'.06em',
+                                    color:'var(--dim)' }}>Quote Variants</span>
+                  </label>
+                  <label style={{ display:'flex', alignItems:'center', gap:'7px', cursor:'pointer' }}>
+                    <input type="checkbox" checked={editForm.allow_cross_charting}
+                      onChange={e => setEditForm((f:any) => ({ ...f, allow_cross_charting: e.target.checked }))} />
+                    <span style={{
+                      fontSize:'11px', fontWeight:600,
+                      textTransform:'uppercase', letterSpacing:'.06em',
+                      color: editForm.allow_cross_charting ? 'var(--failed-color)' : 'var(--dim)',
+                    }}>
+                      Cross-Charting {editForm.allow_cross_charting ? '⚠' : ''}
+                    </span>
+                  </label>
+                </div>
+
+                {webhookInfo && (
+                  <div style={{
+                    background:'var(--bg3)', borderRadius:'8px',
+                    border:'1px solid var(--border)',
+                    padding:'14px', marginBottom:'20px',
                   }}>
+                    <p style={{ fontSize:'10px', fontWeight:700,
+                                 textTransform:'uppercase', letterSpacing:'.1em',
+                                 color:'var(--dim)', marginBottom:'10px' }}>
+                      TradingView Webhook Configuration
+                    </p>
+                    <p style={{ fontSize:'10px', color:'var(--dim)',
+                                 marginBottom:'4px', fontWeight:600 }}>Webhook URL</p>
+                    <div style={{ display:'flex', gap:'6px', marginBottom:'10px' }}>
+                      <code style={{
+                        flex:1, padding:'6px 10px', background:'var(--bg2)',
+                        border:'1px solid var(--border)', borderRadius:'6px',
+                        fontSize:'11px', fontFamily:'JetBrains Mono, monospace',
+                        color:'var(--text)', wordBreak:'break-all',
+                      }}>
+                        {webhookInfo.webhook_url}
+                      </code>
+                      <button onClick={() => navigator.clipboard.writeText(webhookInfo.webhook_url)}
+                        style={{
+                          padding:'6px 10px', border:'1px solid var(--border)',
+                          borderRadius:'6px', background:'var(--bg2)',
+                          fontSize:'11px', color:'var(--blue)',
+                          fontWeight:600, cursor:'pointer', whiteSpace:'nowrap',
+                        }}>Copy</button>
+                    </div>
+                    <p style={{ fontSize:'10px', color:'var(--dim)',
+                                 marginBottom:'4px', fontWeight:600 }}>Token (webhook secret)</p>
+                    <div style={{ display:'flex', gap:'6px', marginBottom:'10px' }}>
+                      <code style={{
+                        flex:1, padding:'6px 10px', background:'var(--bg2)',
+                        border:'1px solid var(--border)', borderRadius:'6px',
+                        fontSize:'11px', fontFamily:'JetBrains Mono, monospace',
+                        color:'var(--text)', wordBreak:'break-all',
+                      }}>
+                        {webhookInfo.webhook_secret}
+                      </code>
+                      <button onClick={() => navigator.clipboard.writeText(webhookInfo.webhook_secret)}
+                        style={{
+                          padding:'6px 10px', border:'1px solid var(--border)',
+                          borderRadius:'6px', background:'var(--bg2)',
+                          fontSize:'11px', color:'var(--blue)',
+                          fontWeight:600, cursor:'pointer', whiteSpace:'nowrap',
+                        }}>Copy</button>
+                    </div>
+                    <p style={{ fontSize:'10px', color:'var(--dim)',
+                                 marginBottom:'4px', fontWeight:600 }}>Alert Message (paste into TradingView)</p>
+                    <div style={{ position:'relative' }}>
+                      <pre style={{
+                        padding:'10px 12px', background:'var(--bg2)',
+                        border:'1px solid var(--border)', borderRadius:'6px',
+                        fontSize:'10px', fontFamily:'JetBrains Mono, monospace',
+                        color:'var(--text)', overflowX:'auto', margin:0,
+                        whiteSpace:'pre',
+                      }}>
 {`{
   "base_asset":  "{{syminfo.basecurrency}}",
   "quote_asset": "{{syminfo.currency}}",
@@ -1380,26 +2069,25 @@ export default function Strategies() {
   "timestamp":   "{{timenow}}",
   "token":       "${webhookInfo.webhook_secret}"
 }`}
-                  </pre>
-                  <button
-                    onClick={() => navigator.clipboard.writeText(
-                      `{\n  "base_asset":  "{{syminfo.basecurrency}}",\n  "quote_asset": "{{syminfo.currency}}",\n  "side":        "{{strategy.order.action}}",\n  "signal":      "open_long",\n  "order_type":  "market",\n  "size":        "{{strategy.order.contracts}}",\n  "timestamp":   "{{timenow}}",\n  "token":       "${webhookInfo.webhook_secret}"\n}`
-                    )}
-                    style={{
-                      position:'absolute', top:'8px', right:'8px',
-                      padding:'4px 8px', border:'1px solid var(--border)',
-                      borderRadius:'4px', background:'var(--bg3)',
-                      fontSize:'10px', color:'var(--blue)',
-                      fontWeight:600, cursor:'pointer',
-                    }}>
-                    Copy JSON
-                  </button>
-                </div>
-              </div>
+                      </pre>
+                      <button
+                        onClick={() => navigator.clipboard.writeText(
+                          `{\n  "base_asset":  "{{syminfo.basecurrency}}",\n  "quote_asset": "{{syminfo.currency}}",\n  "side":        "{{strategy.order.action}}",\n  "signal":      "open_long",\n  "order_type":  "market",\n  "size":        "{{strategy.order.contracts}}",\n  "timestamp":   "{{timenow}}",\n  "token":       "${webhookInfo.webhook_secret}"\n}`
+                        )}
+                        style={{
+                          position:'absolute', top:'8px', right:'8px',
+                          padding:'4px 8px', border:'1px solid var(--border)',
+                          borderRadius:'4px', background:'var(--bg3)',
+                          fontSize:'10px', color:'var(--blue)',
+                          fontWeight:600, cursor:'pointer',
+                        }}>Copy JSON</button>
+                    </div>
+                  </div>
+                )}
+              </>
             )}
 
-            {/* Buttons */}
-            <div style={{ display:'flex', gap:'10px' }}>
+            <div style={{ display:'flex', gap:'10px', marginTop:'4px' }}>
               <button
                 onClick={() => { setEditTarget(null); setWebhookInfo(null); }}
                 style={{
@@ -1407,16 +2095,14 @@ export default function Strategies() {
                   border:'1px solid var(--border)', borderRadius:'8px',
                   background:'var(--bg3)', fontSize:'13px', fontWeight:600,
                   cursor:'pointer', color:'var(--muted)',
-                }}>
-                Cancel
-              </button>
+                }}>Cancel</button>
               <button
                 onClick={handleEditSubmit}
                 disabled={editLoading}
                 style={{
                   flex:1, padding:'10px', border:'none', borderRadius:'8px',
-                  background:'var(--blue)', color:'#fff',
-                  fontSize:'13px', fontWeight:700, cursor:'pointer',
+                  background: editTarget.strategy_source === 'ai_engine' ? '#534AB7' : 'var(--blue)',
+                  color:'#fff', fontSize:'13px', fontWeight:700, cursor:'pointer',
                   opacity: editLoading ? 0.7 : 1,
                 }}>
                 {editLoading ? 'Saving...' : 'Save Changes'}
@@ -1426,7 +2112,7 @@ export default function Strategies() {
         </div>
       )}
 
-      {/* Stop Strategy Confirmation Modal */}
+      {/* ── Stop Strategy Confirmation Modal ── */}
       {stopTarget && (
         <div style={{
           position:'fixed', inset:0, background:'rgba(0,0,0,.5)',
@@ -1452,12 +2138,10 @@ export default function Strategies() {
                 }}>
                   <p style={{ fontSize:'13px', color:'var(--failed-color)',
                                fontWeight:600, margin:0 }}>
-                    ⚠ This strategy has {stopTarget.open_positions_count} open
-                    position(s).
+                    ⚠ This strategy has {stopTarget.open_positions_count} open position(s).
                   </p>
                 </div>
-                <p style={{ fontSize:'13px', color:'var(--dim)',
-                            marginBottom:'20px' }}>
+                <p style={{ fontSize:'13px', color:'var(--dim)', marginBottom:'20px' }}>
                   Do you want to close the open positions before stopping?
                 </p>
                 {stopError && (
@@ -1465,9 +2149,7 @@ export default function Strategies() {
                               marginBottom:'12px' }}>{stopError}</p>
                 )}
                 <div style={{ display:'flex', flexDirection:'column', gap:'8px' }}>
-                  <button
-                    onClick={() => confirmStop(true)}
-                    disabled={stopping}
+                  <button onClick={() => confirmStop(true)} disabled={stopping}
                     style={{
                       padding:'10px', border:'none', borderRadius:'8px',
                       background:'var(--red)', color:'#fff',
@@ -1476,25 +2158,19 @@ export default function Strategies() {
                     }}>
                     {stopping ? 'Closing & Stopping...' : 'Close Positions & Stop'}
                   </button>
-                  <button
-                    onClick={() => confirmStop(false)}
-                    disabled={stopping}
+                  <button onClick={() => confirmStop(false)} disabled={stopping}
                     style={{
                       padding:'10px', border:'1px solid var(--border)',
                       borderRadius:'8px', background:'var(--bg3)',
-                      color:'var(--muted)', fontSize:'13px', fontWeight:600,
-                      cursor:'pointer',
+                      color:'var(--muted)', fontSize:'13px', fontWeight:600, cursor:'pointer',
                     }}>
                     Stop Without Closing
                   </button>
-                  <button
-                    onClick={() => setStopTarget(null)}
-                    disabled={stopping}
+                  <button onClick={() => setStopTarget(null)} disabled={stopping}
                     style={{
                       padding:'10px', border:'1px solid var(--border)',
                       borderRadius:'8px', background:'var(--bg3)',
-                      color:'var(--muted)', fontSize:'13px', fontWeight:600,
-                      cursor:'pointer',
+                      color:'var(--muted)', fontSize:'13px', fontWeight:600, cursor:'pointer',
                     }}>
                     Cancel
                   </button>
@@ -1502,30 +2178,23 @@ export default function Strategies() {
               </>
             ) : (
               <>
-                <p style={{ fontSize:'13px', color:'var(--dim)',
-                            marginBottom:'20px' }}>
-                  Stop <strong style={{ color:'var(--text)' }}>
-                    {stopTarget.name}
-                  </strong>? No open positions will be affected.
+                <p style={{ fontSize:'13px', color:'var(--dim)', marginBottom:'20px' }}>
+                  Stop <strong style={{ color:'var(--text)' }}>{stopTarget.name}</strong>?
+                  No open positions will be affected.
                 </p>
                 {stopError && (
                   <p style={{ color:'var(--red)', fontSize:'13px',
                               marginBottom:'12px' }}>{stopError}</p>
                 )}
                 <div style={{ display:'flex', gap:'10px' }}>
-                  <button
-                    onClick={() => setStopTarget(null)}
+                  <button onClick={() => setStopTarget(null)}
                     style={{
                       flex:1, padding:'10px',
                       border:'1px solid var(--border)', borderRadius:'8px',
                       background:'var(--bg3)', fontSize:'13px', fontWeight:600,
                       cursor:'pointer', color:'var(--muted)',
-                    }}>
-                    Cancel
-                  </button>
-                  <button
-                    onClick={() => confirmStop(false)}
-                    disabled={stopping}
+                    }}>Cancel</button>
+                  <button onClick={() => confirmStop(false)} disabled={stopping}
                     style={{
                       flex:1, padding:'10px', border:'none', borderRadius:'8px',
                       background:'var(--red)', color:'#fff',
@@ -1541,7 +2210,7 @@ export default function Strategies() {
         </div>
       )}
 
-      {/* Webhook Secret Display — shown once after creation */}
+      {/* ── Webhook Secret Display — shown once after TV strategy creation ── */}
       {createdSecret && (
         <div style={{
           position:'fixed', inset:0, background:'rgba(0,0,0,.55)',
@@ -1557,13 +2226,10 @@ export default function Strategies() {
                          color:'var(--text)', marginBottom:'8px' }}>
               Strategy Created ✓
             </h2>
-            <p style={{ fontSize:'13px', color:'var(--dim)',
-                        marginBottom:'16px' }}>
-              Save these credentials now. The webhook secret will not be
-              shown again.
+            <p style={{ fontSize:'13px', color:'var(--dim)', marginBottom:'16px' }}>
+              Save these credentials now. The webhook secret will not be shown again.
             </p>
 
-            {/* Secret */}
             <div style={{ marginBottom:'14px' }}>
               <label style={{
                 display:'block', fontSize:'10px', fontWeight:600,
@@ -1580,19 +2246,15 @@ export default function Strategies() {
                 }}>
                   {createdSecret.secret}
                 </code>
-                <button
-                  onClick={() => navigator.clipboard.writeText(createdSecret.secret)}
+                <button onClick={() => navigator.clipboard.writeText(createdSecret.secret)}
                   style={{
                     padding:'8px 12px', background:'var(--bg2)',
                     border:'1px solid var(--border)', borderRadius:'8px',
                     fontSize:'12px', cursor:'pointer', color:'var(--blue)',
-                  }}>
-                  Copy
-                </button>
+                  }}>Copy</button>
               </div>
             </div>
 
-            {/* Webhook URL */}
             <div style={{ marginBottom:'24px' }}>
               <label style={{
                 display:'block', fontSize:'10px', fontWeight:600,
@@ -1609,15 +2271,12 @@ export default function Strategies() {
                 }}>
                   {createdSecret.url}
                 </code>
-                <button
-                  onClick={() => navigator.clipboard.writeText(createdSecret.url)}
+                <button onClick={() => navigator.clipboard.writeText(createdSecret.url)}
                   style={{
                     padding:'8px 12px', background:'var(--bg2)',
                     border:'1px solid var(--border)', borderRadius:'8px',
                     fontSize:'12px', cursor:'pointer', color:'var(--blue)',
-                  }}>
-                  Copy
-                </button>
+                  }}>Copy</button>
               </div>
             </div>
 

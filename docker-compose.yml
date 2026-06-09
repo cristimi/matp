@@ -122,6 +122,7 @@ services:
       GENERATOR_URL: http://order-generator:8002
       LISTENER_URL: http://order-listener:8001
       EXECUTOR_URL: http://order-executor:8004
+      AI_SIGNAL_GENERATOR_URL: http://ai-signal-generator:8005
     depends_on:
       postgres:
         condition: service_healthy
@@ -154,6 +155,8 @@ services:
       DATABASE_URL: ${DATABASE_URL:-postgresql://matp:matp@postgres:5432/matp}
       REDIS_URL: redis://redis:6379
       GEMINI_API_KEY: ${GEMINI_API_KEY}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       CRYPTOPANIC_API_KEY: ${CRYPTOPANIC_API_KEY}
       MATP_LISTENER_URL: http://order-listener:8001
       MATP_EXECUTOR_URL: http://order-executor:8004
