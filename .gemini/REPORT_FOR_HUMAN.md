@@ -1,3 +1,65 @@
+# Session 9: signal_log Extension + webhook_handler Patch
+
+**Date:** 2026-06-09
+**Status:** SUCCESS — all 6 tests pass
+
+## Changes Made
+
+### 1. `db/migrations/009_signal_log_ai_fields.sql` (new)
+Adds `ai_reasoning TEXT` and `ai_confidence NUMERIC(4,3)` to `signal_log` with `IF NOT EXISTS` guard.
+
+### 2. `order-listener/app/webhook_handler.py` (patched)
+Single surgical edit to `_insert_signal_log`: extracts `signal_metadata.reasoning` and `signal_metadata.confidence` from the incoming `body_dict` and passes them as `$4`/`$5` to the INSERT. No other functions touched.
+
+## Verification Results
+
+### Test 1: Migration columns
+```
+  column_name  | data_type | is_nullable
+---------------+-----------+-------------
+ ai_confidence | numeric   | YES
+ ai_reasoning  | text      | YES
+(2 rows)
+```
+
+### Test 2: Existing rows unaffected
+```
+ id | outcome     | ai_reasoning | ai_confidence
+----+-------------+--------------+---------------
+ 66 | filled      |              |
+ 65 | filled      |              |
+ 64 | filled      |              |
+ 63 | filled      |              |
+ 62 | auth_failed |              |
+(5 rows)
+```
+
+### Test 3: order-listener health
+```
+{"status":"ok","service":"order-listener"}
+```
+
+### Test 4: Non-AI webhook — ai fields NULL
+```
+ id | outcome | ai_reasoning | ai_confidence
+----+---------+--------------+---------------
+ 69 | filled  |              |
+(1 row)
+```
+
+### Test 5: AI webhook — ai fields populated
+```
+ id | outcome |                           ai_reasoning                           | ai_confidence
+----+---------+------------------------------------------------------------------+---------------
+ 70 | filled  | RSI at 38 approaching oversold. MACD histogram turning positive. |         0.820
+(1 row)
+```
+
+### Test 6: No errors in order-listener logs
+Clean — both webhooks processed with `filled` status, no tracebacks.
+
+---
+
 # Session 8: UI Components + Strategy Card Fixes
 
 **Date:** 2026-06-09

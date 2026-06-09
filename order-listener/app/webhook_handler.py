@@ -105,16 +105,23 @@ async def _insert_signal_log(
 ) -> Optional[int]:
     """Insert initial signal_log row. Returns row id, or None on error."""
     try:
+        # Extract AI fields from signal_metadata (safe for non-AI signals)
+        signal_metadata = body_dict.get('signal_metadata') or {}
+        ai_reasoning    = signal_metadata.get('reasoning')    # str | None
+        ai_confidence   = signal_metadata.get('confidence')   # float | None
+
         async with pool.acquire() as conn:
             row_id = await conn.fetchval(
                 """
-                INSERT INTO signal_log (strategy_id, source_ip, raw_body)
-                VALUES ($1, $2::inet, $3::jsonb)
+                INSERT INTO signal_log (strategy_id, source_ip, raw_body, ai_reasoning, ai_confidence)
+                VALUES ($1, $2::inet, $3::jsonb, $4, $5)
                 RETURNING id
                 """,
                 strategy_id,
                 source_ip,
                 json.dumps(body_dict),
+                ai_reasoning,
+                ai_confidence,
             )
         return row_id
     except Exception as e:
