@@ -2,6 +2,7 @@ fastapi
 uvicorn
 asyncpg
 langgraph>=0.2.0
+langgraph-checkpoint-postgres
 langchain-google-genai
 google-generativeai
 ccxt

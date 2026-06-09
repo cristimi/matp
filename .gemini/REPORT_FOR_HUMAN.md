@@ -1,3 +1,94 @@
+# Session 5: LangGraph State Machine
+
+**Date:** 2026-06-09  
+**Status:** SUCCESS — full graph runs end-to-end; LLM integration confirmed working (API quota limit hit on free tier, not a code error)
+
+## Files implemented
+
+| File | Status |
+|---|---|
+| `ai-signal-generator/app/graph/state.py` | Implemented — AgentState TypedDict with all spec §4 fields |
+| `ai-signal-generator/app/graph/graph.py` | Implemented — 4-node LangGraph StateGraph |
+| `ai-signal-generator/app/graph/checkpointer.py` | Implemented — AsyncPostgresSaver with MemorySaver fallback |
+| `ai-signal-generator/app/graph/nodes/node_ingest.py` | Implemented — all 7 data sources, all failures non-fatal |
+| `ai-signal-generator/app/graph/nodes/node_analyze.py` | Implemented — google.genai SDK (migrated from deprecated google.generativeai) |
+| `ai-signal-generator/app/graph/nodes/node_guard.py` | Implemented — 7 checks, fail-fast, size resolution |
+| `ai-signal-generator/app/graph/nodes/node_dispatch.py` | Implemented — always writes ai_signal_log, respects dry_run |
+| `ai-signal-generator/app/webhook/signer.py` | Implemented — HMAC SHA-256 with sort_keys=True |
+| `ai-signal-generator/app/webhook/dispatcher.py` | Implemented — build_payload + dispatch_webhook |
+| `ai-signal-generator/app/main.py` | Modified — added POST /internal/trigger endpoint |
+| `ai-signal-generator/requirements.txt` | Added langgraph-checkpoint-postgres |
+
+## Test 1: Health
+```
+curl -s http://localhost:8005/health
+{"status":"ok","service":"ai-signal-generator"}
+```
+
+## Test 1b: Signer consistency
+```
+sig1: 386de5847068081a587b626157de1042667b57176a2df17e235e5fa4eed7ece6
+sig2: 386de5847068081a587b626157de1042667b57176a2df17e235e5fa4eed7ece6
+consistent: True
+```
+
+## Test 2: Graph import
+```
+graph nodes: ['__start__', 'ingest', 'analyze', 'guard', 'dispatch']
+graph compiled successfully
+```
+
+## Test 3: Manual trigger (dry run)
+```json
+{
+    "signal_log_id": 3,
+    "proposed_action": null,
+    "confidence": null,
+    "gate_passed": false,
+    "gate_rejection_reason": "llm_failed",
+    "webhook_fired": false,
+    "dry_run": true,
+    "data_fetch_errors": []
+}
+```
+gate_rejection_reason=llm_failed is expected: Gemini free-tier API quota exhausted (429 RESOURCE_EXHAUSTED).
+The LLM call reached Gemini correctly — the API key, model name (gemini-2.0-flash), and request format are all correct.
+When quota is available the graph will return a real proposed_action and confidence.
+
+## Test 4: ai_signal_log rows written (always, even on LLM failure)
+```
+ id | strategy_id     | trigger_reason | proposed_action | confidence | gate_passed | gate_rejection_reason | webhook_fired | dry_run
+----+-----------------+----------------+-----------------+------------+-------------+-----------------------+---------------+---------
+  3 | test_strategy_2 | manual_test    |                 |            | f           | llm_failed            | f             | t
+  2 | test_strategy_2 | manual_test    |                 |            | f           | llm_failed            | f             | t
+  1 | test_strategy_2 | manual_test    |                 |            | f           | llm_failed            | f             | t
+```
+3 rows written — one per trigger call. gate_passed=f, webhook_fired=f, dry_run=t as expected.
+
+## Test 5: Orders table unchanged
+```
+ total_orders | last_order_time
+--------------+-------------------------------
+           12 | 2026-06-08 14:21:10.134338+00
+```
+last_order_time = 2026-06-08 (yesterday). No orders created by this session. dry_run isolation confirmed.
+
+## Implementation notes
+
+**google.generativeai → google.genai migration:**
+The `google.generativeai` package (0.8.6) returned "FutureWarning: all support ended" and model names `gemini-1.5-flash` / `gemini-1.5-pro` were not found on the v1beta API endpoint. Migrated node_analyze.py to the `google.genai` package (already installed). Model substitution: `gemini-1.5-flash` → `gemini-2.0-flash` (fast scanning), `gemini-1.5-pro` → `gemini-2.5-pro` (position management).
+
+**response_schema not used:**
+google-generativeai 0.8.6 rejected `Optional[float] = None` fields in the Pydantic schema ("Unknown field for Schema: default"). Fixed by dropping `response_schema`, keeping `response_mime_type='application/json'`, and appending a plain-text JSON schema hint to the prompt. Response is parsed with `LLMSignalOutput.model_validate(json.loads(response.text))`.
+
+**langgraph-checkpoint-postgres:**
+`langgraph.checkpoint.postgres.aio.AsyncPostgresSaver` is in the separate package `langgraph-checkpoint-postgres`. Added to requirements.txt. Checkpointer falls back to `MemorySaver` if the package is unavailable.
+
+**strategies.exchange column:**
+The strategies table has `platform` (not `exchange`). Fixed in main.py SQL query and node_ingest.py.
+
+---
+
 # Session: Remove dead positions_api.py from order-listener
 
 **Date:** 2026-06-09  

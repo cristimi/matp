@@ -1,1 +1,151 @@
-# placeholder
+import logging
+from datetime import datetime, timezone, timedelta
+
+import httpx
+
+from app.config import settings
+from app.database import get_pool
+from app.graph.state import AgentState
+
+logger = logging.getLogger(__name__)
+
+# Maps action → strategy_config cooldown key; None means no cooldown
+_ACTION_COOLDOWN: dict[str, str | None] = {
+    'open_long':    'cooldown_entry_minutes',
+    'open_short':   'cooldown_entry_minutes',
+    'partial_close': 'cooldown_entry_minutes',
+    'adjust_stops': 'cooldown_stop_adj_minutes',
+    'close_long':   None,
+    'close_short':  None,
+    'hold':         None,
+}
+
+
+def _reject(state: AgentState, reason: str) -> AgentState:
+    return {**state, 'gate_passed': False, 'gate_rejection_reason': reason}
+
+
+async def node_guard(state: AgentState) -> AgentState:
+    sc   = state['strategy_config']
+    rc   = state['risk_config']
+    pool = get_pool()
+
+    # ── 1. LLM signal present ────────────────────────────────────────────
+    if state.get('llm_signal') is None:
+        return _reject(state, 'llm_failed')
+
+    signal = state['llm_signal']
+    action = signal['action']
+
+    # ── 2. Hold / adjust_stops — not an error, just no webhook ──────────
+    if action in ('hold', 'adjust_stops'):
+        return {**state, 'gate_passed': False, 'gate_rejection_reason': 'hold_or_adjust'}
+
+    # ── 3. Confidence threshold ──────────────────────────────────────────
+    threshold = float(sc.get('confidence_threshold') or 0.72)
+    if signal['confidence'] < threshold:
+        return _reject(state, 'confidence_below_threshold')
+
+    # ── 4. Action coherence ──────────────────────────────────────────────
+    position_open = state.get('position_open', False)
+    if action in ('open_long', 'open_short') and position_open:
+        return _reject(state, 'position_already_open')
+    if action in ('close_long', 'close_short', 'partial_close') and not position_open:
+        return _reject(state, 'no_position_to_close')
+
+    # ── 5. Cooldown ──────────────────────────────────────────────────────
+    cooldown_key = _ACTION_COOLDOWN.get(action)
+    if cooldown_key:
+        cooldown_minutes = int(sc.get(cooldown_key) or 240)
+        try:
+            async with pool.acquire() as conn:
+                last = await conn.fetchval(
+                    """
+                    SELECT triggered_at FROM ai_signal_log
+                    WHERE strategy_id = $1
+                      AND proposed_action = $2
+                      AND gate_passed = TRUE
+                      AND triggered_at >= $3
+                    ORDER BY triggered_at DESC
+                    LIMIT 1
+                    """,
+                    state['strategy_id'],
+                    action,
+                    datetime.now(timezone.utc) - timedelta(minutes=cooldown_minutes),
+                )
+            if last is not None:
+                return _reject(state, 'cooldown_active')
+        except Exception as exc:
+            logger.warning("Cooldown check failed: %s", exc)
+
+    # ── 6 & 7. Daily loss cap + max drawdown ────────────────────────────
+    try:
+        async with pool.acquire() as conn:
+            pnl_today = await conn.fetchval(
+                "SELECT COALESCE(pnl_today, 0) FROM strategies WHERE id = $1",
+                state['strategy_id'],
+            )
+        if pnl_today is not None:
+            pnl = float(pnl_today)
+            if pnl < -float(rc.get('max_daily_loss_pct') or 3.0):
+                return _reject(state, 'daily_loss_cap')
+            if pnl < -float(rc.get('max_drawdown_pct') or 8.0):
+                return _reject(state, 'max_drawdown')
+    except Exception as exc:
+        logger.warning("PnL check failed: %s", exc)
+
+    # ── Size resolution (opening actions) ───────────────────────────────
+    if action in ('open_long', 'open_short'):
+        try:
+            account_id = sc.get('account_id', '')
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.get(
+                    f"{settings.matp_executor_url}/accounts/{account_id}/balance"
+                )
+                resp.raise_for_status()
+                bal = resp.json()
+                usdt_balance = float(
+                    bal.get('available_balance') or bal.get('total_balance') or 0
+                )
+
+            size_pct     = min(float(signal['size_pct']), float(rc.get('max_position_size_pct') or 5.0))
+            usdt_alloc   = usdt_balance * size_pct / 100.0
+            current_price = float((state.get('ohlcv_data') or {}).get('current_price') or 0)
+
+            if current_price <= 0:
+                return _reject(state, 'size_resolution_failed')
+
+            base_qty = round(usdt_alloc / current_price, 4)
+            sl_pct   = float(signal['stop_loss_pct'])
+            tp_pct   = float(signal['take_profit_pct'])
+
+            if action == 'open_long':
+                sl_price = round(current_price * (1 - sl_pct / 100.0), 4)
+                tp_price = round(current_price * (1 + tp_pct / 100.0), 4)
+            else:
+                sl_price = round(current_price * (1 + sl_pct / 100.0), 4)
+                tp_price = round(current_price * (1 - tp_pct / 100.0), 4)
+
+            return {
+                **state,
+                'gate_passed':           True,
+                'gate_rejection_reason': None,
+                'resolved_size':         base_qty,
+                'resolved_sl_price':     sl_price,
+                'resolved_tp_price':     tp_price,
+            }
+
+        except Exception as exc:
+            logger.error("Size resolution failed: %s", exc)
+            return _reject(state, 'size_resolution_failed')
+
+    # ── Close actions — use current position size ────────────────────────
+    resolved_size = state.get('position_size') or 0.01
+    return {
+        **state,
+        'gate_passed':           True,
+        'gate_rejection_reason': None,
+        'resolved_size':         resolved_size,
+        'resolved_sl_price':     None,
+        'resolved_tp_price':     None,
+    }
