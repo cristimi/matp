@@ -46,6 +46,7 @@ interface Strategy {
   ai_interval_position_open?: string;
   ai_interval_at_risk?:      string;
   ai_at_risk_threshold_pct?: number;
+  ai_last_cycle_at?:         string;
 }
 
 function formatRelativeDate(isoString: string): string {
@@ -323,8 +324,8 @@ function StrategyCard({
                 fontWeight:500, color:'var(--muted)', lineHeight:1.1,
               }}>
                 Last cycle:{' '}
-                {strategy.last_signal_at
-                  ? formatRelativeDate(strategy.last_signal_at)
+                {strategy.ai_last_cycle_at
+                  ? formatRelativeDate(strategy.ai_last_cycle_at)
                   : '—'}
               </span>
             </>

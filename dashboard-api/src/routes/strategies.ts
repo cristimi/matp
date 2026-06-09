@@ -135,7 +135,12 @@ router.get('/', async (_req: Request, res: Response) => {
         aic.interval_no_position   AS ai_interval_no_position,
         aic.interval_position_open AS ai_interval_position_open,
         aic.interval_at_risk       AS ai_interval_at_risk,
-        aic.at_risk_threshold_pct::float AS ai_at_risk_threshold_pct
+        aic.at_risk_threshold_pct::float AS ai_at_risk_threshold_pct,
+        (
+          SELECT triggered_at FROM ai_signal_log
+          WHERE strategy_id = s.id
+          ORDER BY triggered_at DESC LIMIT 1
+        ) AS ai_last_cycle_at
       FROM strategies s
       LEFT JOIN exchange_accounts ea ON ea.id = s.account_id
       LEFT JOIN ai_strategy_config aic ON aic.strategy_id = s.id
