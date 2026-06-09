@@ -182,6 +182,17 @@ def compute_indicators(candles: list[dict], enabled: list[str]) -> dict:
         except Exception as exc:
             logger.warning("Support/resistance failed: %s", exc)
 
+        # ── Volume vs average (always) ───────────────────────────────────────
+        try:
+            vol_window = min(20, len(volume))
+            avg_vol = float(volume.rolling(vol_window).mean().iloc[-1])
+            if avg_vol > 0:
+                result['volume_vs_avg_pct'] = round(
+                    (float(volume.iloc[-1]) / avg_vol - 1) * 100, 1
+                )
+        except Exception as exc:
+            logger.warning("Volume vs avg failed: %s", exc)
+
         return result
 
     except Exception as exc:

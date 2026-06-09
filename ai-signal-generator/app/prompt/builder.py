@@ -116,6 +116,12 @@ def _render_technical(state: dict) -> str:
         lines.append(
             f"ATR(14):          {ind['atr_14']} ({ind.get('atr_pct_of_price', 'N/A')}% of price)"
         )
+    if 'volume_vs_avg_pct' in ind:
+        vol_pct = ind['volume_vs_avg_pct']
+        direction = 'above' if vol_pct >= 0 else 'below'
+        lines.append(
+            f"Volume (vs 20MA):  {abs(vol_pct)}% {direction} average"
+        )
 
     if 'support_1' in ind or 'resistance_1' in ind:
         lines += ['', 'Key Levels:']

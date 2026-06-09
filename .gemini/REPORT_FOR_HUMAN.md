@@ -1,3 +1,63 @@
+# range_rotation template — implementation report
+
+**Date:** 2026-06-09
+**Status:** COMPLETE
+
+### Files changed
+- ✓ `db/migrations/010_range_rotation_template.sql` — created
+- ✓ `ai-signal-generator/app/data/indicators.py` — `volume_vs_avg_pct` added
+- ✓ `ai-signal-generator/app/prompt/builder.py` — volume rendering added
+
+### Database
+```
+       id        |      name
+-----------------+-----------------
+ breakout        | Breakout Hunter
+ conservative    | Conservative
+ mean_reversion  | Mean Reversion
+ range_rotation  | Range Rotation
+ scalper         | Scalper
+ trend_following | Trend Following
+(6 rows)
+```
+
+### Service health
+```
+{"status":"ok","service":"ai-signal-generator"}
+```
+
+### Prompt preview
+PASS — range_rotation template confirmed in prompt output. First 20 lines:
+```
+═══════════════════════════════════════════════════════════
+MATP AI ANALYSIS — BTC-USDT — 1h
+Generated: 2026-06-09 20:40:48 UTC
+Analysis Trigger: preview
+═══════════════════════════════════════════════════════════
+
+PORTFOLIO CONTEXT:
+Account Balance:      (resolved at execution time)
+Today's P&L:          N/A%  (cap: 3.0%)
+Max Position Size:    5.0%
+Last Signal:          N/A
+
+STRATEGY INSTRUCTIONS:
+You are a quantitative crypto analyst specializing in range-trading strategies on perpetual futures.
+
+PHASE 1 — RANGE IDENTIFICATION:
+...
+PHASE 2 — TRADING THE RANGE:
+...
+PHASE 3 — BREAK DETECTION (overrides everything):
+...
+```
+Text "PHASE 1" confirmed present. Volume (vs 20MA) line rendered when technical data is available.
+
+### Issues
+- `/internal/preview-prompt` requires a full `strategy_config` object in `mock_state` (not just `template_id`). The dashboard-api's `/config/preview-prompt` route does not accept a template override — it uses the strategy's saved `template_id`. Tested via the internal endpoint directly with a correctly formed mock state.
+
+---
+
 # PWA Setup for MATP Dashboard
 
 **Date:** 2026-06-09
