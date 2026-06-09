@@ -393,6 +393,16 @@ class HyperliquidAdapter(ExchangeAdapter):
             logger.warning(f"HyperliquidAdapter._get_fill_pnl failed for oid {oid}: {e}")
             return None
 
+    async def list_instruments(self) -> list[str]:
+        """Return all perpetual instrument symbols in BASE-USDT format."""
+        try:
+            if self._asset_cache is None:
+                await self._get_asset_index("BTC-USDT")  # populates cache as a side effect
+            return sorted(f"{coin}-USDT" for coin in self._asset_cache.keys())
+        except Exception as e:
+            logger.error(f"HyperliquidAdapter.list_instruments failed: {e}")
+            return []
+
     async def get_balance(self) -> dict:
         """Fetch balance from Hyperliquid.
 

@@ -402,6 +402,15 @@ class BlofinAdapter(ExchangeAdapter):
                 "error":             str(e),
             }
 
+    async def list_instruments(self) -> list[str]:
+        """Return all SWAP instrument IDs available on this Blofin endpoint."""
+        try:
+            await self._get_instrument("")   # ensures cache is populated
+            return sorted(BlofinAdapter._instruments.get(self.base_url, {}).keys())
+        except Exception as e:
+            logger.error(f"BlofinAdapter.list_instruments failed: {e}")
+            return []
+
     async def get_account_meta(self) -> dict:
         """Return api_key — non-sensitive without the secret/passphrase."""
         try:

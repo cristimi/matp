@@ -1,108 +1,54 @@
 import { Router, Request, Response } from 'express';
 import crypto from 'crypto';
-import https from 'https';
 import { getPool } from '../db';
 
 const router = Router();
 
-// ── Exchange symbol validation ──────────────────────────────────────────────
-// Cache: { cacheKey -> { symbols: Set<string>, fetchedAt: number } }
+const EXECUTOR_URL = process.env.EXECUTOR_URL || 'http://order-executor:8004';
+
+// ── Exchange symbol validation (routed through order-executor) ─────────────
+// Cache: { account_id -> { symbols: Set<string>, fetchedAt: number } }
 const _symbolCache = new Map<string, { symbols: Set<string>; fetchedAt: number }>();
 const SYMBOL_CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
-
-function _httpsGet(url: string): Promise<any> {
-  return new Promise((resolve, reject) => {
-    https.get(url, (res) => {
-      let body = '';
-      res.on('data', (chunk) => { body += chunk; });
-      res.on('end', () => {
-        try { resolve(JSON.parse(body)); } catch (e) { reject(e); }
-      });
-    }).on('error', reject);
-  });
-}
-
-async function _fetchBlofinSymbols(baseUrl: string): Promise<Set<string>> {
-  const data = await _httpsGet(`${baseUrl}/api/v1/market/instruments?instType=SWAP`);
-  const items: any[] = data?.data ?? [];
-  return new Set(items.map((i: any) => (i.instId as string).toUpperCase()));
-}
-
-async function _fetchHyperliquidSymbols(baseUrl: string): Promise<Set<string>> {
-  // Hyperliquid meta returns coin names (e.g. "BTC"). We expose them as "BTC-USDT".
-  const data: any = await new Promise((resolve, reject) => {
-    const body = JSON.stringify({ type: 'meta' });
-    const url = new URL(`${baseUrl}/info`);
-    const req = https.request(
-      { hostname: url.hostname, path: url.pathname, method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) } },
-      (res) => {
-        let buf = '';
-        res.on('data', (c) => { buf += c; });
-        res.on('end', () => { try { resolve(JSON.parse(buf)); } catch (e) { reject(e); } });
-      }
-    );
-    req.on('error', reject);
-    req.write(body);
-    req.end();
-  });
-  const universe: any[] = data?.universe ?? [];
-  return new Set(universe.map((a: any) => `${(a.name as string).toUpperCase()}-USDT`));
-}
 
 async function validateSymbolForAccount(
   accountId: string,
   symbol: string,
 ): Promise<{ valid: boolean; error?: string }> {
   try {
-    const acctRow = await getPool().query(
-      `SELECT exchange, mode FROM exchange_accounts WHERE id = $1`,
-      [accountId]
-    );
-    if (acctRow.rowCount === 0) return { valid: true }; // account validation handles this
-
-    const { exchange, mode } = acctRow.rows[0];
-    const cacheKey = `${exchange}:${mode}`;
     const now = Date.now();
-    const cached = _symbolCache.get(cacheKey);
+    const cached = _symbolCache.get(accountId);
 
     let symbols: Set<string>;
     if (cached && now - cached.fetchedAt < SYMBOL_CACHE_TTL_MS) {
       symbols = cached.symbols;
     } else {
-      if (exchange === 'blofin') {
-        const baseUrl = mode === 'demo'
-          ? 'https://demo-trading-api.blofin.com'
-          : 'https://openapi.blofin.com';
-        symbols = await _fetchBlofinSymbols(baseUrl);
-      } else if (exchange === 'hyperliquid') {
-        const baseUrl = mode === 'demo'
-          ? 'https://api.hyperliquid-testnet.xyz'
-          : 'https://api.hyperliquid.xyz';
-        symbols = await _fetchHyperliquidSymbols(baseUrl);
-      } else {
-        return { valid: true }; // unknown exchange — skip validation
-      }
-      _symbolCache.set(cacheKey, { symbols, fetchedAt: now });
+      const resp = await fetch(`${EXECUTOR_URL}/accounts/${accountId}/instruments`);
+      if (!resp.ok) return { valid: true }; // executor unreachable — fail open
+      const data = await resp.json() as { instruments: string[] };
+      symbols = new Set((data.instruments ?? []).map((s: string) => s.toUpperCase()));
+      _symbolCache.set(accountId, { symbols, fetchedAt: now });
     }
+
+    if (symbols.size === 0) return { valid: true }; // empty list means unknown exchange — skip
 
     const upper = symbol.toUpperCase();
     if (!symbols.has(upper)) {
-      // Find close matches (same base asset)
       const base = upper.split('-')[0];
       const suggestions = [...symbols].filter(s => s.startsWith(base + '-')).slice(0, 5);
-      const hint = suggestions.length > 0
-        ? ` Available variants: ${suggestions.join(', ')}.`
-        : '';
-      return {
-        valid: false,
-        error: `Symbol '${symbol}' does not exist on ${exchange} (${mode}).${hint}`,
-      };
+      const hint = suggestions.length > 0 ? ` Available variants: ${suggestions.join(', ')}.` : '';
+      // Fetch exchange/mode for the error message
+      const acctRow = await getPool().query(
+        `SELECT exchange, mode FROM exchange_accounts WHERE id = $1`, [accountId]
+      );
+      const label = acctRow.rowCount
+        ? `${acctRow.rows[0].exchange} (${acctRow.rows[0].mode})`
+        : accountId;
+      return { valid: false, error: `Symbol '${symbol}' does not exist on ${label}.${hint}` };
     }
     return { valid: true };
   } catch (err: any) {
-    // Exchange API unreachable — warn in logs but don't block the save
-    console.warn(`Symbol validation skipped (exchange API error): ${err.message}`);
+    console.warn(`Symbol validation skipped (executor unreachable): ${err.message}`);
     return { valid: true };
   }
 }

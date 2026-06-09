@@ -45,6 +45,16 @@ class ExchangeAdapter(ABC):
         pass
 
     @abstractmethod
+    async def list_instruments(self) -> list[str]:
+        """
+        Return all tradeable instrument symbols for this account's exchange/mode.
+        Symbols must be in the canonical BASE-QUOTE format used by this adapter
+        (e.g. "BTC-USDT").  Must never raise — return [] on error.
+        Implementations should cache results to avoid repeated API calls.
+        """
+        pass
+
+    @abstractmethod
     async def get_account_meta(self) -> dict:
         """
         Return safe public metadata about the account.

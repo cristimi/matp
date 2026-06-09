@@ -188,6 +188,18 @@ async def get_account_balance(account_id: str):
         }
 
 
+@app.get("/accounts/{account_id}/instruments")
+async def get_instruments(account_id: str):
+    """Return all tradeable instrument symbols for this account's exchange."""
+    try:
+        adapter = await registry.get(account_id)
+        instruments = await adapter.list_instruments()
+        return {"instruments": instruments}
+    except Exception as e:
+        logger.error(f"get_instruments failed for {account_id}: {e}")
+        return {"instruments": [], "error": str(e)}
+
+
 @app.get("/accounts/{account_id}/meta")
 async def get_account_meta(account_id: str):
     """Return safe public metadata for a specific account."""
