@@ -205,12 +205,13 @@ async def close_position(account_id: str, request: dict):
     """Close a specific position on the exchange."""
     symbol = request.get("symbol")
     side = request.get("side")
+    margin_mode = request.get("margin_mode", "isolated")
     if not symbol or not side:
         raise HTTPException(status_code=400, detail="Missing symbol or side")
-    
+
     try:
         adapter = await registry.get(account_id)
-        result = await adapter.close_position(symbol, side)
+        result = await adapter.close_position(symbol, side, margin_mode=margin_mode)
         return result
     except Exception as e:
         logger.error(f"close_position failed for {account_id}: {e}")

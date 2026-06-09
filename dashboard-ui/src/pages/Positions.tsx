@@ -392,10 +392,16 @@ export default function Positions() {
   const handleClose = async (id: string) => {
     if (!confirm('Close this position?')) return;
     try {
-      await fetch(`/api/dashboard/positions/${id}/close`, { method: 'POST' });
-      fetchPositions();
+      const res = await fetch(`/api/dashboard/positions/${id}/close`, { method: 'POST' });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        alert(`Failed to close position: ${body.error || res.statusText}`);
+        return;
+      }
+      await fetchPositions();
     } catch (err) {
       console.error('handleClose error:', err);
+      alert('Failed to close position: network error');
     }
   };
 

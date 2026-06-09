@@ -90,12 +90,12 @@ class HyperliquidAdapter(ExchangeAdapter):
                 error_msg=str(e),
             )
 
-    async def close_position(self, symbol: str, side: str) -> OrderResult:
+    async def close_position(self, symbol: str, side: str, margin_mode: str = "isolated") -> OrderResult:
         try:
             positions = await self.get_open_positions()
             target = next(
                 (p for p in positions
-                 if p["symbol"] == symbol and p["side"] == side),
+                 if p.symbol == symbol and p.side == side),
                 None
             )
             if not target:
@@ -113,7 +113,7 @@ class HyperliquidAdapter(ExchangeAdapter):
                 side=close_side,
                 signal="close",
                 order_type="market",
-                size=target["size"],
+                size=target.size,
                 leverage=None,
                 margin_mode=None,
             )

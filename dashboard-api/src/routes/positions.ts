@@ -111,7 +111,7 @@ router.post('/:id/close', async (req: Request, res: Response) => {
     const pool = getPool();
     // 1. Fetch position details
     const posResult = await pool.query(
-      `SELECT sp.id, sp.symbol, sp.side, s.account_id, sp.status
+      `SELECT sp.id, sp.symbol, sp.side, sp.margin_mode, s.account_id, sp.status
        FROM strategy_positions sp
        JOIN strategies s ON sp.strategy_id = s.id
        WHERE sp.id = $1`,
@@ -131,7 +131,7 @@ router.post('/:id/close', async (req: Request, res: Response) => {
     const execResp = await fetch(`${EXECUTOR_URL}/accounts/${pos.account_id}/positions/close`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ symbol: pos.symbol, side: pos.side })
+      body: JSON.stringify({ symbol: pos.symbol, side: pos.side, margin_mode: pos.margin_mode })
     });
 
     if (!execResp.ok) {
@@ -140,16 +140,21 @@ router.post('/:id/close', async (req: Request, res: Response) => {
     }
 
     const result = await execResp.json() as any;
-    
+
+    // Guard: if the exchange itself rejected the close, do NOT mark position closed in DB
+    if (!result.success) {
+      return res.status(502).json({ error: result.error_msg || 'Exchange rejected close order — position remains open' });
+    }
+
     // 3. Update DB status to closed
     await pool.query(
-      `UPDATE strategy_positions 
-       SET status = 'closed', 
-           closed_at = NOW(), 
+      `UPDATE strategy_positions
+       SET status = 'closed',
+           closed_at = NOW(),
            closing_price = $1,
            pnl_realized = $2
        WHERE id = $3`,
-      [result.actual_fill_price, result.pnl, pos.id]
+      [result.actual_fill_price, result.realized_pnl, pos.id]
     );
 
     res.json({ success: true, result });

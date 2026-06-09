@@ -105,20 +105,23 @@ class BlofinAdapter(ExchangeAdapter):
             "/api/v1/trade/orders-history?instId={inst}&orderId={oid}",
             "/api/v1/trade/fills-history?instId={inst}&orderId={oid}",
         ]:
-            full_path = path_tpl.format(inst=symbol, oid=order_id)
-            headers = self._headers("GET", full_path, "")
-            async with httpx.AsyncClient(base_url=self.base_url, timeout=10) as client:
-                response = await client.get(full_path, headers=headers)
-            if response.status_code != 200:
-                continue
-            data = response.json()
-            code = str(data.get("code", "0"))
-            if code not in ("0", "200"):
-                logger.debug(f"Blofin {full_path} returned code {code}: {data.get('msg')}")
-                continue
-            items = data.get("data", [])
-            if isinstance(items, list) and items:
-                return items[0]
+            try:
+                full_path = path_tpl.format(inst=symbol, oid=order_id)
+                headers = self._headers("GET", full_path, "")
+                async with httpx.AsyncClient(base_url=self.base_url, timeout=10) as client:
+                    response = await client.get(full_path, headers=headers)
+                if response.status_code != 200:
+                    continue
+                data = response.json()
+                code = str(data.get("code", "0"))
+                if code not in ("0", "200"):
+                    logger.debug(f"Blofin {full_path} returned code {code}: {data.get('msg')}")
+                    continue
+                items = data.get("data", [])
+                if isinstance(items, list) and items:
+                    return items[0]
+            except Exception as e:
+                logger.warning(f"Blofin: error fetching order details from {path_tpl}: {e}")
         logger.warning(f"Blofin: could not fetch order details for {order_id}")
         return {}
 
@@ -209,12 +212,15 @@ class BlofinAdapter(ExchangeAdapter):
                 actual_fill_price = None
                 pnl = None
                 if order.order_type == "market":
-                    await asyncio.sleep(2.0)
-                    details = await self._get_order_details(order.symbol, exchange_order_id)
-                    if details:
-                        actual_fill_price = self._parse_fill_price(details)
-                        pnl_raw = details.get("pnl") or details.get("realizedPnl")
-                        pnl = Decimal(str(pnl_raw)) if pnl_raw is not None else None
+                    try:
+                        await asyncio.sleep(2.0)
+                        details = await self._get_order_details(order.symbol, exchange_order_id)
+                        if details:
+                            actual_fill_price = self._parse_fill_price(details)
+                            pnl_raw = details.get("pnl") or details.get("realizedPnl")
+                            pnl = Decimal(str(pnl_raw)) if pnl_raw is not None else None
+                    except Exception as e:
+                        logger.warning(f"Blofin submit_order: fill details fetch failed (order still filled): {e}")
 
                 return OrderResult(
                     success=True,
@@ -272,13 +278,13 @@ class BlofinAdapter(ExchangeAdapter):
             
         return mapped_positions
 
-    async def close_position(self, symbol: str, side: str) -> OrderResult:
+    async def close_position(self, symbol: str, side: str, margin_mode: str = "isolated") -> OrderResult:
         path = "/api/v1/trade/close-position"
-        
+
         body_data = {
             "instId": symbol,
-            "marginMode": "cross", 
-            "positionSide": "net"
+            "marginMode": margin_mode,
+            "positionSide": "net",
         }
         
         body_str = json.dumps(body_data, separators=(",", ":"))
@@ -298,19 +304,29 @@ class BlofinAdapter(ExchangeAdapter):
 
         data = response.json()
         code = data.get("code")
-        
-        if str(code) in ["0", "200"] and data.get("data") and isinstance(data["data"], list) and len(data["data"]) > 0:
-            order_info = data["data"][0]
+
+        if str(code) in ["0", "200"]:
+            # Blofin close-position returns data as dict or list depending on version
+            data_payload = data.get("data")
+            if isinstance(data_payload, list) and data_payload:
+                order_info = data_payload[0]
+            elif isinstance(data_payload, dict):
+                order_info = data_payload
+            else:
+                order_info = {}
             exchange_order_id = order_info.get("orderId")
             
-            await asyncio.sleep(2.0)
-            details = await self._get_order_details(symbol, exchange_order_id)
             fill_price = None
             pnl = None
-            if details:
-                fill_price = self._parse_fill_price(details)
-                pnl_raw = details.get("pnl") or details.get("realizedPnl")
-                pnl = Decimal(str(pnl_raw)) if pnl_raw is not None else None
+            try:
+                await asyncio.sleep(2.0)
+                details = await self._get_order_details(symbol, exchange_order_id)
+                if details:
+                    fill_price = self._parse_fill_price(details)
+                    pnl_raw = details.get("pnl") or details.get("realizedPnl")
+                    pnl = Decimal(str(pnl_raw)) if pnl_raw is not None else None
+            except Exception as e:
+                logger.warning(f"Blofin close_position: fill details fetch failed (close still succeeded): {e}")
 
             return OrderResult(
                 success=True,
