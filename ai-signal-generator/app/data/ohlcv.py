@@ -4,7 +4,7 @@ OHLCV data fetcher using ccxt async.
 
 import asyncio
 import logging
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 
 import ccxt.async_support as ccxt_async
 
@@ -47,13 +47,15 @@ async def fetch_ohlcv(
         exchange = _make_exchange(exchange_id)
         await exchange.load_markets()
 
-        limit = _candles_needed(timeframe, lookback_days)
-        since_ms = int(
-            (datetime.now(timezone.utc) - timedelta(days=lookback_days)).timestamp() * 1000
-        )
+        # Request enough candles for all indicators (EMA200 needs 200+).
+        # Do NOT pass `since` — exchanges cap limit (Binance: 1000) so a
+        # far-back `since` makes the window end in the past, giving stale
+        # "current price". Without `since`, the exchange returns the most
+        # recent N candles ending at now.
+        limit = max(500, _candles_needed(timeframe, lookback_days))
 
         raw = await exchange.fetch_ohlcv(
-            symbol, timeframe=timeframe, since=since_ms, limit=limit
+            symbol, timeframe=timeframe, limit=limit
         )
         if not raw:
             logger.warning("fetch_ohlcv: no data for %s %s %s", exchange_id, symbol, timeframe)
