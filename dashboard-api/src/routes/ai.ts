@@ -392,6 +392,7 @@ router.put('/strategies/:id/config', async (req: Request, res: Response) => {
        WHERE a.strategy_id = $1`,
       [strategyId]
     );
+    notifyConfigReload(strategyId);
     res.json(formatConfig(rows[0]));
   } catch (e: any) {
     res.status(500).json({ error: e.message });

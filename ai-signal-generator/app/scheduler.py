@@ -29,14 +29,18 @@ class AdaptiveScheduler:
         self._task          = None
         self._last_trigger: datetime | None = None
         self._last_interval: int = 4 * 3600
+        self._wakeup: asyncio.Event | None = None
 
     async def start(self):
         self._running = True
+        self._wakeup  = asyncio.Event()
         self._task = asyncio.create_task(self._loop(), name=f"scheduler_{self.strategy_id}")
         logger.info("Scheduler started strategy=%s", self.strategy_id)
 
     async def stop(self):
         self._running = False
+        if self._wakeup:
+            self._wakeup.set()  # unblock any ongoing sleep so the task can exit
         if self._task:
             self._task.cancel()
             try:
@@ -44,6 +48,22 @@ class AdaptiveScheduler:
             except asyncio.CancelledError:
                 pass
         logger.info("Scheduler stopped strategy=%s", self.strategy_id)
+
+    def interrupt(self) -> None:
+        """Wake up the current sleep so the loop re-reads config from DB immediately."""
+        if self._wakeup is not None:
+            self._wakeup.set()
+
+    async def _sleep(self, seconds: float) -> bool:
+        """Sleep for `seconds` or until interrupt() is called.
+        Returns True if interrupted early (config reload), False on natural expiry.
+        CancelledError propagates unchanged so stop() works correctly."""
+        self._wakeup.clear()
+        try:
+            await asyncio.wait_for(self._wakeup.wait(), timeout=seconds)
+            return True  # woken early
+        except asyncio.TimeoutError:
+            return False  # normal expiry
 
     async def _loop(self):
         while self._running:
@@ -53,9 +73,14 @@ class AdaptiveScheduler:
                 "Scheduler strategy=%s interval=%ds (%.1fh)",
                 self.strategy_id, interval, interval / 3600,
             )
-            await asyncio.sleep(interval)
-            if self._running:
+            interrupted = await self._sleep(interval)
+            if self._running and not interrupted:
                 await self._trigger_cycle('scheduled')
+            elif self._running and interrupted:
+                logger.info(
+                    "Scheduler strategy=%s sleep interrupted — re-reading interval from DB",
+                    self.strategy_id,
+                )
 
     async def _get_interval(self) -> int:
         config = await self._load_config()

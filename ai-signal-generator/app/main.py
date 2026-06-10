@@ -275,9 +275,10 @@ async def trigger_scheduler(strategy_id: str, body: TriggerSchedulerRequest):
 async def config_reload(strategy_id: str):
     schedulers = getattr(app.state, 'schedulers', {})
     if strategy_id not in schedulers:
-        return {'status': 'not_found'}
-    # Scheduler reloads config from DB on each _get_interval() call — just acknowledge
-    return {'status': 'ok', 'strategy_id': strategy_id}
+        return {'status': 'not_found', 'strategy_id': strategy_id}
+    schedulers[strategy_id].interrupt()
+    logger.info("config-reload: interrupted sleep for strategy=%s", strategy_id)
+    return {'status': 'ok', 'strategy_id': strategy_id, 'interrupted': True}
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
