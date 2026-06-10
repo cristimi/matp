@@ -11,7 +11,7 @@ from app.prompt.builder import build_prompt, get_estimated_tokens
 logger = logging.getLogger(__name__)
 
 _DEFAULT_PROVIDER = 'google'
-_DEFAULT_MODEL    = 'gemini-2.0-flash'
+_DEFAULT_MODEL    = 'gemini-2.5-flash'
 
 
 class LLMSignalOutput(BaseModel):

@@ -22,13 +22,6 @@ export function SectionHeader({ label, count, variant }: SectionHeaderProps) {
       padding:    '4px 2px 10px',
       marginTop:  '14px',
     }}>
-      <div style={{
-        width:        '9px',
-        height:       '9px',
-        borderRadius: '50%',
-        background:   c.text,
-        flexShrink:   0,
-      }} />
       <span style={{
         fontSize:      '12px',
         fontWeight:    800,

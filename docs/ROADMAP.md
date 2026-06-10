@@ -26,7 +26,14 @@ qty = risk_per_trade / (entry_price × stop_loss_pct / 100)
 ```
 LLM still outputs `stop_loss_pct`; the guard derives qty from it. `max_position_size_pct` remains as a hard ceiling.
 
-### 3. Multi-Strategy / Same-Symbol Coordination
+### 4. Separate OHLCV Timeframe from Analysis Interval
+**Decision pending.** Currently `cycle_interval` (scheduler sleep time) doubles as the OHLCV candle timeframe passed to `fetch_ohlcv`. This means the LLM sees different candle resolutions depending on strategy state (no position → 4h candles, position open → 15m candles), which is an inconsistent market view.
+
+Proposed: add `ohlcv_timeframe` column to `ai_strategy_config` (fixed per strategy, standard exchange intervals only: 1m/3m/5m/15m/30m/1h/2h/4h/6h/8h/12h/1d). `node_ingest.py` reads this instead of `cycle_interval`. The three analysis intervals become pure scheduler sleep timers with no candle-timeframe side effect.
+
+Changes required: DB migration, one line in `node_ingest.py`, `ai.ts` GET/PUT, UI Add/Edit modals, optional prompt builder update.
+
+### 5. Multi-Strategy / Same-Symbol Coordination
 **Deferred — gather data first.** Up to 3 strategies may run concurrently on the same symbol (AI scalper, AI swing, TradingView).
 
 - Risk: unintended stacked exposure or self-hedging.
@@ -41,9 +48,10 @@ LLM still outputs `stop_loss_pct`; the guard derives qty from it. `max_position_
 | 2026-06-10 | OHLCV returning stale price (~2400 instead of ~1600) because `since=90d_ago` + exchange candle cap left last candle 50 days in past | Removed `since` param — exchange now returns most recent N candles |
 | 2026-06-10 | `gemini-3-pro-preview` deprecated, returning 404 | Updated eth-range strategy to `gemini-3.1-pro-preview` |
 | 2026-06-10 | Config-reload was a no-op; scheduler slept full interval after interval change | Added interruptible sleep + immediate cycle on config reload |
+| 2026-06-10 | `volume_vs_avg_pct` always showed -70 to -99% because Binance returns the current incomplete candle as the last OHLCV entry | Fixed by computing volume average and current value from `volume.iloc[:-1]` (completed candles only) |
+| 2026-06-10 | On service restart, schedulers slept a full interval before the first cycle, leaving strategies idle for hours | Added immediate startup cycle before the sleep loop in `AdaptiveScheduler._loop()` |
 
 ---
 
 ## Deferred Backlog
-- **Startup catch-up**: on service restart, check `ai_signal_log` for last cycle time; if interval has elapsed, run a cycle immediately rather than waiting a full new interval.
 - **Minimum order value guard**: before sending to exchange, check notional value (qty × price) against known exchange minimums. Reject with `size_too_small` before hitting the exchange API.

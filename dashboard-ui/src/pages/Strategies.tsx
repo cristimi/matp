@@ -137,21 +137,14 @@ function CouplingToggle({ label, checked, onChange, warn }: {
   );
 }
 
-function getAIIntervalLabel(strategy: Strategy): string {
-  const interval = strategy.ai_interval_no_position ?? '4h';
-  return `${interval} scan`;
-}
-
 function StrategyCard({
   strategy,
-  onCouplingChange,
   onStop,
   onStart,
   onEdit,
   onDelete,
 }: {
   strategy: Strategy;
-  onCouplingChange: (id: string, field: string, value: boolean) => void;
   onStop: (s: Strategy) => void;
   onStart: (id: string) => void;
   onEdit: (s: Strategy) => void;
@@ -225,12 +218,24 @@ function StrategyCard({
         }}>
           {strategy.symbol}
         </span>
-        {isAI && <Pill variant="ai">AI</Pill>}
         <Pill variant="lev">
           {strategy.default_leverage ?? 1}x / {strategy.max_leverage ?? 10}x
         </Pill>
-        <Pill variant="tech">Cross</Pill>
-        <div style={{ marginLeft:'auto' }}>
+        <div style={{ marginLeft:'auto', display:'flex', alignItems:'center', gap:'4px' }}>
+          {isAI && (
+            <span style={{
+              fontFamily:'JetBrains Mono, monospace', fontSize:'10px',
+              fontWeight:600,
+              borderRadius:'var(--pill-r)', padding:'2px 6px',
+              border:'1px solid var(--blue-b)',
+              background:'var(--blue-a)', color:'var(--blue)',
+              display:'inline-block', lineHeight:1, flexShrink:0, letterSpacing:'.04em',
+            }}>
+              {(strategy.open_positions_count ?? 0) > 0
+                ? strategy.ai_interval_position_open ?? '15m'
+                : strategy.ai_interval_no_position ?? '4h'}
+            </span>
+          )}
           {isAI ? (
             <Pill variant={strategy.ai_dry_run ? 'dryrun' : 'open'}>
               {strategy.ai_dry_run ? 'dry run' : 'live'}
@@ -248,9 +253,10 @@ function StrategyCard({
         padding:'5px 12px 0 18px',
         display:'flex', gap:'6px', alignItems:'center',
       }}>
+        {isAI && <Pill variant="ai">AI</Pill>}
         <span style={{
           fontFamily:   'JetBrains Mono, monospace',
-          fontSize:     '10px', fontWeight:700, letterSpacing:'.04em',
+          fontSize:     '12px', fontWeight:700, letterSpacing:'.04em',
           background:   'var(--bg3)', border:'1px solid var(--border)',
           borderRadius: 'var(--pill-r)', padding:'2px 6px',
           color:'var(--muted)', textTransform:'uppercase',
@@ -267,18 +273,6 @@ function StrategyCard({
         }}>
           ID: {strategy.id.slice(0, 8)}
         </span>
-        {strategy.allow_cross_charting && (
-          <span style={{
-            fontFamily:   'JetBrains Mono, monospace',
-            fontSize:     '9px', fontWeight:700, letterSpacing:'.06em',
-            background:   'var(--failed-color-a)',
-            border:       '1px solid var(--failed-color-b)',
-            borderRadius: 'var(--pill-r)', padding:'2px 6px',
-            color:        'var(--failed-color)', textTransform:'uppercase',
-          }}>
-            ⚠ Cross-Chart
-          </span>
-        )}
       </div>
 
       {/* Row 1b: route + time */}
@@ -313,12 +307,6 @@ function StrategyCard({
         }}>
           {isAI ? (
             <>
-              <span style={{
-                fontFamily:'JetBrains Mono, monospace', fontSize:'10px',
-                fontWeight:500, color:'var(--muted)', lineHeight:1.1,
-              }}>
-                Interval: {getAIIntervalLabel(strategy)}
-              </span>
               <span style={{
                 fontFamily:'JetBrains Mono, monospace', fontSize:'10px',
                 fontWeight:500, color:'var(--muted)', lineHeight:1.1,
@@ -428,41 +416,35 @@ function StrategyCard({
         </div>
       </div>
 
-      {/* Symbol Coupling toggles */}
-      <div style={{
-        display:'flex', gap:'16px', padding:'6px 12px 8px 18px',
-        borderTop:'1px solid var(--border)',
-        background:'var(--bg2)',
-      }}>
-        <CouplingToggle
-          label="Quote Variants"
-          checked={strategy.allow_quote_variants}
-          onChange={(v) => onCouplingChange(strategy.id, 'allow_quote_variants', v)}
-        />
-        <CouplingToggle
-          label="Cross-Charting"
-          checked={strategy.allow_cross_charting}
-          onChange={(v) => onCouplingChange(strategy.id, 'allow_cross_charting', v)}
-          warn={strategy.allow_cross_charting}
-        />
-      </div>
-
       {/* Action band */}
       <div style={{
         borderTop:'1px solid var(--border)', background:'var(--bg2)',
         display:'flex',
       }}>
         {isActive ? (
-          <button
-            onClick={() => onStop(strategy)}
-            style={{
-              flex:1, background:'transparent', border:'none',
-              color:'var(--red)', fontSize:'11px', fontWeight:700,
-              letterSpacing:'.06em', textTransform:'uppercase',
-              padding:'10px', cursor:'pointer', textAlign:'center',
-            }}>
-            ⏹ Stop Strategy
-          </button>
+          <>
+            <button
+              onClick={() => onStop(strategy)}
+              style={{
+                flex:1, background:'transparent', border:'none',
+                color:'var(--red)', fontSize:'11px', fontWeight:700,
+                letterSpacing:'.06em', textTransform:'uppercase',
+                padding:'10px', cursor:'pointer', textAlign:'center',
+                borderRight:'1px solid var(--border)',
+              }}>
+              ⏹ Stop
+            </button>
+            <button
+              onClick={() => onEdit(strategy)}
+              style={{
+                flex:1, background:'transparent', border:'none',
+                color:'var(--blue)', fontSize:'11px', fontWeight:700,
+                letterSpacing:'.06em', textTransform:'uppercase',
+                padding:'10px', cursor:'pointer', textAlign:'center',
+              }}>
+              ✎ Edit
+            </button>
+          </>
         ) : (
           <>
             <button
@@ -543,7 +525,7 @@ function SectionDivider({ label }: { label: string }) {
   );
 }
 
-interface AiModel { id: string; display_name: string; }
+interface AiModel { id: string; display_name: string; verified?: boolean; }
 
 const PROVIDERS = [
   { value: 'google',     label: 'Google Gemini' },
@@ -675,7 +657,8 @@ export default function Strategies() {
         ? data.models.map((m: any) => typeof m === 'string' ? { id: m, display_name: m } : m)
         : [];
       setAiModels(models);
-      setAiForm(f => ({ ...f, llm_model: models[0]?.id ?? '' }));
+      const firstVerified = models.find(m => m.verified !== false)?.id ?? models[0]?.id ?? '';
+      setAiForm(f => ({ ...f, llm_model: firstVerified }));
     } catch {
       setAiModels([]);
     }
@@ -689,7 +672,8 @@ export default function Strategies() {
         ? data.models.map((m: any) => typeof m === 'string' ? { id: m, display_name: m } : m)
         : [];
       setEditAiModels(models);
-      setAiEditForm(f => ({ ...f, llm_model: f.llm_model || (models[0]?.id ?? '') }));
+      const firstVerified = models.find(m => m.verified !== false)?.id ?? models[0]?.id ?? '';
+      setAiEditForm(f => ({ ...f, llm_model: f.llm_model || firstVerified }));
     } catch {
       setEditAiModels([]);
     }
@@ -1059,8 +1043,18 @@ export default function Strategies() {
     }
     return true;
   });
-  const active   = filtered.filter(s =>  s.enabled);
-  const inactive = filtered.filter(s => !s.enabled);
+  const sortStrategies = (list: Strategy[]) =>
+    [...list].sort((a, b) => {
+      const posA = (a.open_positions_count ?? 0) > 0 ? 1 : 0;
+      const posB = (b.open_positions_count ?? 0) > 0 ? 1 : 0;
+      if (posA !== posB) return posB - posA;
+      const tA = a.strategy_source === 'ai_engine' ? a.ai_last_cycle_at : a.last_signal_at;
+      const tB = b.strategy_source === 'ai_engine' ? b.ai_last_cycle_at : b.last_signal_at;
+      return (tB ? new Date(tB).getTime() : 0) - (tA ? new Date(tA).getTime() : 0);
+    });
+
+  const active   = sortStrategies(filtered.filter(s =>  s.enabled));
+  const inactive = sortStrategies(filtered.filter(s => !s.enabled));
 
   if (loading) {
     return <div style={{ padding:'24px', color:'var(--dim)' }}>Loading strategies...</div>;
@@ -1223,8 +1217,8 @@ export default function Strategies() {
             <SectionHeader label="Active" count={active.length} variant="live" />
             {active.map(s => (
               <StrategyCard key={s.id} strategy={s}
-                onCouplingChange={handleCouplingChange} onStop={handleStop}
-                onStart={handleStart} onEdit={handleEdit} onDelete={handleDelete} />
+                onStop={handleStop} onStart={handleStart}
+                onEdit={handleEdit} onDelete={handleDelete} />
             ))}
           </>
         )}
@@ -1233,8 +1227,8 @@ export default function Strategies() {
             <SectionHeader label="Inactive" count={inactive.length} variant="closed" />
             {inactive.map(s => (
               <StrategyCard key={s.id} strategy={s}
-                onCouplingChange={handleCouplingChange} onStop={handleStop}
-                onStart={handleStart} onEdit={handleEdit} onDelete={handleDelete} />
+                onStop={handleStop} onStart={handleStart}
+                onEdit={handleEdit} onDelete={handleDelete} />
             ))}
           </>
         )}
@@ -1551,7 +1545,11 @@ export default function Strategies() {
                     style={inputStyle}>
                     {aiModels.length === 0
                       ? <option value="">Loading models...</option>
-                      : aiModels.map(m => <option key={m.id} value={m.id}>{m.display_name}</option>)
+                      : aiModels.map(m => (
+                          <option key={m.id} value={m.id}>
+                            {m.verified === false ? `⚠ ${m.display_name} (unverified)` : m.display_name}
+                          </option>
+                        ))
                     }
                   </select>
                 </div>
@@ -1697,6 +1695,18 @@ export default function Strategies() {
                           marginBottom:'12px' }}>{editError}</p>
             )}
 
+            {(editTarget.open_positions_count ?? 0) > 0 && (
+              <div style={{
+                background:'var(--failed-color-a)', border:'1px solid var(--failed-color-b)',
+                borderRadius:'8px', padding:'10px 14px', marginBottom:'16px',
+              }}>
+                <p style={{ fontSize:'12px', color:'var(--failed-color)', fontWeight:600, margin:0 }}>
+                  ⚠ {editTarget.open_positions_count} open position(s) — Symbol and Account are locked.
+                  Close positions first to change them.
+                </p>
+              </div>
+            )}
+
             {editTarget.strategy_source === 'ai_engine' ? (
               <>
                 {/* Section 1: Identity */}
@@ -1711,13 +1721,16 @@ export default function Strategies() {
                   <label style={labelStyle}>Symbol</label>
                   <input value={editForm.symbol}
                     onChange={e => setEditForm((f:any) => ({ ...f, symbol: e.target.value }))}
-                    style={{ ...inputStyle, fontFamily:'JetBrains Mono, monospace' }} />
+                    disabled={(editTarget.open_positions_count ?? 0) > 0}
+                    style={{ ...inputStyle, fontFamily:'JetBrains Mono, monospace',
+                      opacity:(editTarget.open_positions_count ?? 0) > 0 ? 0.5 : 1 }} />
                 </div>
                 <div style={{ marginBottom:'14px' }}>
                   <label style={labelStyle}>Exchange Account</label>
                   <select value={editForm.account_id}
                     onChange={e => setEditForm((f:any) => ({ ...f, account_id: e.target.value }))}
-                    style={inputStyle}>
+                    disabled={(editTarget.open_positions_count ?? 0) > 0}
+                    style={{ ...inputStyle, opacity:(editTarget.open_positions_count ?? 0) > 0 ? 0.5 : 1 }}>
                     {accounts.map(a => (
                       <option key={a.id} value={a.id}>{a.label} ({a.exchange} / {a.mode})</option>
                     ))}
@@ -1826,7 +1839,11 @@ export default function Strategies() {
                     style={inputStyle}>
                     {editAiModels.length === 0
                       ? <option value="">Loading models...</option>
-                      : editAiModels.map(m => <option key={m.id} value={m.id}>{m.display_name}</option>)
+                      : editAiModels.map(m => (
+                          <option key={m.id} value={m.id}>
+                            {m.verified === false ? `⚠ ${m.display_name} (unverified)` : m.display_name}
+                          </option>
+                        ))
                     }
                   </select>
                 </div>
@@ -1892,21 +1909,27 @@ export default function Strategies() {
                       border:'1px solid var(--border)', borderRadius:'8px',
                       background:'var(--bg3)',
                     }}>
-                      {([true, false] as const).map(v => (
-                        <label key={String(v)} style={{
-                          display:'flex', alignItems:'center', gap:'5px', cursor:'pointer',
-                        }}>
-                          <input type="radio"
-                            checked={aiEditForm.dry_run === v}
-                            onChange={() => setAiEditForm(f => ({ ...f, dry_run: v }))} />
-                          <span style={{
-                            fontSize:'11px', fontWeight:600,
-                            color: v ? 'var(--failed-color)' : 'var(--green)',
+                      {([true, false] as const).map(v => {
+                        const lockedOn = v === true && !aiEditForm.dry_run && (editTarget.open_positions_count ?? 0) > 0;
+                        return (
+                          <label key={String(v)} style={{
+                            display:'flex', alignItems:'center', gap:'5px',
+                            cursor: lockedOn ? 'not-allowed' : 'pointer',
+                            opacity: lockedOn ? 0.4 : 1,
                           }}>
-                            {v ? 'ON' : 'OFF'}
-                          </span>
-                        </label>
-                      ))}
+                            <input type="radio"
+                              checked={aiEditForm.dry_run === v}
+                              disabled={lockedOn}
+                              onChange={() => setAiEditForm(f => ({ ...f, dry_run: v }))} />
+                            <span style={{
+                              fontSize:'11px', fontWeight:600,
+                              color: v ? 'var(--failed-color)' : 'var(--green)',
+                            }}>
+                              {v ? 'ON' : 'OFF'}
+                            </span>
+                          </label>
+                        );
+                      })}
                     </div>
                   </div>
                 </div>
@@ -1922,13 +1945,16 @@ export default function Strategies() {
                 <FieldRow label="Symbol">
                   <input value={editForm.symbol}
                     onChange={e => setEditForm((f:any) => ({ ...f, symbol: e.target.value }))}
-                    style={{ ...inputStyle, fontFamily:'JetBrains Mono, monospace' }} />
+                    disabled={(editTarget.open_positions_count ?? 0) > 0}
+                    style={{ ...inputStyle, fontFamily:'JetBrains Mono, monospace',
+                      opacity:(editTarget.open_positions_count ?? 0) > 0 ? 0.5 : 1 }} />
                 </FieldRow>
 
                 <FieldRow label="Account">
                   <select value={editForm.account_id}
                     onChange={e => setEditForm((f:any) => ({ ...f, account_id: e.target.value }))}
-                    style={inputStyle}>
+                    disabled={(editTarget.open_positions_count ?? 0) > 0}
+                    style={{ ...inputStyle, opacity:(editTarget.open_positions_count ?? 0) > 0 ? 0.5 : 1 }}>
                     {accounts.map(a => (
                       <option key={a.id} value={a.id}>
                         {a.label} ({a.exchange} / {a.mode})

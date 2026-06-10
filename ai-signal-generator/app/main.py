@@ -2,6 +2,7 @@
 AI Signal Generator Service — FastAPI application entry point.
 """
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -24,6 +25,26 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+async def _model_probe_loop():
+    """Probe all provider models on startup, then refresh every 24 h."""
+    from app.models_registry import probe_all_models, clear_cache
+    try:
+        logger.info("Model probe: starting initial verification for all providers")
+        summary = await probe_all_models()
+        logger.info("Model probe complete: %s", summary)
+    except Exception as exc:
+        logger.error("Initial model probe failed: %s", exc)
+    while True:
+        await asyncio.sleep(86_400)
+        try:
+            logger.info("Model probe: daily refresh")
+            clear_cache()
+            summary = await probe_all_models()
+            logger.info("Model probe daily refresh complete: %s", summary)
+        except Exception as exc:
+            logger.error("Daily model probe failed: %s", exc)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
@@ -34,17 +55,20 @@ async def lifespan(app: FastAPI):
     monitor_tasks  = await start_all_price_monitors(pool, settings.matp_listener_url)
     watcher_tasks  = await start_all_event_watchers(pool, graph, schedulers)
 
+    probe_task = asyncio.create_task(_model_probe_loop(), name="model_probe_loop")
+
     app.state.schedulers    = schedulers
     app.state.monitor_tasks = monitor_tasks
     app.state.watcher_tasks = watcher_tasks
     app.state.graph         = graph
+    app.state.probe_task    = probe_task
 
     yield
 
     # ── Shutdown ──────────────────────────────────────────────────────────────
+    probe_task.cancel()
     await stop_all_schedulers(schedulers)
 
-    import asyncio
     for task in monitor_tasks + watcher_tasks:
         task.cancel()
     if monitor_tasks or watcher_tasks:
@@ -101,6 +125,19 @@ async def list_models(provider: str):
     except Exception as exc:
         logger.error("Failed to list models for %s: %s", provider, exc)
         return {"provider": provider, "models": [], "key_configured": False, "error": str(exc)}
+
+
+@app.post("/internal/models/verify")
+async def verify_models(provider: str | None = None, force: bool = False):
+    """Re-probe models for a provider (or all providers). Runs in background."""
+    from app.models_registry import probe_all_models, clear_cache
+    async def _run():
+        if force:
+            clear_cache(provider)
+        summary = await probe_all_models(provider=provider, force=False)
+        logger.info("On-demand model probe complete: %s", summary)
+    asyncio.create_task(_run())
+    return {"status": "started", "provider": provider or "all", "force": force}
 
 
 # ── /internal/trigger ────────────────────────────────────────────────────────

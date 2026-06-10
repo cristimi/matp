@@ -66,6 +66,9 @@ class AdaptiveScheduler:
             return False  # normal expiry
 
     async def _loop(self):
+        logger.info("Scheduler strategy=%s startup — triggering immediate cycle", self.strategy_id)
+        await self._trigger_cycle('startup')
+
         while self._running:
             interval = await self._get_interval()
             self._last_interval = interval
