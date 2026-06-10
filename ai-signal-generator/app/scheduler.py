@@ -74,13 +74,16 @@ class AdaptiveScheduler:
                 self.strategy_id, interval, interval / 3600,
             )
             interrupted = await self._sleep(interval)
-            if self._running and not interrupted:
-                await self._trigger_cycle('scheduled')
-            elif self._running and interrupted:
+            if not self._running:
+                break
+            if interrupted:
                 logger.info(
-                    "Scheduler strategy=%s sleep interrupted — re-reading interval from DB",
+                    "Scheduler strategy=%s config reload — triggering immediate cycle",
                     self.strategy_id,
                 )
+                await self._trigger_cycle('config_reload')
+            else:
+                await self._trigger_cycle('scheduled')
 
     async def _get_interval(self) -> int:
         config = await self._load_config()
