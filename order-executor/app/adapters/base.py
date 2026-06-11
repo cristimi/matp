@@ -55,6 +55,21 @@ class ExchangeAdapter(ABC):
         pass
 
     @abstractmethod
+    async def get_closed_position_details(self, symbol: str) -> dict | None:
+        """
+        Query the exchange for the most recent closed position for the given symbol.
+        Returns a dict with keys:
+            close_reason:   str   — 'Liquidated' or 'Closed on exchange'
+            closing_price:  Decimal
+            pnl_realized:   Decimal  (net of fees where available)
+            closed_at:      datetime (tz-aware UTC)
+            raw:            dict     (full exchange response for audit)
+        Returns None if no closed position history is found.
+        Must never raise.
+        """
+        pass
+
+    @abstractmethod
     async def get_account_meta(self) -> dict:
         """
         Return safe public metadata about the account.

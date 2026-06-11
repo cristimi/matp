@@ -160,6 +160,18 @@ async def encrypt_credentials(request: EncryptRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/accounts/{account_id}/positions/history")
+async def get_position_history(account_id: str, symbol: str):
+    """Return the most recent closed position details for a symbol (for stale-position recovery)."""
+    try:
+        adapter = await registry.get(account_id)
+        details = await adapter.get_closed_position_details(symbol)
+        return details or {}
+    except Exception as e:
+        logger.error(f"get_position_history failed for {account_id}/{symbol}: {e}")
+        return {}
+
+
 @app.get("/accounts/{account_id}/positions")
 async def get_positions(account_id: str):
     """Return open positions for a specific account."""

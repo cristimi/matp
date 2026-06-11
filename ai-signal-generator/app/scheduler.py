@@ -2,6 +2,10 @@ import asyncio
 import logging
 from datetime import datetime, timezone
 
+import httpx
+
+from app.config import settings
+
 logger = logging.getLogger(__name__)
 
 
@@ -164,6 +168,9 @@ class AdaptiveScheduler:
         sc  = _row_to_dict(strategy)
         pos = _row_to_dict(position) if position else None
 
+        if pos and sc.get('account_id') and sc.get('symbol'):
+            pos = await self._recover_external_close(pos, sc['account_id'], sc['symbol'])
+
         # Parse symbol → base_asset / quote_asset
         symbol = sc.get('symbol', 'BTC-USDT')
         if '-' in symbol:
@@ -226,6 +233,117 @@ class AdaptiveScheduler:
                 self.strategy_id,
             )
             return dict(row) if row else None
+
+    async def _recover_external_close(self, pos: dict, account_id: str, symbol: str) -> dict | None:
+        """
+        If the DB position is open but no longer live on the exchange, query the
+        exchange history to recover closing details, write a synthetic closing order,
+        and mark the position closed. Returns None so the cycle runs as flat.
+        If exchange is unreachable, returns pos unchanged (fail safe).
+        """
+        try:
+            # 1. Check if position is still live
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                live_resp = await client.get(
+                    f"{settings.matp_executor_url}/accounts/{account_id}/positions"
+                )
+                live_resp.raise_for_status()
+                live = live_resp.json()
+
+            live_symbols = {p.get('symbol') for p in live if isinstance(p, dict)}
+            if symbol in live_symbols:
+                return pos  # still live, nothing to do
+
+        except Exception as exc:
+            logger.warning(
+                "Scheduler strategy=%s: live position check failed (%s) — skipping recovery",
+                self.strategy_id, exc,
+            )
+            return pos
+
+        # 2. Position is gone — fetch closing details from exchange history
+        logger.warning(
+            "Scheduler strategy=%s: position %s not found on exchange — recovering from history",
+            self.strategy_id, symbol,
+        )
+        details = None
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                hist_resp = await client.get(
+                    f"{settings.matp_executor_url}/accounts/{account_id}/positions/history",
+                    params={"symbol": symbol},
+                )
+                hist_resp.raise_for_status()
+                details = hist_resp.json() or None
+        except Exception as exc:
+            logger.warning(
+                "Scheduler strategy=%s: history fetch failed (%s) — marking as closed without details",
+                self.strategy_id, exc,
+            )
+
+        close_reason  = (details or {}).get("close_reason", "Closed on exchange")
+        closing_price = (details or {}).get("closing_price")
+        pnl_realized  = (details or {}).get("pnl_realized")
+        closed_at     = (details or {}).get("closed_at")
+        raw           = (details or {}).get("raw")
+
+        # 3. Write synthetic closing order + update position in one transaction
+        try:
+            async with self.db_pool.acquire() as conn:
+                async with conn.transaction():
+                    close_side = "sell" if pos.get("side") == "long" else "buy"
+                    signal_val = "liquidation" if close_reason == "Liquidated" else "exchange_close"
+
+                    order_id = await conn.fetchval(
+                        """INSERT INTO orders
+                               (symbol, side, signal, order_type, size, platform,
+                                strategy_id, account_id, status, actual_fill_price,
+                                pnl, raw_webhook, raw_response, signal_source,
+                                received_at)
+                           VALUES ($1,$2,$3,'market',$4,$5,$6,$7,'filled',$8,$9,
+                                   '{}'::jsonb,$10::jsonb,'exchange',$11)
+                           RETURNING id""",
+                        symbol,
+                        close_side,
+                        signal_val,
+                        pos.get("size"),
+                        pos.get("exchange", "unknown"),
+                        self.strategy_id,
+                        account_id,
+                        closing_price,
+                        pnl_realized,
+                        __import__('json').dumps(raw) if raw else None,
+                        closed_at,
+                    )
+
+                    await conn.execute(
+                        """UPDATE strategy_positions
+                           SET status        = 'closed',
+                               close_reason  = $1,
+                               closing_price = $2,
+                               pnl_realized  = $3,
+                               closed_at     = COALESCE($4, NOW()),
+                               closing_order_id = $5
+                           WHERE id = $6 AND status = 'open'""",
+                        close_reason,
+                        closing_price,
+                        pnl_realized,
+                        closed_at,
+                        order_id,
+                        pos["id"],
+                    )
+
+            logger.info(
+                "Scheduler strategy=%s: position %s recovered — %s, pnl=%s",
+                self.strategy_id, symbol, close_reason, pnl_realized,
+            )
+        except Exception as exc:
+            logger.error(
+                "Scheduler strategy=%s: failed to write recovery to DB (%s)",
+                self.strategy_id, exc,
+            )
+
+        return None  # treat as flat regardless of DB write outcome
 
     async def _get_open_position(self) -> dict | None:
         async with self.db_pool.acquire() as conn:

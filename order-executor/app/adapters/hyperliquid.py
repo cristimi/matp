@@ -460,6 +460,58 @@ class HyperliquidAdapter(ExchangeAdapter):
                 "error":             str(e),
             }
 
+    async def get_closed_position_details(self, symbol: str) -> dict | None:
+        try:
+            coin = symbol.replace("-USDT", "").replace("-USD", "").upper()
+            async with httpx.AsyncClient(timeout=10) as client:
+                resp = await client.post(
+                    f"{self.base_url}/info",
+                    json={"type": "userFills", "user": self.query_address},
+                )
+                resp.raise_for_status()
+            fills = resp.json()
+
+            # Keep only closing fills for this coin (dir contains "Close" or "Liq")
+            close_fills = [
+                f for f in fills
+                if f.get("coin") == coin and (
+                    "Close" in (f.get("dir") or "") or
+                    "Liq"   in (f.get("dir") or "")
+                )
+            ]
+            if not close_fills:
+                return None
+
+            # Most recent fill first
+            close_fills.sort(key=lambda f: f.get("time", 0), reverse=True)
+            latest = close_fills[0]
+
+            is_liquidation = any("Liq" in (f.get("dir") or "") for f in close_fills)
+
+            pnl = sum(Decimal(str(f.get("closedPnl", "0"))) for f in close_fills)
+            # Weighted-average closing price
+            total_sz = sum(float(f.get("sz", 0)) for f in close_fills)
+            if total_sz > 0:
+                avg_px = sum(float(f.get("px", 0)) * float(f.get("sz", 0)) for f in close_fills) / total_sz
+            else:
+                avg_px = float(latest.get("px", 0))
+
+            from datetime import datetime, timezone as tz
+            closed_at = datetime.fromtimestamp(
+                int(latest.get("time", 0)) / 1000, tz=tz.utc
+            ) if latest.get("time") else None
+
+            return {
+                "close_reason":  "Liquidated" if is_liquidation else "Closed on exchange",
+                "closing_price": Decimal(str(round(avg_px, 6))),
+                "pnl_realized":  pnl,
+                "closed_at":     closed_at,
+                "raw":           close_fills,
+            }
+        except Exception as e:
+            logger.error(f"HyperliquidAdapter.get_closed_position_details failed: {e}")
+            return None
+
     async def get_account_meta(self) -> dict:
         """Return wallet addresses — both are public information."""
         try:

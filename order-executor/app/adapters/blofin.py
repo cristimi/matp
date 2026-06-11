@@ -184,8 +184,10 @@ class BlofinAdapter(ExchangeAdapter):
                 body_data["price"] = str(order.price)
             if order.tp_price:
                 body_data["tpTriggerPrice"] = str(order.tp_price)
+                body_data["tpOrderPrice"] = "-1"  # market execution when triggered
             if order.sl_price:
                 body_data["slTriggerPrice"] = str(order.sl_price)
+                body_data["slOrderPrice"] = "-1"  # market execution when triggered
 
             body_str = json.dumps(body_data, separators=(",", ":"))
             headers = self._headers("POST", path, body_str)
@@ -410,6 +412,34 @@ class BlofinAdapter(ExchangeAdapter):
         except Exception as e:
             logger.error(f"BlofinAdapter.list_instruments failed: {e}")
             return []
+
+    async def get_closed_position_details(self, symbol: str) -> dict | None:
+        try:
+            path = f"/api/v1/account/positions-history?instId={symbol}&limit=5"
+            headers = self._headers("GET", path, "")
+            async with httpx.AsyncClient(base_url=self.base_url, timeout=10) as client:
+                resp = await client.get(path, headers=headers)
+            data = resp.json()
+            entries = data.get("data") or []
+            if not entries:
+                return None
+            entry = entries[0]
+            is_liquidation = int(entry.get("liquidationPositions") or 0) > 0
+            close_ts = int(entry.get("updateTime") or 0)
+            from datetime import datetime, timezone as tz
+            closed_at = datetime.fromtimestamp(close_ts / 1000, tz=tz.utc) if close_ts else None
+            pnl = Decimal(str(entry.get("realizedPnl") or "0"))
+            fee = Decimal(str(entry.get("fee") or "0"))
+            return {
+                "close_reason":  "Liquidated" if is_liquidation else "Closed on exchange",
+                "closing_price": Decimal(str(entry.get("closeAveragePrice") or "0")),
+                "pnl_realized":  pnl + fee,
+                "closed_at":     closed_at,
+                "raw":           entry,
+            }
+        except Exception as e:
+            logger.error(f"BlofinAdapter.get_closed_position_details failed: {e}")
+            return None
 
     async def get_account_meta(self) -> dict:
         """Return api_key — non-sensitive without the secret/passphrase."""
