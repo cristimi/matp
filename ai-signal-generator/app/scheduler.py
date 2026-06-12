@@ -287,6 +287,22 @@ class AdaptiveScheduler:
         closed_at     = (details or {}).get("closed_at")
         raw           = (details or {}).get("raw")
 
+        # Reject stale history: exchange close must be AFTER the position was opened
+        pos_opened_at = pos.get("opened_at")
+        if closed_at and pos_opened_at:
+            from datetime import datetime as _dt
+            try:
+                _ca = _dt.fromisoformat(str(closed_at).replace("Z", "+00:00"))
+                _oa = pos_opened_at if hasattr(pos_opened_at, 'tzinfo') else _dt.fromisoformat(str(pos_opened_at).replace("Z", "+00:00"))
+                if _ca <= _oa:
+                    logger.warning(
+                        "Scheduler strategy=%s: history closed_at (%s) <= opened_at (%s) — skipping recovery",
+                        self.strategy_id, closed_at, pos_opened_at,
+                    )
+                    return pos
+            except Exception:
+                pass
+
         # 3. Write synthetic closing order + update position in one transaction
         try:
             async with self.db_pool.acquire() as conn:

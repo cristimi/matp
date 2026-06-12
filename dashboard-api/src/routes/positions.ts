@@ -14,6 +14,11 @@ async function recoverExternalClose(pool: any, dbPos: any): Promise<any | null> 
     const details = await resp.json() as any;
     if (!details?.close_reason) return null;
 
+    // Reject stale history: exchange close must be AFTER the position was opened
+    if (details.closed_at && new Date(details.closed_at) <= new Date(dbPos.opened_at)) {
+      return null;
+    }
+
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
