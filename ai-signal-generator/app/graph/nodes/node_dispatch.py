@@ -79,12 +79,9 @@ async def node_dispatch(state: AgentState) -> AgentState:
         )
         return {**state, 'signal_log_id': signal_log_id, 'webhook_fired': False}
 
-    # ── 3. Dry run — log but don't post ──────────────────────────────────
-    if sc.get('dry_run', True):
-        logger.info("DRY RUN — webhook suppressed strategy=%s action=%s", state['strategy_id'], action)
-        return {**state, 'signal_log_id': signal_log_id, 'webhook_fired': False}
-
-    # ── 4a. adjust_stops — dispatch to listener adjust-stops endpoint ────
+    # ── 3a. adjust_stops — dispatches in both dry-run and live mode ──────
+    # (dry_run is forwarded to the listener which controls whether the exchange
+    #  is actually mutated; the AI log always records webhook_fired=TRUE)
     if action == 'adjust_stops':
         try:
             from app.webhook.dispatcher import dispatch_adjust_stops
@@ -104,9 +101,10 @@ async def node_dispatch(state: AgentState) -> AgentState:
                     )
             except Exception as exc:
                 logger.error("Failed to update ai_signal_log for adjust_stops: %s", exc)
+            dry_run_flag = bool(sc.get('dry_run', True))
             logger.info(
-                "adjust_stops dispatched strategy=%s status=%s",
-                state['strategy_id'], webhook_status,
+                "adjust_stops dispatched strategy=%s status=%s dry_run=%s",
+                state['strategy_id'], webhook_status, dry_run_flag,
             )
             return {
                 **state,
@@ -117,6 +115,11 @@ async def node_dispatch(state: AgentState) -> AgentState:
         except Exception as exc:
             logger.error("adjust_stops dispatch failed: %s", exc)
             return {**state, 'signal_log_id': signal_log_id, 'webhook_fired': False}
+
+    # ── 3b. Dry run — suppress opens/closes but not adjust_stops ────────
+    if sc.get('dry_run', True):
+        logger.info("DRY RUN — webhook suppressed strategy=%s action=%s", state['strategy_id'], action)
+        return {**state, 'signal_log_id': signal_log_id, 'webhook_fired': False}
 
     # ── 4. Fire webhook ──────────────────────────────────────────────────
     try:

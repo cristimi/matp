@@ -63,7 +63,10 @@ async def dispatch_adjust_stops(state: AgentState, listener_url: str) -> dict:
     tp_price     = state.get('resolved_tp_price')
     sl_price     = state.get('resolved_sl_price')
 
-    body: dict = {'token': secret}
+    body: dict = {
+        'token':   secret,
+        'dry_run': bool(sc.get('dry_run', True)),
+    }
     if tp_price is not None:
         body['tp_price'] = tp_price
     if sl_price is not None:

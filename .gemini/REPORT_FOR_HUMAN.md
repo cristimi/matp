@@ -280,6 +280,76 @@ Cooldown respected ✅. Gate passes for valid adjust_stops ✅.
 
 ---
 
+### Fix: adjust_stops testable in dry-run ✅
+
+**Problem:** In `node_dispatch.py`, the dry-run early return (step 3) fired _before_ the `adjust_stops` handler (step 4a), so dry-run strategies never triggered adjust_stops.
+
+**Changes:**
+
+**`ai-signal-generator/app/graph/nodes/node_dispatch.py`:**
+- Moved `if action == 'adjust_stops':` block (now step 3a) **above** the `if sc.get('dry_run', True):` check (now step 3b)
+- `adjust_stops` now dispatches in both dry-run and live mode; `dry_run` suppresses only `open_long`/`open_short`/`close_*`/`partial_close`
+
+**`ai-signal-generator/app/webhook/dispatcher.py`** — `dispatch_adjust_stops()`:
+- Added `'dry_run': bool(sc.get('dry_run', True))` to POST body so the listener knows whether to call the exchange
+
+**`order-listener/app/webhook_handler.py`** — `adjust_stops_for_strategy()`:
+- Accepts optional `dry_run` field (default `False`)
+- `dry_run=True`: resolves the open position, logs intended TP/SL, returns `{success:true, simulated:true, intended_tp_price, intended_sl_price}` — **no executor call**
+- `dry_run=False`: existing behavior (cancel + place on exchange)
+
+**Verification (strategy `hltest-76b3`, BTC-USDT short):**
+
+Dry-run path (`dry_run: true`):
+```bash
+curl -s -X POST http://localhost:8001/strategies/hltest-76b3/adjust-stops \
+  -H "X-Webhook-Token: c1701abc9e7e8d991ebcbd4fe0bce22b" \
+  -d '{"tp_price": 120000, "sl_price": 95000, "dry_run": true}'
+```
+```json
+{
+  "success": true,
+  "simulated": true,
+  "position_id": "9d38cbcb-8514-4b71-9cc9-c4eec8172e27",
+  "intended_tp_price": 120000.0,
+  "intended_sl_price": 95000.0
+}
+```
+
+Listener log:
+```
+2026-06-12 20:56:12,672 [INFO] app.webhook_handler: adjust-stops DRY RUN strategy=hltest-76b3
+  pos=9d38cbcb-8514-4b71-9cc9-c4eec8172e27 (BTC-USDT short)
+  intended tp=120000.0 sl=95000.0 — no exchange call
+```
+
+Exchange state: unchanged (no executor call, no HL API hit) ✅
+
+Live path (`dry_run` omitted → `False`):
+```bash
+curl -s -X POST http://localhost:8001/strategies/hltest-76b3/adjust-stops \
+  -H "X-Webhook-Token: c1701abc9e7e8d991ebcbd4fe0bce22b" \
+  -d '{"tp_price": 120000, "sl_price": 95000}'
+```
+```json
+{
+  "success": true,
+  "position_id": "9d38cbcb-8514-4b71-9cc9-c4eec8172e27",
+  "cancelled": [],
+  "placed": [
+    {"tpsl": "tp", "oid": "54897427460", "status": "placed"},
+    {"tpsl": "sl", "oid": "54897427461", "status": "placed"}
+  ],
+  "error_msg": null
+}
+```
+
+Real HL OIDs placed ✅. Executor called ✅.
+
+Cooldown: enforced in both modes — `node_guard.py` cooldown check runs before `node_dispatch.py`, so any adjust_stops signal (dry-run or live) must pass the cooldown gate first ✅
+
+---
+
 ## Phase 2 Test D — External Partial-Reduction Reconciler ✅
 
 **Test:** Open a demo position via MATP webhook, then reduce ~50% directly on the exchange (bypassing MATP), verify the reconciler detects the discrepancy after exactly N=3 consecutive misses and shrinks the DB row to match the exchange — with status staying `open`.

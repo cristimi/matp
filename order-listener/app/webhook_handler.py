@@ -333,6 +333,7 @@ async def adjust_stops_for_strategy(
 
     tp_price = float(tp_price_raw) if tp_price_raw is not None else None
     sl_price = float(sl_price_raw) if sl_price_raw is not None else None
+    dry_run  = bool(body_dict.get("dry_run", False))
 
     # Find open position for this strategy
     async with pool.acquire() as conn:
@@ -347,6 +348,19 @@ async def adjust_stops_for_strategy(
 
     if pos is None:
         raise HTTPException(status_code=404, detail="No open position for strategy")
+
+    if dry_run:
+        logger.info(
+            f"adjust-stops DRY RUN strategy={strategy_id} pos={pos['id']}"
+            f" ({pos['symbol']} {pos['side']}) intended tp={tp_price} sl={sl_price} — no exchange call"
+        )
+        return {
+            "success":           True,
+            "simulated":         True,
+            "position_id":       str(pos["id"]),
+            "intended_tp_price": tp_price,
+            "intended_sl_price": sl_price,
+        }
 
     account_id = strategy.get("account_id") or ""
     result = await call_executor_modify_stops(
