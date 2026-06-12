@@ -108,14 +108,15 @@ async def node_guard(state: AgentState) -> AgentState:
                     bal.get('available_balance') or bal.get('total_balance') or 0
                 )
 
-            size_pct     = min(float(signal['size_pct']), float(rc.get('max_position_size_pct') or 5.0))
-            usdt_alloc   = usdt_balance * size_pct / 100.0
+            size_pct      = min(float(signal['size_pct']), float(rc.get('max_position_size_pct') or 5.0))
+            leverage      = int(sc.get('default_leverage') or 1)
+            usdt_margin   = usdt_balance * size_pct / 100.0
             current_price = float((state.get('ohlcv_data') or {}).get('current_price') or 0)
 
             if current_price <= 0:
                 return _reject(state, 'size_resolution_failed')
 
-            base_qty = round(usdt_alloc / current_price, 4)
+            base_qty = round((usdt_margin * leverage) / current_price, 4)
             sl_pct   = float(signal['stop_loss_pct'])
             tp_pct   = float(signal['take_profit_pct'])
 
