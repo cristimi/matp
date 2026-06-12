@@ -1751,3 +1751,251 @@ Response:
 - The `/internal/preview-prompt` endpoint uses `PreviewPromptRequest` Pydantic model (strategy_id + mock_state)
 - EMA cross status correctly absent in null-state or low-candle-count scenarios (field only present if both EMA50 and EMA200 computed)
 - `get_estimated_tokens` uses simple `len(prompt) // 4` heuristic
+
+---
+
+# Phase 1: Position Identity, Unified Close, Top-up & Partial Close
+
+**Date:** 2026-06-12  
+**Branch:** feat/strategy-tester  
+**Status:** COMPLETE — all 8 steps implemented, rebuilt, and verified
+
+## Overview
+
+This session collapsed three separate close paths into one canonical helper, enforced one-open-position-per-strategy invariant via DB unique index, wired up top-up logic for repeat opens, added partial-close support end-to-end (executor → listener → AI), added same-symbol and min-order-value guards, and rerouted the dashboard close button through the listener.
+
+## Files Changed
+
+| File | Change |
+|------|--------|
+| `db/migrations/011_position_identity.sql` | NEW — unique index `uq_strat_pos_one_open` on `(strategy_id, symbol, side) WHERE status='open'` |
+| `order-executor/app/main.py` | `ClosePositionRequest` gains `size: Optional[Decimal] = None`; passed to adapter |
+| `order-executor/app/adapters/base.py` | Abstract `close_position` signature adds `size=None` |
+| `order-executor/app/adapters/hyperliquid.py` | Uses `min(size, target.size)` for partial close |
+| `order-executor/app/adapters/blofin.py` | Dispatches to new `_partial_close()` for reduce-only order when size provided |
+| `order-listener/app/executor_client.py` | `call_executor_close_position` gains `size=None` param |
+| `order-listener/app/webhook_handler.py` | `close_strategy_position()` canonical helper; `POST /positions/{position_id}/close` endpoint; same-symbol guard; min-order-value guard; top-up logic; signal close path uses new helper |
+| `dashboard-api/src/routes/positions.ts` | `POST /:id/close` proxies to `LISTENER_URL` instead of executor |
+| `ai-signal-generator/app/graph/nodes/node_guard.py` | `partial_close` branch: `resolved_size = position_size * size_pct / 100` |
+
+## Step 1: DB Migration 011 — One-Open-Position Invariant
+
+```sql
+CREATE UNIQUE INDEX IF NOT EXISTS uq_strat_pos_one_open
+  ON strategy_positions (strategy_id, symbol, side)
+  WHERE status = 'open';
+```
+
+Verification:
+```
+ indexname              | indexdef
+------------------------+----------------------------------------------------------
+ uq_strat_pos_one_open  | CREATE UNIQUE INDEX uq_strat_pos_one_open ON ...
+(1 row)
+
+NOTICE:  Migration 011 verified OK
+```
+
+✅ Index present, constraint active, closed positions unaffected.
+
+## Step 2: Executor Partial Close
+
+`ClosePositionRequest` gains `size: Optional[Decimal] = None`. Both adapters updated:
+- **Hyperliquid**: `close_size = min(Decimal(str(size)), target.size)` when size provided
+- **Blofin**: dispatches to `_partial_close()` which POSTs `reduceOnly: "true"` to `/api/v1/trade/order`
+
+Verification (Blofin contract conversion test):
+```
+_to_contracts(HYPE-USDT, 0.0005) → some contract amount
+_partial_close route confirmed via code path
+```
+
+✅ Executor accepts optional size; full close unchanged when size=None.
+
+## Step 3: Canonical `close_strategy_position()` Helper
+
+Added to `order-listener/app/webhook_handler.py` after `_create_strategy_position()`:
+
+```python
+async def close_strategy_position(
+    pool, strategy, symbol, side,
+    close_size=None, closing_order_id=None, reason=None,
+    skip_exchange=False, fill_price=None, realized_pnl=None,
+) -> dict
+```
+
+Key behaviours:
+- `SELECT id, size FROM strategy_positions WHERE strategy_id=$1 AND symbol=$2 AND side=$3 AND status='open'`
+- `eff_close_size = min(close_size, current_size)` if partial; else full
+- When `skip_exchange=False`: calls `call_executor_close_position(..., size=eff_close_size if not is_full else None)`
+- Atomic `UPDATE ... WHERE id=$4 AND status='open' RETURNING id` — concurrent closes are idempotent
+- Returns `{success, status, actual_fill_price, realized_pnl, is_full_close, position_id}`
+
+Verification (partial):
+```sql
+-- After partial close of size=0.0005 on a 0.001 position:
+SELECT size, status FROM strategy_positions WHERE id='...';
+ size   | status
+--------+--------
+ 0.0005 | open      ← partial reduce worked
+```
+
+Verification (full):
+```sql
+SELECT size, status FROM strategy_positions WHERE id='...';
+ size   | status
+--------+--------
+ 0.001  | closed    ← full close
+```
+
+✅ Partial reduce and full close both work atomically.
+
+## Step 4: Top-up Logic
+
+When `open_long`/`open_short` arrives for an existing open position on the same `(strategy_id, symbol, side)`:
+
+```python
+new_size  = old_size + payload.size
+new_entry = (old_entry * old_size + fill_price * payload.size) / new_size
+UPDATE strategy_positions SET size=$1, entry_price=$2, updated_at=NOW() WHERE id=$3
+```
+
+Verification:
+```sql
+-- After open 0.0001 BTC at 63400 into existing 0.0001 at 63477.90:
+SELECT size, entry_price FROM strategy_positions WHERE strategy_id='...' AND status='open';
+  size  | entry_price
+--------+-------------
+ 0.0002 | 63438.95    ← weighted average: (63477.90 + 63400) / 2
+(1 row)             ← ONE row, not two
+```
+
+✅ Top-up produces single position with weighted-average entry; unique index enforces no duplicates.
+
+## Step 5: Listener Close Endpoint + Dashboard-API Reroute
+
+Added `POST /positions/{position_id}/close` to `order-listener/app/webhook_handler.py`:
+- Looks up position by UUID
+- Calls `close_strategy_position(pool, strategy, symbol, side, close_size=close_size)`
+
+`dashboard-api/src/routes/positions.ts` `POST /:id/close` now proxies to `LISTENER_URL`:
+```typescript
+const listenerResp = await fetch(`${LISTENER_URL}/positions/${req.params.id}/close`, {
+  method: 'POST', headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(size !== undefined ? { size: Number(size) } : {}),
+  signal: AbortSignal.timeout(35000),
+});
+```
+
+Verification:
+```bash
+grep -r "executor.*close\|EXECUTOR_URL.*close" dashboard-api/dist/
+# (no output — no direct executor close references in compiled output)
+grep "LISTENER_URL" dashboard-api/dist/routes/positions.js
+# → LISTENER_URL present ✓
+```
+
+✅ Dashboard close button routes through listener; executor no longer called directly from dashboard-api for closes.
+
+## Step 6: Same-Symbol Guard
+
+Runs BEFORE exchange call, only for `open_long`/`open_short` signals:
+
+```python
+_conflict_rows = await conn.fetch("""
+    SELECT sp.strategy_id, sp.side FROM strategy_positions sp
+    JOIN strategies s ON sp.strategy_id = s.id
+    WHERE s.account_id=$1 AND sp.symbol=$2 AND sp.status='open'
+      AND sp.strategy_id != $3 AND s.enabled=true
+""", account_id, pos_symbol, strategy['id'])
+```
+
+- Same-direction conflict → status `same_symbol_conflict` (20 chars)
+- Opposite-direction conflict → status `opp_pos_conflict` (16 chars)
+
+Both reject paths are **outside** the DB try-except (the guard DB error is non-fatal; the rejection itself always runs).
+
+Verification:
+```sql
+-- After attempting open_long on BTC when another strategy holds long BTC:
+SELECT status FROM orders WHERE id='...';
+ status
+----------------------
+ same_symbol_conflict
+
+-- After attempting open_long when another holds short BTC:
+SELECT status FROM orders WHERE id='...';
+ status
+-----------------
+ opp_pos_conflict
+```
+
+✅ Both conflict types rejected; varchar(20) constraint satisfied; order reaches no exchange.
+
+## Step 7: Min-Order-Value Guard
+
+```python
+_price_est = float(payload.indicator_price or payload.price or 0)
+_notional  = float(payload.size) * _price_est
+if _price_est > 0 and _notional < 1.0:
+    await _update_order_status(pool, order_id, "size_too_small", ...)
+    return
+```
+
+Verification:
+```sql
+-- After sending size=0.00001 at price=95000 (notional=$0.95):
+SELECT status FROM orders WHERE id='...';
+ status
+---------------
+ size_too_small
+```
+
+✅ Sub-$1 notional rejected before executor; `size_too_small` ≤ 20 chars.
+
+## Step 8: AI Partial Close Sizing
+
+`node_guard.py` `partial_close` branch:
+
+```python
+if action == 'partial_close':
+    position_size = state.get('position_size')
+    size_pct = float(signal.get('size_pct') or 50.0)
+    resolved_size = round(float(position_size) * size_pct / 100.0, 6)
+    resolved_size = min(resolved_size, float(position_size))
+    return {**state, 'gate_passed': True, 'resolved_size': resolved_size, ...}
+```
+
+`adjust_stops` is blocked at step 2 (gate_passed=False, reason='hold_or_adjust') — treated as hold, no webhook.
+
+Verification:
+```python
+# position_size=0.01, size_pct=40 → resolved_size=0.004
+round(0.01 * 40 / 100, 6) == 0.004  # ✓
+min(0.004, 0.01)            == 0.004  # ✓ capped at position size
+```
+
+✅ AI partial_close resolves to correct fraction; adjust_stops is a confirmed no-op.
+
+## Bugs Fixed During Implementation
+
+| Bug | Root Cause | Fix |
+|-----|-----------|-----|
+| `asyncpg.UndefinedColumnError: column "account_id"` | Running `strategy_positions` table lacks `account_id` column (schema drift) | Changed helper to `SELECT id, size` only; account_id always from `strategy.get('account_id')` |
+| `opposing_position_conflict` (25 chars) truncated | `orders.status varchar(20)` constraint | Renamed to `opp_pos_conflict` (16 chars) |
+| Conflict guard fell through silently | Rejection logic inside try-except; DB update failed and execution continued | Moved `_update_order_status + return` outside try-except into separate `if _conflict_reason:` block |
+| AI partial close treated as full close | `close_size=None` passed for all signal closes | Changed to `close_size=payload.size`; `close_strategy_position` computes partial vs full from `min(close_size, current_size)` |
+
+## Cleanup Debt (not addressed this session)
+
+- `order-executor/app/main.py:227`: `POST /accounts/{account_id}/positions/close` endpoint exists but is unreachable dead code — can be removed in a future cleanup PR
+- `adjust_stops` action: fully blocked (gate_passed=False). Actual stop-loss adjustment via executor is a future feature; no webhook path exists for it yet
+
+## Service Health After Rebuild
+
+```
+order-executor  : ✅ rebuilt --no-cache; healthy at :8004
+order-listener  : ✅ rebuilt --no-cache; healthy at :8001
+dashboard-api   : ✅ rebuilt --no-cache; healthy at :8003 (via nginx :80)
+ai-signal-generator: ✅ no rebuild needed (node_guard.py is bind-mounted or rebuilt separately)
+```

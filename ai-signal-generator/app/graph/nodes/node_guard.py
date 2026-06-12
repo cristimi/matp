@@ -140,7 +140,26 @@ async def node_guard(state: AgentState) -> AgentState:
             logger.error("Size resolution failed: %s", exc)
             return _reject(state, 'size_resolution_failed')
 
-    # ── Close actions — use current position size ────────────────────────
+    # ── Partial close: size from position_size * size_pct ───────────────
+    if action == 'partial_close':
+        position_size = state.get('position_size')
+        if not position_size:
+            return _reject(state, 'size_resolution_failed')
+        size_pct = float(signal.get('size_pct') or 50.0)
+        resolved_size = round(float(position_size) * size_pct / 100.0, 6)
+        resolved_size = min(resolved_size, float(position_size))
+        if resolved_size <= 0:
+            return _reject(state, 'size_resolution_failed')
+        return {
+            **state,
+            'gate_passed':           True,
+            'gate_rejection_reason': None,
+            'resolved_size':         resolved_size,
+            'resolved_sl_price':     None,
+            'resolved_tp_price':     None,
+        }
+
+    # ── Full close actions — use full position size ──────────────────────
     resolved_size = state.get('position_size') or 0.01
     return {
         **state,

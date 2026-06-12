@@ -71,28 +71,26 @@ async def call_executor_close_position(
     account_id: str,
     symbol:     str,
     side:       str,
+    size=None,
 ) -> dict:
     """
-    POST to /close-position to close an open position.
-    Returns the OrderResult dict.
-    Never raises — catches all errors and returns route_failed result.
+    POST to /close-position to close or partially close an open position.
+    size=None means full close; Decimal/str size means partial reduce-only.
+    Returns the OrderResult dict. Never raises.
     """
     url = f"{EXECUTOR_URL}/close-position"
     logger.info(
         f"Calling executor close-position: account={account_id} "
-        f"symbol={symbol} side={side}"
+        f"symbol={symbol} side={side} size={size}"
     )
+
+    body: dict = {"account_id": account_id, "symbol": symbol, "side": side}
+    if size is not None:
+        body["size"] = str(size)
 
     try:
         async with httpx.AsyncClient(timeout=TIMEOUT_SECONDS) as client:
-            response = await client.post(
-                url,
-                json={
-                    "account_id": account_id,
-                    "symbol":     symbol,
-                    "side":       side,
-                }
-            )
+            response = await client.post(url, json=body)
             response.raise_for_status()
             return response.json()
 

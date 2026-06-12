@@ -56,6 +56,8 @@ async def invalidate_account(account_id: str):
 
 
 import base64
+from decimal import Decimal as _Decimal
+from typing import Optional as _Optional
 from pydantic import BaseModel as PydanticBaseModel
 
 class EncryptRequest(PydanticBaseModel):
@@ -69,6 +71,7 @@ class ClosePositionRequest(PydanticBaseModel):
     account_id: str
     symbol:     str
     side:       str
+    size:       _Optional[_Decimal] = None
 
 
 @app.post("/close-position")
@@ -76,7 +79,7 @@ async def close_position_endpoint(request: ClosePositionRequest):
     """Close an open position on the exchange for the given account."""
     try:
         adapter = await registry.get(request.account_id)
-        result  = await adapter.close_position(request.symbol, request.side)
+        result  = await adapter.close_position(request.symbol, request.side, size=request.size)
         return result
     except Exception as e:
         logger.error(f"close_position failed: {e}")

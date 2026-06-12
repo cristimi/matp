@@ -21,8 +21,8 @@ class ExchangeAdapter(ABC):
         pass
 
     @abstractmethod
-    async def close_position(self, symbol: str, side: str, margin_mode: str = "isolated") -> OrderResult:
-        """Close an existing position (market close)."""
+    async def close_position(self, symbol: str, side: str, size=None, margin_mode: str = "isolated") -> OrderResult:
+        """Close an existing position. size=None means full close; size present means partial reduce-only."""
         pass
 
     @abstractmethod

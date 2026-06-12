@@ -280,7 +280,12 @@ class BlofinAdapter(ExchangeAdapter):
             
         return mapped_positions
 
-    async def close_position(self, symbol: str, side: str, margin_mode: str = "isolated") -> OrderResult:
+    async def close_position(self, symbol: str, side: str, size=None, margin_mode: str = "isolated") -> OrderResult:
+        # Partial close: place a reduce-only market order of opposite side
+        if size is not None:
+            return await self._partial_close(symbol, side, Decimal(str(size)), margin_mode)
+
+        # Full close: use the dedicated close-position endpoint
         path = "/api/v1/trade/close-position"
 
         body_data = {
@@ -288,13 +293,13 @@ class BlofinAdapter(ExchangeAdapter):
             "marginMode": margin_mode,
             "positionSide": "net",
         }
-        
+
         body_str = json.dumps(body_data, separators=(",", ":"))
         headers = self._headers("POST", path, body_str)
-        
+
         async with httpx.AsyncClient(base_url=self.base_url, timeout=10) as client:
             response = await client.post(path, content=body_str, headers=headers)
-            
+
         if response.status_code != 200:
             logger.warning(f"Blofin close failed. Status: {response.status_code}, Response: {response.text}")
             return OrderResult(
@@ -317,7 +322,7 @@ class BlofinAdapter(ExchangeAdapter):
             else:
                 order_info = {}
             exchange_order_id = order_info.get("orderId")
-            
+
             fill_price = None
             pnl = None
             try:
@@ -346,6 +351,73 @@ class BlofinAdapter(ExchangeAdapter):
                 error_msg=error,
                 raw_response=data,
             )
+
+    async def _partial_close(self, symbol: str, side: str, size: Decimal, margin_mode: str) -> OrderResult:
+        """Place a reduce-only market order to partially close a position."""
+        reduce_side = "sell" if side == "long" else "buy"
+        order_size = await self._to_contracts(symbol, size)
+
+        path = "/api/v1/trade/order"
+        body_data = {
+            "instId":       symbol,
+            "marginMode":   margin_mode,
+            "side":         reduce_side,
+            "orderType":    "market",
+            "size":         str(order_size),
+            "reduceOnly":   "true",
+            "positionSide": "net",
+        }
+        body_str = json.dumps(body_data, separators=(",", ":"))
+        headers  = self._headers("POST", path, body_str)
+
+        async with httpx.AsyncClient(base_url=self.base_url, timeout=10) as client:
+            response = await client.post(path, content=body_str, headers=headers)
+
+        if response.status_code != 200:
+            logger.warning(f"Blofin partial close failed. Status: {response.status_code}, Response: {response.text}")
+            return OrderResult(
+                success=False,
+                status="rejected",
+                error_msg=f"Blofin returned {response.status_code}",
+                raw_response={"text": response.text},
+            )
+
+        data = response.json()
+        code = data.get("code")
+
+        if str(code) not in ["0", "200"]:
+            return OrderResult(
+                success=False,
+                status="rejected",
+                error_msg=data.get("msg", "Unknown error"),
+                raw_response=data,
+            )
+
+        order_info = (data.get("data") or [{}])
+        if isinstance(order_info, list):
+            order_info = order_info[0] if order_info else {}
+        exchange_order_id = order_info.get("orderId")
+
+        fill_price = None
+        pnl = None
+        try:
+            await asyncio.sleep(2.0)
+            details = await self._get_order_details(symbol, exchange_order_id)
+            if details:
+                fill_price = self._parse_fill_price(details)
+                pnl_raw = details.get("pnl") or details.get("realizedPnl")
+                pnl = Decimal(str(pnl_raw)) if pnl_raw is not None else None
+        except Exception as e:
+            logger.warning(f"Blofin _partial_close: fill details fetch failed (order still filled): {e}")
+
+        return OrderResult(
+            success=True,
+            status="filled",
+            exchange_order_id=exchange_order_id,
+            raw_response=data,
+            actual_fill_price=fill_price,
+            realized_pnl=pnl,
+        )
 
     async def get_balance(self) -> dict:
         """Fetch USDT perpetual futures account balance from Blofin."""

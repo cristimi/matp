@@ -243,6 +243,61 @@ async def _update_order_status(
     })
 
 
+@router.post("/positions/{position_id}/close")
+async def close_position_by_id(position_id: str, request: Request):
+    """Manual close: look up the position, derive strategy/symbol/side, call canonical routine."""
+    pool = get_pool()
+    body_dict: dict = {}
+    try:
+        raw_bytes = await request.body()
+        if raw_bytes:
+            body_dict = json.loads(raw_bytes)
+    except Exception:
+        pass
+
+    close_size_raw = body_dict.get("size")
+    close_size = Decimal(str(close_size_raw)) if close_size_raw else None
+
+    try:
+        pos_uuid = uuid.UUID(position_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid position_id format")
+
+    async with pool.acquire() as conn:
+        pos = await conn.fetchrow(
+            """
+            SELECT id, strategy_id, symbol, side, status
+            FROM strategy_positions
+            WHERE id = $1
+            """,
+            pos_uuid,
+        )
+
+    if pos is None:
+        raise HTTPException(status_code=404, detail="Position not found")
+    if pos['status'] != 'open':
+        raise HTTPException(status_code=400, detail=f"Position is {pos['status']}, not open")
+
+    strategy = await _get_strategy(pool, pos['strategy_id'])
+    if not strategy:
+        raise HTTPException(status_code=404, detail="Strategy not found")
+
+    result = await close_strategy_position(
+        pool, strategy,
+        symbol=pos['symbol'],
+        side=pos['side'],
+        close_size=close_size,
+    )
+
+    if not result.get('success'):
+        return JSONResponse(
+            status_code=502,
+            content={"success": False, "error": result.get("error_msg", "Close failed")},
+        )
+
+    return result
+
+
 @router.post("/webhook/{strategy_id}", response_model=OrderResponse)
 async def receive_webhook(
     strategy_id: str,
@@ -447,7 +502,7 @@ async def _create_strategy_position(pool, payload: WebhookPayload, strategy: dic
     """Create a new strategy position record in the database."""
     async with pool.acquire() as conn:
         entry_price = result.actual_fill_price or payload.price or payload.indicator_price or 0
-        
+
         # Look up pair_id
         pair = await conn.fetchrow(
             "SELECT tp.id FROM trading_pairs tp JOIN assets b ON tp.base_asset_id = b.id JOIN assets q ON tp.quote_asset_id = q.id WHERE b.symbol = $1 AND q.symbol = $2",
@@ -481,6 +536,131 @@ async def _create_strategy_position(pool, payload: WebhookPayload, strategy: dic
         )
 
 
+async def close_strategy_position(
+    pool,
+    strategy: dict,
+    symbol: str,
+    side: str,
+    close_size: Optional[Decimal] = None,
+    closing_order_id: Optional[uuid.UUID] = None,
+    reason: Optional[str] = None,
+    skip_exchange: bool = False,
+    fill_price=None,
+    realized_pnl=None,
+) -> dict:
+    """
+    Canonical close/reduce routine. Atomic: exchange call before DB write.
+    - close_size=None or >= open size  → full close (status='closed')
+    - close_size < open size           → partial reduce (status stays 'open')
+    - skip_exchange=True               → exchange already executed; pass fill_price/realized_pnl
+    Returns a dict: {success, status, actual_fill_price, realized_pnl, ...}
+    """
+    from app.executor_client import call_executor_close_position
+
+    async with pool.acquire() as conn:
+        pos = await conn.fetchrow(
+            """
+            SELECT id, size
+            FROM strategy_positions
+            WHERE strategy_id = $1 AND symbol = $2 AND side = $3 AND status = 'open'
+            """,
+            strategy['id'], symbol, side,
+        )
+
+    if pos is None:
+        logger.info(
+            f"close_strategy_position: no open {side} {symbol} for strategy {strategy['id']}"
+        )
+        return {
+            "success": False,
+            "status": "no_position_to_close",
+            "error_msg": f"No open {side} position for {symbol}",
+        }
+
+    current_size = Decimal(str(pos['size']))
+    eff_close_size = (
+        min(Decimal(str(close_size)), current_size)
+        if close_size is not None else current_size
+    )
+    is_full = eff_close_size >= current_size
+
+    if not skip_exchange:
+        acct_id = strategy.get('account_id') or ""
+        close_result = await call_executor_close_position(
+            account_id=acct_id,
+            symbol=symbol,
+            side=side,
+            size=eff_close_size if not is_full else None,
+        )
+        if not close_result.get('success'):
+            return close_result
+        fill_price   = close_result.get('actual_fill_price')
+        realized_pnl = close_result.get('realized_pnl')
+
+    fill_price_f   = float(fill_price)   if fill_price   is not None else None
+    realized_pnl_f = float(realized_pnl) if realized_pnl is not None else None
+
+    async with pool.acquire() as conn:
+        if is_full:
+            updated = await conn.fetchrow(
+                """
+                UPDATE strategy_positions
+                SET status           = 'closed',
+                    closing_price    = $1,
+                    pnl_realized     = pnl_realized + COALESCE($2, 0),
+                    closing_order_id = $3,
+                    closed_at        = NOW(),
+                    updated_at       = NOW()
+                WHERE id = $4 AND status = 'open'
+                RETURNING id
+                """,
+                fill_price_f,
+                realized_pnl_f,
+                closing_order_id,
+                pos['id'],
+            )
+        else:
+            updated = await conn.fetchrow(
+                """
+                UPDATE strategy_positions
+                SET size         = size - $1,
+                    pnl_realized = pnl_realized + COALESCE($2, 0),
+                    updated_at   = NOW()
+                WHERE id = $3 AND status = 'open'
+                RETURNING id
+                """,
+                eff_close_size,
+                realized_pnl_f,
+                pos['id'],
+            )
+
+    if updated is None:
+        logger.warning(f"close_strategy_position: race condition on position {pos['id']}")
+        return {
+            "success": False,
+            "status": "race_condition",
+            "error_msg": "Position already closed by concurrent request",
+        }
+
+    logger.info(
+        f"{'Closed' if is_full else 'Partially closed'} position {pos['id']} "
+        f"for strategy {strategy['id']} ({symbol} {side}), "
+        f"close_size={eff_close_size}, fill={fill_price_f}, pnl={realized_pnl_f}"
+    )
+
+    ret: dict = {
+        "success":           True,
+        "status":            "filled",
+        "actual_fill_price": fill_price,
+        "realized_pnl":      realized_pnl,
+        "is_full_close":     is_full,
+        "position_id":       str(pos['id']),
+    }
+    if not skip_exchange:
+        ret["exchange_order_id"] = close_result.get('exchange_order_id')
+    return ret
+
+
 async def _process_order(
     pool, order_id: uuid.UUID, payload: WebhookPayload, strategy: dict, resolved,
     price, tp_price, sl_price, effective_leverage: int, effective_margin_mode: str = "isolated",
@@ -505,38 +685,32 @@ async def _process_order(
 
         # ── Handle target_position = "flat" ──────────────────────────────
         if payload.target_position == "flat":
-            from app.executor_client import call_executor_close_position
+            flat_symbol = resolved.execution_symbol
 
-            # Look up open position for this strategy
+            # Look up open position by execution symbol (not by recency)
             async with pool.acquire() as conn:
                 open_pos = await conn.fetchrow(
                     """
                     SELECT symbol, side
                     FROM strategy_positions
-                    WHERE strategy_id = $1
-                      AND status = 'open'
-                    ORDER BY opened_at DESC
-                    LIMIT 1
+                    WHERE strategy_id = $1 AND symbol = $2 AND status = 'open'
                     """,
-                    strategy['id'],
+                    strategy['id'], flat_symbol,
                 )
 
             if open_pos is None:
                 logger.info(
-                    f"target_position=flat received for {strategy['id']} "
-                    f"but no open position found — ignoring"
+                    f"target_position=flat for {strategy['id']}: "
+                    f"no open {flat_symbol} position — ignoring"
                 )
-                # We've already returned 200 from receive_webhook, so just update the order status
                 await _update_order_status(pool, order_id, "no_position", payload, None, account_id, account_label, strategy_id)
                 return
 
-            # Use account_id from strategy record
-            account_id = strategy.get("account_id") or "acc_blofin_demo_default"
-
-            close_result = await call_executor_close_position(
-                account_id=account_id,
+            close_result = await close_strategy_position(
+                pool, strategy,
                 symbol=open_pos["symbol"],
                 side=open_pos["side"],
+                closing_order_id=order_id,
             )
 
             logger.info(
@@ -544,11 +718,20 @@ async def _process_order(
                 f"close result = {close_result.get('status')}"
             )
 
-            # Update order record with close result
-            flat_order_result = OrderResult(**close_result) if close_result.get("success") else None
+            flat_order_result = None
+            if close_result.get("success"):
+                fp = close_result.get("actual_fill_price")
+                rp = close_result.get("realized_pnl")
+                flat_order_result = OrderResult(
+                    success=True,
+                    status="filled",
+                    exchange_order_id=close_result.get("exchange_order_id"),
+                    actual_fill_price=Decimal(str(fp)) if fp is not None else None,
+                    realized_pnl=Decimal(str(rp))      if rp is not None else None,
+                )
+
             await _update_order_status(
-                pool,
-                order_id,
+                pool, order_id,
                 close_result.get("status", "route_failed"),
                 payload,
                 flat_order_result,
@@ -557,43 +740,8 @@ async def _process_order(
                 strategy_id,
             )
 
-            # Close the strategy_positions record if fill succeeded
-            if close_result.get("success"):
-                close_price = float(flat_order_result.actual_fill_price or 0) if flat_order_result else 0
-                async with pool.acquire() as conn:
-                    pos_row = await conn.fetchrow(
-                        """
-                        SELECT id FROM strategy_positions
-                        WHERE strategy_id = $1 AND status = 'open'
-                        ORDER BY opened_at DESC LIMIT 1
-                        """,
-                        strategy['id'],
-                    )
-                    if pos_row:
-                        pnl_realized_flat = float(flat_order_result.realized_pnl) if flat_order_result and flat_order_result.realized_pnl is not None else None
-                        await conn.execute(
-                            """
-                            UPDATE strategy_positions
-                            SET status           = 'closed',
-                                closing_price    = $1,
-                                pnl_realized     = $2,
-                                closing_order_id = $3,
-                                closed_at        = NOW(),
-                                updated_at       = NOW()
-                            WHERE id = $4
-                            """,
-                            close_price if close_price else None,
-                            pnl_realized_flat,
-                            order_id,
-                            pos_row['id'],
-                        )
-                        logger.info(
-                            f"Closed position {pos_row['id']} via flat signal "
-                            f"for strategy {strategy['id']} at {close_price}, pnl={pnl_realized_flat}"
-                        )
-
-            # ── Update pnl_today if result contains PnL ──────────────────────
-            result_pnl = close_result.get("pnl") or close_result.get("realized_pnl")
+            # Update pnl_today
+            result_pnl = close_result.get("realized_pnl")
             if result_pnl is not None:
                 try:
                     async with pool.acquire() as conn:
@@ -607,13 +755,9 @@ async def _process_order(
                             float(result_pnl),
                             strategy['id'],
                         )
-                    logger.debug(
-                        f"Updated pnl_today for strategy {strategy['id']}: "
-                        f"delta={result_pnl}"
-                    )
+                    logger.debug(f"Updated pnl_today for {strategy['id']}: delta={result_pnl}")
                 except Exception as e:
                     logger.warning(f"Failed to update pnl_today for {strategy['id']}: {e}")
-            # ── End pnl_today update ──────────────────────────────────────────
 
             return
         # ── End flat signal handler ───────────────────────────────────────
@@ -621,11 +765,62 @@ async def _process_order(
         # ── Resolve account_id from strategy record ──────────────────────────
         account_id = strategy.get("account_id") or "acc_blofin_demo_default"
 
+        pos_symbol = resolved.execution_symbol
+
+        # ── Step 6: Same-symbol guard (open signals only) ─────────────────────
+        if payload.signal in ("open_long", "open_short"):
+            _conflict_reason = None
+            try:
+                async with pool.acquire() as conn:
+                    _conflict_rows = await conn.fetch(
+                        """
+                        SELECT sp.strategy_id, sp.side
+                        FROM strategy_positions sp
+                        JOIN strategies s ON sp.strategy_id = s.id
+                        WHERE s.account_id   = $1
+                          AND sp.symbol      = $2
+                          AND sp.status      = 'open'
+                          AND sp.strategy_id != $3
+                          AND s.enabled      = true
+                        """,
+                        account_id, pos_symbol, strategy['id'],
+                    )
+                if _conflict_rows:
+                    _open_sides = {r['side'] for r in _conflict_rows}
+                    _our_side   = "long" if payload.signal == "open_long" else "short"
+                    _opposite   = "short" if _our_side == "long" else "long"
+                    # status must fit varchar(20); "same_symbol_conflict"=19, "opp_pos_conflict"=16
+                    _conflict_reason = "opp_pos_conflict" if _opposite in _open_sides else "same_symbol_conflict"
+            except Exception as e:
+                logger.warning(f"Same-symbol guard DB query failed (continuing): {e}")
+
+            if _conflict_reason:
+                logger.warning(
+                    f"Strategy {strategy['id']} {payload.signal} rejected: "
+                    f"{_conflict_reason} on {pos_symbol} (account={account_id})"
+                )
+                await _update_order_status(pool, order_id, _conflict_reason, payload, None, account_id, account_label, strategy_id)
+                await _finalize_signal_log(pool, signal_log_id, 200, "guard_rejected", _conflict_reason, start_ms)
+                return
+
+        # ── Step 7: Min-order-value guard ─────────────────────────────────────
+        _price_est  = float(payload.indicator_price or payload.price or 0)
+        _notional   = float(payload.size) * _price_est
+        _min_notional = 1.0  # USD — below this the exchange rejects anyway
+        if _price_est > 0 and _notional < _min_notional:
+            logger.warning(
+                f"Order {order_id} rejected: notional {_notional:.4f} < "
+                f"{_min_notional} (size={payload.size}, price={_price_est})"
+            )
+            await _update_order_status(pool, order_id, "size_too_small", payload, None, account_id, account_label, strategy_id)
+            await _finalize_signal_log(pool, signal_log_id, 200, "guard_rejected", "size_too_small", start_ms)
+            return
+
         # ── Build OrderRequest for executor ──────────────────────────────────
         order_request = {
             "order_id":       str(order_id),
             "account_id":     account_id,
-            "symbol":         resolved.execution_symbol,
+            "symbol":         pos_symbol,
             "side":           payload.side,
             "signal":         payload.signal,
             "order_type":     payload.order_type,
@@ -652,7 +847,7 @@ async def _process_order(
             result.error_msg, start_ms,
         )
 
-        # ── Update pnl_today if result contains PnL ──────────────────────
+        # ── Update pnl_today ──────────────────────────────────────────────────
         result_pnl = exec_result.get("pnl") or exec_result.get("realized_pnl")
         if result_pnl is not None:
             try:
@@ -667,55 +862,76 @@ async def _process_order(
                         float(result_pnl),
                         strategy['id'],
                     )
-                logger.debug(
-                    f"Updated pnl_today for strategy {strategy['id']}: "
-                    f"delta={result_pnl}"
-                )
+                logger.debug(f"Updated pnl_today for {strategy['id']}: delta={result_pnl}")
             except Exception as e:
                 logger.warning(f"Failed to update pnl_today for {strategy['id']}: {e}")
-        # ── End pnl_today update ──────────────────────────────────────────
 
         logger.info(f"Order {order_id} processed for strategy {strategy['id']}: {final_status}")
 
-        if result.success and payload.base_asset and payload.quote_asset and payload.side and payload.size:
-            async with pool.acquire() as conn:
-                pos_symbol = f"{payload.base_asset}-{payload.quote_asset}"
+        if result.success and payload.base_asset and payload.quote_asset and payload.size:
 
-                # Check for existing open position by symbol (pair_id may be NULL for
-                # symbols not yet in trading_pairs, so match on symbol directly)
-                existing = await conn.fetchrow(
-                    """SELECT sp.id, sp.size FROM strategy_positions sp
-                       WHERE strategy_id = $1 AND symbol = $2 AND status = 'open'""",
-                    strategy['id'], pos_symbol
+            # ── Close path: canonical routine (exchange already executed) ─────
+            if payload.signal in ("close_long", "close_short"):
+                pos_side = "long" if payload.signal == "close_long" else "short"
+                # Pass payload.size as close_size: if size < open size it's a partial reduce
+                # (e.g. AI partial_close); if size >= open size it's a full close.
+                await close_strategy_position(
+                    pool, strategy,
+                    symbol=pos_symbol,
+                    side=pos_side,
+                    close_size=payload.size,
+                    closing_order_id=order_id,
+                    skip_exchange=True,
+                    fill_price=result.actual_fill_price,
+                    realized_pnl=result.realized_pnl,
                 )
 
-                if existing:
-                    if payload.signal in ("close_long", "close_short"):
-                        close_price  = float(result.actual_fill_price) if result.actual_fill_price is not None else None
-                        pnl_realized = float(result.realized_pnl)       if result.realized_pnl is not None       else None
+            # ── Open path: top-up existing or create new position ─────────────
+            elif payload.signal in ("open_long", "open_short"):
+                pos_side = "long" if payload.signal == "open_long" else "short"
+                fill_price_val = (
+                    result.actual_fill_price
+                    or payload.price
+                    or payload.indicator_price
+                    or Decimal("0")
+                )
+
+                async with pool.acquire() as conn:
+                    existing = await conn.fetchrow(
+                        """SELECT id, size, entry_price FROM strategy_positions
+                           WHERE strategy_id = $1 AND symbol = $2 AND side = $3
+                             AND status = 'open'""",
+                        strategy['id'], pos_symbol, pos_side,
+                    )
+
+                    if existing:
+                        old_size  = Decimal(str(existing['size']))
+                        old_entry = Decimal(str(existing['entry_price']))
+                        new_size  = old_size + payload.size
+                        new_entry = (
+                            (old_entry * old_size + Decimal(str(fill_price_val)) * payload.size)
+                            / new_size
+                        )
                         await conn.execute(
                             """
                             UPDATE strategy_positions
-                            SET status           = 'closed',
-                                closing_price    = $1,
-                                pnl_realized     = $2,
-                                closing_order_id = $3,
-                                closed_at        = NOW(),
-                                updated_at       = NOW()
-                            WHERE id = $4
+                            SET size        = $1,
+                                entry_price = $2,
+                                updated_at  = NOW()
+                            WHERE id = $3
                             """,
-                            close_price,
-                            pnl_realized,
-                            order_id,
-                            existing['id'],
+                            new_size, new_entry, existing['id'],
                         )
                         logger.info(
-                            f"Closed position {existing['id']} for strategy "
-                            f"{strategy['id']} at {close_price}, pnl={pnl_realized}"
+                            f"Topped up position {existing['id']} for {strategy['id']} "
+                            f"({pos_symbol} {pos_side}): "
+                            f"size {old_size}→{new_size}, entry {old_entry:.4f}→{new_entry:.4f}"
                         )
-                else:
-                    if payload.signal in ("open_long", "open_short"):
-                        await _create_strategy_position(pool, payload, strategy, order_id, result, effective_leverage, effective_margin_mode)
+                    else:
+                        await _create_strategy_position(
+                            pool, payload, strategy, order_id, result,
+                            effective_leverage, effective_margin_mode,
+                        )
 
     except Exception as e:
         logger.exception(f"Error processing order {order_id}: {e}")

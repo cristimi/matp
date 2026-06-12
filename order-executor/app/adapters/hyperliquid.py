@@ -90,7 +90,7 @@ class HyperliquidAdapter(ExchangeAdapter):
                 error_msg=str(e),
             )
 
-    async def close_position(self, symbol: str, side: str, margin_mode: str = "isolated") -> OrderResult:
+    async def close_position(self, symbol: str, side: str, size=None, margin_mode: str = "isolated") -> OrderResult:
         try:
             positions = await self.get_open_positions()
             target = next(
@@ -103,7 +103,7 @@ class HyperliquidAdapter(ExchangeAdapter):
                     success=False, status="route_failed",
                     error_msg=f"No open {side} position found for {symbol}"
                 )
-            # Build a reduce-only order to close
+            close_size = min(Decimal(str(size)), target.size) if size is not None else target.size
             close_side = "sell" if side == "long" else "buy"
             asset_index = await self._get_asset_index(symbol)
             close_order = OrderRequest(
@@ -113,7 +113,7 @@ class HyperliquidAdapter(ExchangeAdapter):
                 side=close_side,
                 signal="close",
                 order_type="market",
-                size=target.size,
+                size=close_size,
                 leverage=None,
                 margin_mode=None,
             )
