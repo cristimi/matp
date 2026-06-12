@@ -2,7 +2,6 @@ import { useState, useEffect, useCallback } from 'react';
 import { HeaderPill }    from '../components/shared/HeaderPill';
 import { DataGrid }      from '../components/shared/DataGrid';
 import { ActionBand }    from '../components/shared/ActionBand';
-import { SummaryBar }    from '../components/shared/SummaryBar';
 import { SectionHeader } from '../components/shared/SectionHeader';
 import { TopBar }        from '../components/shared/TopBar';
 import { FilterBar }     from '../components/shared/FilterBar';
@@ -34,6 +33,7 @@ interface Position {
   unrealized_pnl?:  number;
   pnl_pct?:         number;
   close_reason?:    string;
+  strategy_source?: string;
 }
 
 function PositionCard({
@@ -85,8 +85,10 @@ function PositionCard({
     :                    'short';
 
   // Route
+  const isAI = position.strategy_source === 'ai_engine' || position.strategy_source === 'ai';
   const source = position.strategy_type === 'tradingview' ? 'TradingView'
-    : position.strategy_type === 'internal' ? 'Engine'
+    : isAI                                                 ? 'AI'
+    : position.strategy_type === 'internal'                ? 'Engine'
     : 'MATP';
   const exch = position.account_exchange;
   const destination = position.account_label
@@ -284,7 +286,7 @@ function PositionCard({
         padding:'5px 12px 2px 18px',
       }}>
         <div style={{ display:'flex', alignItems:'center', gap:'4px' }}>
-          <HeaderPill variant="neutral">{source}</HeaderPill>
+          <HeaderPill variant={isAI ? 'ai' : 'neutral'}>{source}</HeaderPill>
           <span style={{
             fontSize:'10px', color:'var(--dim)',
             fontFamily:'monospace', fontWeight:'bold',
@@ -352,9 +354,12 @@ export default function Positions() {
   const [positions, setPositions] = useState<Position[]>([]);
   const [loading, setLoading]     = useState(true);
 
-  const [filterAsset,    setFilterAsset]    = useState<string>('all');
-  const [filterStatus,   setFilterStatus]   = useState<string>('all');
-  const [filterStrategy, setFilterStrategy] = useState<string>('all');
+  const [filterAsset,    setFilterAssetRaw]    = useState<string>(() => sessionStorage.getItem('matp_pos_asset')    ?? 'all');
+  const [filterStatus,   setFilterStatusRaw]   = useState<string>(() => sessionStorage.getItem('matp_pos_status')   ?? 'all');
+  const [filterStrategy, setFilterStrategyRaw] = useState<string>(() => sessionStorage.getItem('matp_pos_strategy') ?? 'all');
+  const setFilterAsset    = (v: string) => { sessionStorage.setItem('matp_pos_asset', v);    setFilterAssetRaw(v);    };
+  const setFilterStatus   = (v: string) => { sessionStorage.setItem('matp_pos_status', v);   setFilterStatusRaw(v);   };
+  const setFilterStrategy = (v: string) => { sessionStorage.setItem('matp_pos_strategy', v); setFilterStrategyRaw(v); };
 
   const fetchPositions = useCallback(async () => {
     console.log('fetchPositions starting...');
@@ -532,12 +537,6 @@ export default function Positions() {
             </span>
           )}
         </div>
-        <SummaryBar cells={[
-          { count: live.length,   label: 'Live',   variant: 'live'   as const },
-          { count: stale.length,  label: 'Stale',  variant: 'stale'  as const },
-          { count: closed.length, label: 'Closed', variant: 'closed' as const },
-        ]} />
-
         <div style={{
           flex:1, overflowY:'auto', padding:'14px 14px 80px',
           scrollbarWidth:'none',

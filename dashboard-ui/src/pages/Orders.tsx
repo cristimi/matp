@@ -86,8 +86,10 @@ function OrderCard({
   const sideVariant = order.side === 'buy' ? 'buy' : 'sell';
 
   const src = order.signal_source;
+  const isAI = src === 'ai_engine' || src === 'ai';
   const source = src === 'tradingview' ? 'TradingView'
-    : src === 'internal' ? 'Engine'
+    : isAI                             ? 'AI'
+    : src === 'internal'               ? 'Engine'
     : 'MATP';
   const exch = order.account_exchange;
   const destination = order.account_label
@@ -185,7 +187,7 @@ function OrderCard({
         padding:'5px 12px 2px 18px',
       }}>
         <div style={{ display:'flex', alignItems:'center', gap:'4px' }}>
-          <HeaderPill variant="neutral">{source}</HeaderPill>
+          <HeaderPill variant={isAI ? 'ai' : 'neutral'}>{source}</HeaderPill>
           <span style={{
             fontSize:'10px', color:'var(--dim)',
             fontFamily:'monospace', fontWeight:'bold',
@@ -305,9 +307,12 @@ export default function Orders() {
   const [total, setTotal]       = useState(0);
   const [retryingId, setRetryingId] = useState<string | null>(null);
 
-  const [filterAsset,    setFilterAsset]    = useState<string>('all');
-  const [filterStatus,   setFilterStatus]   = useState<string>('all');
-  const [filterStrategy, setFilterStrategy] = useState<string>('all');
+  const [filterAsset,    setFilterAssetRaw]    = useState<string>(() => sessionStorage.getItem('matp_ord_asset')    ?? 'all');
+  const [filterStatus,   setFilterStatusRaw]   = useState<string>(() => sessionStorage.getItem('matp_ord_status')   ?? 'all');
+  const [filterStrategy, setFilterStrategyRaw] = useState<string>(() => sessionStorage.getItem('matp_ord_strategy') ?? 'all');
+  const setFilterAsset    = (v: string) => { sessionStorage.setItem('matp_ord_asset', v);    setFilterAssetRaw(v);    };
+  const setFilterStatus   = (v: string) => { sessionStorage.setItem('matp_ord_status', v);   setFilterStatusRaw(v);   };
+  const setFilterStrategy = (v: string) => { sessionStorage.setItem('matp_ord_strategy', v); setFilterStrategyRaw(v); };
   const [page, setPage]                     = useState<number>(1);
   const PAGE_SIZE = 50;
 

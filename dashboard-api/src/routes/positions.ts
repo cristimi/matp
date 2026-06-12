@@ -83,7 +83,7 @@ router.get('/', async (_req: Request, res: Response) => {
     
     // 1. Fetch all strategy positions (open, stale, and last 20 closed)
     const posResult = await pool.query(
-      `SELECT sp.*, s.name as strategy_name, s.type as strategy_type, s.account_id, ea.exchange as account_exchange, ea.label as account_label
+      `SELECT sp.*, s.name as strategy_name, s.type as strategy_type, s.strategy_source, s.account_id, ea.exchange as account_exchange, ea.label as account_label
        FROM strategy_positions sp
        JOIN strategies s ON sp.strategy_id = s.id
        LEFT JOIN exchange_accounts ea ON s.account_id = ea.id
@@ -149,6 +149,7 @@ router.get('/', async (_req: Request, res: Response) => {
         pnl_pct:           0,
         close_reason:      dbPos.close_reason || (dbPos.status === 'closed' ? 'Manual Close' : null),
         strategy_type:     dbPos.strategy_type,
+        strategy_source:   dbPos.strategy_source,
         destination:       dbPos.account_exchange || 'exchange',
       };
 

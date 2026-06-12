@@ -3,7 +3,7 @@ import React from 'react';
 export type PillVariant =
   | 'long' | 'short' | 'lev' | 'tech'
   | 'open' | 'stale' | 'closed' | 'neutral'
-  | 'buy'  | 'sell';
+  | 'buy'  | 'sell'  | 'ai';
 
 const VARIANT_STYLES: Record<PillVariant, React.CSSProperties> = {
   long:    { background:'var(--green-a)',         color:'var(--green)',        borderColor:'var(--green-b)' },
@@ -16,6 +16,7 @@ const VARIANT_STYLES: Record<PillVariant, React.CSSProperties> = {
   neutral: { background:'var(--bg2)',             color:'var(--muted)',        borderColor:'var(--border)',  textTransform:'none' as const },
   buy:     { background:'var(--green-a)',         color:'var(--green)',        borderColor:'var(--green-b)' },
   sell:    { background:'var(--red-a)',           color:'var(--red)',          borderColor:'var(--red-b)' },
+  ai:      { background:'rgba(83,74,183,.10)',    color:'#534AB7',             borderColor:'rgba(83,74,183,.25)' },
 };
 
 interface HeaderPillProps {
