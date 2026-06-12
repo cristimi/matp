@@ -298,6 +298,79 @@ async def close_position_by_id(position_id: str, request: Request):
     return result
 
 
+@router.post("/strategies/{strategy_id}/adjust-stops")
+async def adjust_stops_for_strategy(
+    strategy_id: str,
+    request: Request,
+    x_webhook_token: str = Header(None),
+):
+    """
+    Adjust TP/SL stops for the open position of a given strategy.
+    Auth: same token as webhook (X-Webhook-Token header or body 'token' field).
+    Body: {tp_price?, sl_price?, token?}
+    """
+    from app.executor_client import call_executor_modify_stops
+
+    pool = get_pool()
+    try:
+        raw_bytes = await request.body()
+        body_dict = json.loads(raw_bytes) if raw_bytes else {}
+    except Exception:
+        body_dict = {}
+
+    strategy = await _get_strategy(pool, strategy_id)
+    if not strategy:
+        raise HTTPException(status_code=404, detail="Strategy not found")
+
+    token_to_verify = x_webhook_token or body_dict.get("token", "")
+    if not token_to_verify or not await _verify_token(token_to_verify, strategy["webhook_secret"]):
+        raise HTTPException(status_code=403, detail="Invalid token")
+
+    tp_price_raw = body_dict.get("tp_price")
+    sl_price_raw = body_dict.get("sl_price")
+    if tp_price_raw is None and sl_price_raw is None:
+        raise HTTPException(status_code=400, detail="At least one of tp_price or sl_price is required")
+
+    tp_price = float(tp_price_raw) if tp_price_raw is not None else None
+    sl_price = float(sl_price_raw) if sl_price_raw is not None else None
+
+    # Find open position for this strategy
+    async with pool.acquire() as conn:
+        pos = await conn.fetchrow(
+            """
+            SELECT id, symbol, side FROM strategy_positions
+            WHERE strategy_id = $1 AND status = 'open'
+            ORDER BY opened_at DESC LIMIT 1
+            """,
+            strategy_id,
+        )
+
+    if pos is None:
+        raise HTTPException(status_code=404, detail="No open position for strategy")
+
+    account_id = strategy.get("account_id") or ""
+    result = await call_executor_modify_stops(
+        account_id=account_id,
+        symbol=pos["symbol"],
+        side=pos["side"],
+        tp_price=tp_price,
+        sl_price=sl_price,
+    )
+
+    if not result.get("success"):
+        return JSONResponse(
+            status_code=502,
+            content={"success": False, "error": result.get("error_msg", "modify-stops failed")},
+        )
+
+    logger.info(
+        f"adjust-stops strategy={strategy_id} pos={pos['id']} ({pos['symbol']} {pos['side']})"
+        f" tp={tp_price} sl={sl_price}"
+        f" cancelled={len(result.get('cancelled', []))} placed={len(result.get('placed', []))}"
+    )
+    return {"success": True, "position_id": str(pos["id"]), **result}
+
+
 @router.post("/webhook/{strategy_id}", response_model=OrderResponse)
 async def receive_webhook(
     strategy_id: str,

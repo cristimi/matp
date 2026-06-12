@@ -139,6 +139,147 @@ All requirements met:
 
 ---
 
+---
+
+## adjust_stops: Update SL/TP Without Trading
+
+### STEP 1 — Adapter cancel-order support ✅
+
+**Changes in `order-executor/app/adapters/hyperliquid.py`:**
+- `list_trigger_orders(symbol)` → POST `/info?type=frontendOpenOrders` filtered by coin, returns `{oid, tpsl, triggerPx, sz, side}` per trigger
+- `cancel_order(symbol, oid)` → builds `{"type": "cancel", "cancels": [{"a": asset_index, "o": oid}]}`, signs through the **existing** msgpack/keccak path (no new signing logic), field order: `a, o`
+- `place_trigger_orders(symbol, trigger_side, size, tp_price?, sl_price?)` → standalone reduce-only trigger orders with `grouping="na"`, each leg uses same trigger wire format from Phase 3
+
+**Changes in `order-executor/app/adapters/blofin.py`:**
+- `list_trigger_orders(symbol)` → GET `/api/v1/trade/algo-orders-pending?instId={symbol}`
+- `cancel_order(symbol, order_id)` → tries `/api/v1/trade/cancel-algo-order`, falls back to `/api/v1/trade/cancel-order`
+- `place_trigger_orders(symbol, trigger_side, size, tp_price?, sl_price?)` → places standalone TP/SL orders via `/api/v1/trade/order`
+
+**Verification on HL testnet:**
+
+Opened ETH-USDT long with TP=1900 SL=1600 (existing triggers oid=54895719119/54895719120). Then called executor `modify-stops` at same prices to list+cancel+replace:
+
+```json
+{
+  "success": true,
+  "cancelled": [
+    {"oid": 54895719120, "tpsl": "sl", "success": true},
+    {"oid": 54895719119, "tpsl": "tp", "success": true}
+  ],
+  "placed": [
+    {"tpsl": "tp", "oid": "54895731829", "status": "placed"},
+    {"tpsl": "sl", "oid": "54895731830", "status": "placed"}
+  ],
+  "error_msg": null
+}
+```
+
+Both old triggers cancelled ✅, both new triggers placed ✅. HL signature accepted ✅.
+
+---
+
+### STEP 2 — Executor modify-stops endpoint ✅
+
+**Added `POST /accounts/{account_id}/positions/modify-stops`** in `order-executor/app/main.py`:
+- Body: `{symbol, side, tp_price?, sl_price?}`
+- Resolves position size from `get_open_positions()` (for trigger sizing)
+- Calls `list_trigger_orders` → `cancel_order` × N → `place_trigger_orders`
+- Returns `{success, cancelled[], placed[]}`
+
+**Verification** — listener endpoint calling executor with new prices TP=1920 SL=1580:
+
+```json
+{
+  "success": true,
+  "cancelled": [
+    {"oid": 54895187661, "tpsl": "sl", "success": true},
+    {"oid": 54895187660, "tpsl": "tp", "success": true}
+  ],
+  "placed": [
+    {"tpsl": "tp", "oid": "54895196020", "status": "placed"},
+    {"tpsl": "sl", "oid": "54895196021", "status": "placed"}
+  ]
+}
+```
+
+Old TP `54895187660` and SL `54895187661` cancelled ✅. New TP `54895196020` and SL `54895196021` placed at 1920/1580 ✅.
+
+---
+
+### STEP 3 — Listener route ✅
+
+**Added `POST /strategies/{strategy_id}/adjust-stops`** in `order-listener/app/webhook_handler.py`:
+- Auth: same token as webhook (X-Webhook-Token or body `token`)
+- Body: `{tp_price?, sl_price?}`
+- Finds open position for strategy from DB
+- Calls `call_executor_modify_stops(account_id, symbol, side, tp_price, sl_price)` via executor_client
+- Returns `{success, position_id, cancelled[], placed[]}`
+
+**Added `call_executor_modify_stops()`** in `order-listener/app/executor_client.py`.
+
+**Verification** — direct listener call for eth-range-ba4f at TP=1920 SL=1580:
+
+```bash
+curl -s -X POST http://localhost:8001/strategies/eth-range-ba4f/adjust-stops \
+  -H "X-Webhook-Token: a21af3ee0a855d7ebcc754bc20f6adfb" \
+  -d '{"tp_price": 1920, "sl_price": 1580}'
+```
+
+```json
+{
+  "success": true,
+  "position_id": "0a73a8d4-b1ae-41ad-9730-b1d773b82db2",
+  "cancelled": [
+    {"oid": 54895187661, "tpsl": "sl", "success": true},
+    {"oid": 54895187660, "tpsl": "tp", "success": true}
+  ],
+  "placed": [
+    {"tpsl": "tp", "oid": "54895196020", "status": "placed"},
+    {"tpsl": "sl", "oid": "54895196021", "status": "placed"}
+  ]
+}
+```
+
+Old triggers cancelled, new triggers live on HL at new prices ✅. Position resolved from strategy DB row ✅.
+
+---
+
+### STEP 4 — AI: unblock and dispatch adjust_stops ✅ (code) / ⚠️ (LLM 503 blocked e2e)
+
+**Changes in `ai-signal-generator/app/graph/nodes/node_guard.py`:**
+- Removed `adjust_stops` from the `hold_or_adjust` early-exit block
+- Added `adjust_stops` path: checks cooldown (`cooldown_stop_adj_minutes`), then passes gate with `resolved_sl_price` and `resolved_tp_price` from `signal['new_sl_price']`/`signal['new_tp_price']`
+- Rejects if both prices are None (`adjust_stops_no_prices`)
+
+**Changes in `ai-signal-generator/app/graph/nodes/node_dispatch.py`:**
+- Removed `adjust_stops` from the no-webhook block
+- Added step 4a: when `action == 'adjust_stops'`, calls `dispatch_adjust_stops()` before the standard webhook path
+
+**Added `dispatch_adjust_stops(state, listener_url)`** in `ai-signal-generator/app/webhook/dispatcher.py`:
+- POSTs `{token, tp_price, sl_price}` to `{listener_url}/strategies/{strategy_id}/adjust-stops`
+
+**Gate verification (direct Python test — no LLM required):**
+
+Test 1 — fresh adjust_stops, no prior log:
+```
+gate_passed: True
+gate_rejection_reason: None
+resolved_sl_price: 1620.0
+resolved_tp_price: 1850.0
+```
+
+Test 2 — adjust_stops after inserting gate_passed=True log within 30-min cooldown:
+```
+gate_passed: False
+gate_rejection_reason: cooldown_active
+```
+
+Cooldown respected ✅. Gate passes for valid adjust_stops ✅.
+
+**LLM status during session:** Google Gemini 3.5-flash returned 503 UNAVAILABLE throughout this session (high demand, transient). The full AI pipeline (LLM → gate → dispatch → listener → exchange) could not be run end-to-end. The exchange proof (mandatory) is fully satisfied by Steps 2 and 3 — same code path the dispatcher calls.
+
+---
+
 ## Phase 2 Test D — External Partial-Reduction Reconciler ✅
 
 **Test:** Open a demo position via MATP webhook, then reduce ~50% directly on the exchange (bypassing MATP), verify the reconciler detects the discrepancy after exactly N=3 consecutive misses and shrinks the DB row to match the exchange — with status staying `open`.

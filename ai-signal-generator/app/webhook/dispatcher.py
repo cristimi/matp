@@ -52,6 +52,36 @@ async def build_payload(state: AgentState) -> dict:
     }
 
 
+async def dispatch_adjust_stops(state: AgentState, listener_url: str) -> dict:
+    """
+    POST to listener /strategies/{strategy_id}/adjust-stops with new TP/SL prices.
+    Uses the strategy's webhook_secret for auth.
+    """
+    sc           = state['strategy_config']
+    strategy_id  = state['strategy_id']
+    secret       = sc.get('webhook_secret', '')
+    tp_price     = state.get('resolved_tp_price')
+    sl_price     = state.get('resolved_sl_price')
+
+    body: dict = {'token': secret}
+    if tp_price is not None:
+        body['tp_price'] = tp_price
+    if sl_price is not None:
+        body['sl_price'] = sl_price
+
+    url = f"{listener_url.rstrip('/')}/strategies/{strategy_id}/adjust-stops"
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(url, json=body)
+        return {
+            'status_code': resp.status_code,
+            'error': None if resp.status_code == 200 else resp.text,
+        }
+    except Exception as exc:
+        logger.error("dispatch_adjust_stops error: %s", exc)
+        return {'status_code': None, 'error': str(exc)}
+
+
 async def dispatch_webhook(
     payload: dict,
     strategy_id: str,

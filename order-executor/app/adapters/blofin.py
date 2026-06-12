@@ -536,3 +536,111 @@ class BlofinAdapter(ExchangeAdapter):
         except Exception as e:
             logger.error(f"BlofinAdapter.get_account_meta failed: {e}")
             return {}
+
+    async def list_trigger_orders(self, symbol: str) -> list[dict]:
+        """
+        Return pending TP/SL algo orders for a symbol.
+        Each entry: {oid, tpsl, triggerPx, sz}
+        """
+        try:
+            path = f"/api/v1/trade/algo-orders-pending?instId={symbol}"
+            headers = self._headers("GET", path, "")
+            async with httpx.AsyncClient(base_url=self.base_url, timeout=10) as client:
+                resp = await client.get(path, headers=headers)
+            data = resp.json()
+            entries = data.get("data") or []
+            result = []
+            for o in entries:
+                tp_px = o.get("tpTriggerPrice") or o.get("tpTriggerPx")
+                sl_px = o.get("slTriggerPrice") or o.get("slTriggerPx")
+                order_id = o.get("algoOrderId") or o.get("orderId")
+                if tp_px:
+                    result.append({"oid": order_id, "tpsl": "tp", "triggerPx": tp_px, "sz": o.get("size")})
+                if sl_px:
+                    result.append({"oid": order_id, "tpsl": "sl", "triggerPx": sl_px, "sz": o.get("size")})
+            return result
+        except Exception as e:
+            logger.error(f"BlofinAdapter.list_trigger_orders failed: {e}")
+            return []
+
+    async def cancel_order(self, symbol: str, order_id: str) -> dict:
+        """Cancel a pending TP/SL algo order by its order_id."""
+        try:
+            path = "/api/v1/trade/cancel-algo-order"
+            body_data = {"instId": symbol, "algoOrderId": str(order_id)}
+            body_str = json.dumps(body_data, separators=(",", ":"))
+            headers = self._headers("POST", path, body_str)
+            async with httpx.AsyncClient(base_url=self.base_url, timeout=10) as client:
+                resp = await client.post(path, content=body_str, headers=headers)
+            data = resp.json()
+            code = str(data.get("code", "0"))
+            if code in ("0", "200"):
+                return {"success": True, "oid": order_id}
+            # Fall back to cancel-order endpoint
+            path2 = "/api/v1/trade/cancel-order"
+            body_data2 = {"instId": symbol, "orderId": str(order_id)}
+            body_str2 = json.dumps(body_data2, separators=(",", ":"))
+            headers2 = self._headers("POST", path2, body_str2)
+            async with httpx.AsyncClient(base_url=self.base_url, timeout=10) as client:
+                resp2 = await client.post(path2, content=body_str2, headers=headers2)
+            data2 = resp2.json()
+            code2 = str(data2.get("code", "0"))
+            if code2 in ("0", "200"):
+                return {"success": True, "oid": order_id}
+            return {"success": False, "error": data2.get("msg", "cancel failed")}
+        except Exception as e:
+            logger.error(f"BlofinAdapter.cancel_order failed: {e}")
+            return {"success": False, "error": str(e)}
+
+    async def place_trigger_orders(
+        self,
+        symbol: str,
+        trigger_side: str,
+        size: float,
+        tp_price: Optional[float] = None,
+        sl_price: Optional[float] = None,
+    ) -> dict:
+        """Place standalone TP/SL algo orders for an existing position."""
+        try:
+            contract_size = await self._to_contracts(symbol, Decimal(str(size)))
+            placed = []
+
+            for tpsl_type, price in [("tp", tp_price), ("sl", sl_price)]:
+                if price is None:
+                    continue
+                body_data: dict = {
+                    "instId":     symbol,
+                    "marginMode": "isolated",
+                    "side":       trigger_side,
+                    "orderType":  "market",
+                    "size":       str(contract_size),
+                    "reduceOnly": "true",
+                }
+                if tpsl_type == "tp":
+                    body_data["tpTriggerPrice"] = str(price)
+                    body_data["tpOrderPrice"]   = "-1"
+                else:
+                    body_data["slTriggerPrice"] = str(price)
+                    body_data["slOrderPrice"]   = "-1"
+
+                path = "/api/v1/trade/order"
+                body_str = json.dumps(body_data, separators=(",", ":"))
+                headers  = self._headers("POST", path, body_str)
+                async with httpx.AsyncClient(base_url=self.base_url, timeout=10) as client:
+                    resp = await client.post(path, content=body_str, headers=headers)
+                data = resp.json()
+                code = str(data.get("code", "0"))
+                if code in ("0", "200"):
+                    order_info = (data.get("data") or [{}])
+                    if isinstance(order_info, list):
+                        order_info = order_info[0] if order_info else {}
+                    placed.append({"tpsl": tpsl_type, "oid": order_info.get("orderId"), "status": "placed"})
+                    logger.info(f"Blofin trigger ({tpsl_type}) placed at {price} for {symbol}")
+                else:
+                    placed.append({"tpsl": tpsl_type, "error": data.get("msg")})
+                    logger.warning(f"Blofin trigger ({tpsl_type}) failed: {data.get('msg')}")
+
+            return {"success": True, "placed": placed}
+        except Exception as e:
+            logger.error(f"BlofinAdapter.place_trigger_orders failed: {e}")
+            return {"success": False, "error": str(e)}

@@ -70,8 +70,8 @@ async def node_dispatch(state: AgentState) -> AgentState:
     except Exception as exc:
         logger.error("Failed to write ai_signal_log: %s", exc)
 
-    # ── 2. Gate failed or hold/adjust_stops — no webhook ────────────────
-    if not state.get('gate_passed') or action in ('hold', 'adjust_stops'):
+    # ── 2. Gate failed or hold — no webhook ─────────────────────────────
+    if not state.get('gate_passed'):
         logger.info(
             "strategy=%s action=%s gate=%s reason=%s — no webhook",
             state['strategy_id'], action,
@@ -83,6 +83,40 @@ async def node_dispatch(state: AgentState) -> AgentState:
     if sc.get('dry_run', True):
         logger.info("DRY RUN — webhook suppressed strategy=%s action=%s", state['strategy_id'], action)
         return {**state, 'signal_log_id': signal_log_id, 'webhook_fired': False}
+
+    # ── 4a. adjust_stops — dispatch to listener adjust-stops endpoint ────
+    if action == 'adjust_stops':
+        try:
+            from app.webhook.dispatcher import dispatch_adjust_stops
+            result = await dispatch_adjust_stops(state, settings.matp_listener_url)
+            webhook_status = result.get('status_code')
+            try:
+                async with pool.acquire() as conn:
+                    await conn.execute(
+                        """
+                        UPDATE ai_signal_log
+                        SET webhook_fired  = TRUE,
+                            webhook_status = $2
+                        WHERE id = $1
+                        """,
+                        signal_log_id,
+                        webhook_status,
+                    )
+            except Exception as exc:
+                logger.error("Failed to update ai_signal_log for adjust_stops: %s", exc)
+            logger.info(
+                "adjust_stops dispatched strategy=%s status=%s",
+                state['strategy_id'], webhook_status,
+            )
+            return {
+                **state,
+                'signal_log_id':  signal_log_id,
+                'webhook_fired':  True,
+                'webhook_status': webhook_status,
+            }
+        except Exception as exc:
+            logger.error("adjust_stops dispatch failed: %s", exc)
+            return {**state, 'signal_log_id': signal_log_id, 'webhook_fired': False}
 
     # ── 4. Fire webhook ──────────────────────────────────────────────────
     try:

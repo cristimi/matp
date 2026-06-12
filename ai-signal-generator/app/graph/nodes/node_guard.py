@@ -37,8 +37,8 @@ async def node_guard(state: AgentState) -> AgentState:
     signal = state['llm_signal']
     action = signal['action']
 
-    # ── 2. Hold / adjust_stops — not an error, just no webhook ──────────
-    if action in ('hold', 'adjust_stops'):
+    # ── 2. Hold — no webhook ─────────────────────────────────────────────
+    if action == 'hold':
         return {**state, 'gate_passed': False, 'gate_rejection_reason': 'hold_or_adjust'}
 
     # ── 3. Confidence threshold ──────────────────────────────────────────
@@ -93,6 +93,21 @@ async def node_guard(state: AgentState) -> AgentState:
                 return _reject(state, 'max_drawdown')
     except Exception as exc:
         logger.warning("PnL check failed: %s", exc)
+
+    # ── adjust_stops: resolve new prices from signal ─────────────────────
+    if action == 'adjust_stops':
+        new_tp = signal.get('new_tp_price')
+        new_sl = signal.get('new_sl_price')
+        if new_tp is None and new_sl is None:
+            return _reject(state, 'adjust_stops_no_prices')
+        return {
+            **state,
+            'gate_passed':           True,
+            'gate_rejection_reason': None,
+            'resolved_size':         None,
+            'resolved_sl_price':     float(new_sl) if new_sl is not None else None,
+            'resolved_tp_price':     float(new_tp) if new_tp is not None else None,
+        }
 
     # ── Size resolution (opening actions) ───────────────────────────────
     if action in ('open_long', 'open_short'):

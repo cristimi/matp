@@ -108,6 +108,33 @@ async def get_position_history(account_id: str, symbol: str) -> dict:
     return await call_executor_get(path)
 
 
+async def call_executor_modify_stops(
+    account_id: str,
+    symbol:     str,
+    side:       str,
+    tp_price=None,
+    sl_price=None,
+) -> dict:
+    """
+    POST to /accounts/{account_id}/positions/modify-stops.
+    Returns result dict. Never raises.
+    """
+    url = f"{EXECUTOR_URL}/accounts/{account_id}/positions/modify-stops"
+    body: dict = {"symbol": symbol, "side": side}
+    if tp_price is not None:
+        body["tp_price"] = float(tp_price)
+    if sl_price is not None:
+        body["sl_price"] = float(sl_price)
+    try:
+        async with httpx.AsyncClient(timeout=TIMEOUT_SECONDS) as client:
+            response = await client.post(url, json=body)
+            response.raise_for_status()
+            return response.json()
+    except Exception as e:
+        logger.error(f"Executor modify-stops failed: {e}")
+        return {"success": False, "error_msg": str(e)}
+
+
 async def call_executor_close_position(
     account_id: str,
     symbol:     str,
