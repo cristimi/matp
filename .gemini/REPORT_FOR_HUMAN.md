@@ -139,6 +139,49 @@ All requirements met:
 
 ---
 
+## Phase 2 Test D — External Partial-Reduction Reconciler ✅
+
+**Test:** Open a demo position via MATP webhook, then reduce ~50% directly on the exchange (bypassing MATP), verify the reconciler detects the discrepancy after exactly N=3 consecutive misses and shrinks the DB row to match the exchange — with status staying `open`.
+
+**Position used:** BTC-USDT short `9d38cbcb` on Hyperliquidtest, entry size=0.01.
+
+**Step 1 — Create size mismatch:**  
+Reduced 0.005 BTC short directly on exchange via executor `/close-position` (bypasses listener; no webhook fires).  
+Result: exchange=0.005, DB=0.01, miss_count=0.
+
+**Step 2 — Three reconcile passes:**
+
+| Pass | Event | DB size | status | miss_count | Action |
+|------|-------|---------|--------|------------|--------|
+| 1    | `POST /reconcile` (manual) | 0.01 | open | 1 | None — miss 1/3 |
+| 2    | background loop (~3s later) | 0.01 | open | 2 | None — miss 2/3 |
+| 3    | `POST /reconcile` (manual) | **0.005** | **open** | **0** | **Partial reduction fires** |
+
+Reconciler logs:
+```
+2026-06-12 19:28:16 [INFO] reconciler: position 9d38cbcb (BTC-USDT short) miss 1/3 db=0.01 exchange=0.005
+2026-06-12 19:28:19 [INFO] reconciler: position 9d38cbcb (BTC-USDT short) miss 2/3 db=0.01 exchange=0.005
+2026-06-12 19:28:25 [INFO] reconciler: position 9d38cbcb (BTC-USDT short) miss 3/3 db=0.01 exchange=0.005
+2026-06-12 19:28:25 [INFO] reconciler: partial reduction position 9d38cbcb (BTC-USDT short) by 0.005 to match exchange 0.005
+2026-06-12 19:28:25 [INFO] webhook_handler: Partially closed position 9d38cbcb (BTC-USDT short), close_size=0.005, fill=None, pnl=None
+```
+
+**Final state:**
+```
+ id         | size  | status | reconcile_miss_count
+ 9d38cbcb   | 0.005 | open   | 0
+Exchange: BTC-USDT short size=0.005
+```
+
+All requirements met:
+- 3 consecutive misses required before any action ✅
+- DB size shrinks from 0.01 to 0.005 to match exchange ✅
+- status stays `open` (not closed) ✅
+- miss_count resets to 0 after action ✅
+- Size never grows (LARGER check guard fires correctly for exchange > DB) ✅
+
+---
+
 ## `pnl_unconfirmed` cases (Part A)
 
 Logged at WARNING level when:
