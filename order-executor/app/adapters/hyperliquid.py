@@ -276,17 +276,55 @@ class HyperliquidAdapter(ExchangeAdapter):
         price_wire = self._float_to_wire(self._round_price(float(price_str)))
         size_wire  = self._float_to_wire(float(order.size))
 
+        entry_order = {
+            "a": asset_index,
+            "b": is_buy,
+            "p": price_wire,
+            "s": size_wire,
+            "r": reduce_only,
+            "t": order_type_payload,
+        }
+
+        orders_list = [entry_order]
+        grouping    = "na"
+
+        # Attach TP/SL trigger legs for opening orders (reduce_only=False)
+        # trigger dict order: isMarket, triggerPx, tpsl (signature-critical)
+        if not reduce_only and (order.tp_price is not None or order.sl_price is not None):
+            trigger_is_buy = not is_buy  # opposite side to entry
+            grouping = "normalTpsl"
+
+            if order.tp_price is not None:
+                tp_wire = self._float_to_wire(self._round_price(float(order.tp_price)))
+                orders_list.append({
+                    "a": asset_index,
+                    "b": trigger_is_buy,
+                    "p": tp_wire,
+                    "s": size_wire,
+                    "r": True,
+                    "t": {"trigger": {"isMarket": True, "triggerPx": tp_wire, "tpsl": "tp"}},
+                })
+
+            if order.sl_price is not None:
+                sl_wire = self._float_to_wire(self._round_price(float(order.sl_price)))
+                orders_list.append({
+                    "a": asset_index,
+                    "b": trigger_is_buy,
+                    "p": sl_wire,
+                    "s": size_wire,
+                    "r": True,
+                    "t": {"trigger": {"isMarket": True, "triggerPx": sl_wire, "tpsl": "sl"}},
+                })
+
+            logger.info(
+                f"HL order with TP/SL: tp={order.tp_price} sl={order.sl_price}"
+                f" symbol={order.symbol} side={'buy' if is_buy else 'sell'}"
+            )
+
         action = {
             "type": "order",
-            "orders": [{
-                "a": asset_index,
-                "b": is_buy,
-                "p": price_wire,
-                "s": size_wire,
-                "r": reduce_only,
-                "t": order_type_payload,
-            }],
-            "grouping": "na",
+            "orders": orders_list,
+            "grouping": grouping,
         }
 
         # ── EIP-712 signing
@@ -364,6 +402,25 @@ class HyperliquidAdapter(ExchangeAdapter):
                  str(first.get("resting", {}).get("oid", ""))
 
         avg_px = filled.get("avgPx")
+
+        # Log TP/SL trigger order IDs and warn on any trigger-leg failure.
+        # Trigger-order statuses may be plain strings ("resting") or dicts.
+        for i, st in enumerate(statuses[1:], start=1):
+            if isinstance(st, str):
+                logger.info(f"HL TP/SL leg {i} placed (status: {st})")
+            elif isinstance(st, dict):
+                if "error" in st:
+                    logger.warning(
+                        f"HL TP/SL leg {i} placement error: {st['error']} "
+                        f"(entry oid={oid})"
+                    )
+                else:
+                    trig_oid = str(
+                        st.get("resting", {}).get("oid", "")
+                        or st.get("filled", {}).get("oid", "")
+                    )
+                    if trig_oid:
+                        logger.info(f"HL TP/SL leg {i} placed: oid={trig_oid}")
 
         realized_pnl = None
         if reduce_only and oid:

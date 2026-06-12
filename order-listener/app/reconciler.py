@@ -45,6 +45,7 @@ async def reconcile_once(pool) -> None:
 
     if not rows:
         await sync_position_pnl(pool)
+        await _recover_manual_close_pnl(pool)
         return
 
     # Group open positions by account_id
@@ -161,6 +162,7 @@ async def reconcile_once(pool) -> None:
                     )
 
     await sync_position_pnl(pool)
+    await _recover_manual_close_pnl(pool)
     logger.debug("reconciler: pass complete")
 
 
@@ -270,3 +272,100 @@ async def _handle_full_external_close(
         logger.error(
             f"reconciler: failed to close position {pos_id} ({symbol} {side}): {result}"
         )
+
+
+async def _recover_manual_close_pnl(pool) -> None:
+    """
+    Fallback PnL recovery for closed positions with pnl_realized=0/NULL and no
+    attributable close orders (manual UI closes, executor-only closes, etc.).
+    Calls /positions/history and applies the stale-history guard.
+    """
+    from app.executor_client import get_position_history
+    from datetime import datetime, timezone
+
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT sp.id, sp.symbol, sp.side, sp.opened_at, s.account_id
+            FROM strategy_positions sp
+            JOIN strategies s ON sp.strategy_id = s.id
+            WHERE sp.status = 'closed'
+              AND (sp.pnl_realized IS NULL OR sp.pnl_realized = 0)
+              AND sp.closed_at >= NOW() - INTERVAL '7 days'
+              AND COALESCE(s.is_deleted, false) = false
+              AND NOT EXISTS (
+                SELECT 1 FROM orders o
+                WHERE o.closes_position_id = sp.id AND o.pnl IS NOT NULL
+              )
+            ORDER BY sp.closed_at DESC
+            """
+        )
+
+    if not rows:
+        return
+
+    logger.debug(f"reconciler: {len(rows)} closed positions need PnL history fallback")
+
+    for row in rows:
+        pos_id    = row["id"]
+        symbol    = row["symbol"]
+        side      = row["side"]
+        acct_id   = row["account_id"]
+        opened_at = row["opened_at"]
+
+        try:
+            history = await get_position_history(acct_id, symbol)
+        except Exception as e:
+            logger.warning(f"reconciler: history fetch failed for {pos_id} ({symbol}): {e}")
+            continue
+
+        if not history or not history.get("pnl_realized"):
+            logger.debug(
+                f"reconciler: pnl_unconfirmed for {pos_id} ({symbol} {side}) — no history PnL"
+            )
+            continue
+
+        pnl_realized   = history.get("pnl_realized")
+        hist_closed_at = history.get("closed_at")
+
+        # Stale-history guard: reject history predating this position's open
+        if hist_closed_at and opened_at:
+            try:
+                closed_dt = (
+                    hist_closed_at if hasattr(hist_closed_at, "tzinfo")
+                    else datetime.fromisoformat(str(hist_closed_at).replace("Z", "+00:00"))
+                )
+                if closed_dt.tzinfo is None:
+                    closed_dt = closed_dt.replace(tzinfo=timezone.utc)
+                opened_dt = opened_at
+                if opened_dt.tzinfo is None:
+                    opened_dt = opened_dt.replace(tzinfo=timezone.utc)
+                if closed_dt <= opened_dt:
+                    logger.warning(
+                        f"reconciler: stale history for {pos_id} ({symbol})"
+                        f" hist_closed_at={closed_dt} <= opened_at={opened_dt} — skipping"
+                    )
+                    continue
+            except Exception as e:
+                logger.warning(f"reconciler: stale guard parse error for {pos_id}: {e}")
+                continue
+
+        try:
+            pnl_float = float(pnl_realized)
+            async with pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    UPDATE strategy_positions
+                    SET pnl_realized = $1, updated_at = NOW()
+                    WHERE id = $2 AND status = 'closed'
+                      AND (pnl_realized IS NULL OR pnl_realized = 0)
+                    """,
+                    pnl_float,
+                    pos_id,
+                )
+            logger.info(
+                f"reconciler: history fallback set pnl_realized={pnl_float}"
+                f" for {pos_id} ({symbol} {side})"
+            )
+        except Exception as e:
+            logger.error(f"reconciler: pnl recovery update failed for {pos_id}: {e}")
