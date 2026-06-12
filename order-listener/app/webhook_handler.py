@@ -601,38 +601,47 @@ async def close_strategy_position(
     realized_pnl_f = float(realized_pnl) if realized_pnl is not None else None
 
     async with pool.acquire() as conn:
-        if is_full:
-            updated = await conn.fetchrow(
-                """
-                UPDATE strategy_positions
-                SET status           = 'closed',
-                    closing_price    = $1,
-                    pnl_realized     = pnl_realized + COALESCE($2, 0),
-                    closing_order_id = $3,
-                    closed_at        = NOW(),
-                    updated_at       = NOW()
-                WHERE id = $4 AND status = 'open'
-                RETURNING id
-                """,
-                fill_price_f,
-                realized_pnl_f,
-                closing_order_id,
-                pos['id'],
-            )
-        else:
-            updated = await conn.fetchrow(
-                """
-                UPDATE strategy_positions
-                SET size         = size - $1,
-                    pnl_realized = pnl_realized + COALESCE($2, 0),
-                    updated_at   = NOW()
-                WHERE id = $3 AND status = 'open'
-                RETURNING id
-                """,
-                eff_close_size,
-                realized_pnl_f,
-                pos['id'],
-            )
+        async with conn.transaction():
+            if is_full:
+                updated = await conn.fetchrow(
+                    """
+                    UPDATE strategy_positions
+                    SET status           = 'closed',
+                        closing_price    = $1,
+                        pnl_realized     = CASE WHEN $2::numeric IS NOT NULL THEN $2::numeric
+                                                ELSE pnl_realized END,
+                        closing_order_id = $3,
+                        close_reason     = $4,
+                        closed_at        = NOW(),
+                        updated_at       = NOW()
+                    WHERE id = $5 AND status = 'open'
+                    RETURNING id
+                    """,
+                    fill_price_f,
+                    realized_pnl_f,
+                    closing_order_id,
+                    reason,
+                    pos['id'],
+                )
+            else:
+                updated = await conn.fetchrow(
+                    """
+                    UPDATE strategy_positions
+                    SET size       = size - $1,
+                        updated_at = NOW()
+                    WHERE id = $2 AND status = 'open'
+                    RETURNING id
+                    """,
+                    eff_close_size,
+                    pos['id'],
+                )
+
+            if updated is not None and closing_order_id is not None:
+                await conn.execute(
+                    "UPDATE orders SET closes_position_id = $1 WHERE id = $2",
+                    pos['id'],
+                    closing_order_id,
+                )
 
     if updated is None:
         logger.warning(f"close_strategy_position: race condition on position {pos['id']}")
@@ -659,6 +668,31 @@ async def close_strategy_position(
     if not skip_exchange:
         ret["exchange_order_id"] = close_result.get('exchange_order_id')
     return ret
+
+
+async def sync_position_pnl(pool) -> None:
+    """
+    Propagate realized PnL from closing orders to positions.
+    Runs after every reconcile pass. Partial-safe: sums all close orders per position.
+    """
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            UPDATE strategy_positions sp
+            SET pnl_realized = sub.total,
+                updated_at   = NOW()
+            FROM (
+                SELECT closes_position_id AS pid,
+                       COALESCE(SUM(pnl), 0) AS total
+                FROM orders
+                WHERE closes_position_id IS NOT NULL
+                  AND pnl IS NOT NULL
+                GROUP BY closes_position_id
+            ) sub
+            WHERE sp.id = sub.pid
+              AND sp.pnl_realized IS DISTINCT FROM sub.total
+            """
+        )
 
 
 async def _process_order(

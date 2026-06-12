@@ -5,83 +5,6 @@ const router = Router();
 const EXECUTOR_URL = process.env.EXECUTOR_URL || 'http://order-executor:8004';
 const LISTENER_URL = process.env.LISTENER_URL || 'http://order-listener:8001';
 
-async function recoverExternalClose(pool: any, dbPos: any): Promise<any | null> {
-  try {
-    const resp = await fetch(
-      `${EXECUTOR_URL}/accounts/${dbPos.account_id}/positions/history?symbol=${encodeURIComponent(dbPos.symbol)}`,
-      { signal: AbortSignal.timeout(8000) }
-    );
-    if (!resp.ok) return null;
-    const details = await resp.json() as any;
-    if (!details?.close_reason) return null;
-
-    // Reject stale history: exchange close must be AFTER the position was opened
-    if (details.closed_at && new Date(details.closed_at) <= new Date(dbPos.opened_at)) {
-      return null;
-    }
-
-    const client = await pool.connect();
-    try {
-      await client.query('BEGIN');
-
-      // Idempotency guard: only proceed if position is still open in DB
-      const updateRes = await client.query(
-        `UPDATE strategy_positions
-         SET status        = 'closed',
-             close_reason  = $1,
-             closing_price = $2,
-             pnl_realized  = $3,
-             closed_at     = COALESCE($4, NOW())
-         WHERE id = $5 AND status = 'open'
-         RETURNING id`,
-        [details.close_reason, details.closing_price, details.pnl_realized, details.closed_at, dbPos.id]
-      );
-
-      if (updateRes.rowCount === 0) {
-        // Already recovered by the scheduler — just read back the stored data
-        await client.query('ROLLBACK');
-        return details;
-      }
-
-      // Insert synthetic closing order
-      const closeSide = dbPos.side === 'long' ? 'sell' : 'buy';
-      const signalVal = details.close_reason === 'Liquidated' ? 'liquidation' : 'exchange_close';
-      const orderRes = await client.query(
-        `INSERT INTO orders
-           (symbol, side, signal, order_type, size, platform,
-            strategy_id, account_id, status, actual_fill_price,
-            pnl, raw_webhook, signal_source, received_at)
-         VALUES ($1,$2,$3,'market',$4,$5,$6,$7,'filled',$8,$9,
-                 '{}'::jsonb,'exchange',COALESCE($10::timestamptz, NOW()))
-         RETURNING id`,
-        [
-          dbPos.symbol, closeSide, signalVal, dbPos.size,
-          dbPos.exchange || 'unknown', dbPos.strategy_id, dbPos.account_id,
-          details.closing_price, details.pnl_realized, details.closed_at,
-        ]
-      );
-
-      await client.query(
-        `UPDATE strategy_positions SET closing_order_id = $1 WHERE id = $2`,
-        [orderRes.rows[0].id, dbPos.id]
-      );
-
-      await client.query('COMMIT');
-      console.log(`Recovered stale position ${dbPos.id} (${dbPos.symbol}): ${details.close_reason}`);
-    } catch (e) {
-      await client.query('ROLLBACK');
-      throw e;
-    } finally {
-      client.release();
-    }
-
-    return details;
-  } catch (e) {
-    console.error(`recoverExternalClose failed for position ${dbPos.id}:`, e);
-    return null;
-  }
-}
-
 // GET /positions — aggregate strategy positions enriched with real-time executor data
 router.get('/', async (_req: Request, res: Response) => {
   try {
@@ -169,22 +92,6 @@ router.get('/', async (_req: Request, res: Response) => {
         ? enrichedPos.realized_pnl
         : (enrichedPos.unrealized_pnl || 0);
       enrichedPos.pnl_pct = enrichedPos.margin > 0 ? (pnlForPct / enrichedPos.margin) * 100 : 0;
-
-      // Detect externally-closed positions and recover
-      if (enrichedPos.status === 'open' && !realPos) {
-        const recovered = await recoverExternalClose(pool, dbPos);
-        if (recovered) {
-          enrichedPos.status       = 'closed';
-          enrichedPos.close_reason = recovered.close_reason;
-          enrichedPos.close_price  = Number(recovered.closing_price) || 0;
-          enrichedPos.realized_pnl = Number(recovered.pnl_realized)  || 0;
-          enrichedPos.closed_at    = recovered.closed_at ?? enrichedPos.closed_at;
-          enrichedPos.pnl_pct      = enrichedPos.margin > 0
-            ? (enrichedPos.realized_pnl / enrichedPos.margin) * 100 : 0;
-        } else {
-          enrichedPos.status = 'stale';
-        }
-      }
 
       return enrichedPos;
     }));

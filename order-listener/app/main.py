@@ -3,7 +3,9 @@ Order Listener Service — FastAPI application entry point.
 Receives webhooks, validates, logs, and routes to exchange adapters.
 """
 
+import asyncio
 import logging
+import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request, status
@@ -12,7 +14,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
-from app.database import init_db
+from app.database import init_db, get_pool
 from app.redis_client import init_redis
 from app.webhook_handler import router as webhook_router
 from app.orders_api import router as orders_router
@@ -24,14 +26,38 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+RECONCILE_INTERVAL_SECONDS: int = int(os.environ.get("RECONCILE_INTERVAL_SECONDS", "60"))
+
+
+async def _reconciler_loop() -> None:
+    from app.reconciler import reconcile_once
+    logger.info(
+        f"Reconciler loop started (interval={RECONCILE_INTERVAL_SECONDS}s,"
+        f" threshold={os.environ.get('RECONCILE_MISS_THRESHOLD', '3')})"
+    )
+    while True:
+        await asyncio.sleep(RECONCILE_INTERVAL_SECONDS)
+        try:
+            pool = get_pool()
+            await reconcile_once(pool)
+            logger.info("Reconciler: automatic pass complete")
+        except Exception as e:
+            logger.error(f"Reconciler loop error: {e}", exc_info=True)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Starting Order Listener service...")
     await init_db()
     await init_redis()
+    task = asyncio.create_task(_reconciler_loop())
     logger.info("Order Listener ready.")
     yield
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
     logger.info("Shutting down Order Listener...")
 
 
@@ -69,3 +95,16 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 @app.get("/health")
 async def health():
     return {"status": "ok", "service": "order-listener"}
+
+
+@app.post("/reconcile")
+async def trigger_reconcile():
+    """Run one reconciliation pass on demand."""
+    from app.reconciler import reconcile_once
+    pool = get_pool()
+    try:
+        await reconcile_once(pool)
+        return {"success": True, "message": "Reconcile pass complete"}
+    except Exception as e:
+        logger.error(f"Manual reconcile failed: {e}", exc_info=True)
+        return JSONResponse(status_code=500, content={"success": False, "error": str(e)})

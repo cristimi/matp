@@ -83,6 +83,31 @@ async def call_executor_get(path: str) -> dict:
         return {}
 
 
+async def get_account_positions(account_id: str) -> list:
+    """
+    Fetch live open positions for an account from the executor.
+    Returns a list of position dicts (symbol, side, size, ...). Never raises.
+    """
+    url = f"{EXECUTOR_URL}/accounts/{account_id}/positions"
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(url)
+            response.raise_for_status()
+            return response.json()
+    except Exception as e:
+        logger.warning(f"get_account_positions({account_id}) failed: {e}")
+        return []
+
+
+async def get_position_history(account_id: str, symbol: str) -> dict:
+    """
+    Fetch the most recent closed-position history for a symbol from the executor.
+    Returns the history dict or {} on any error. Never raises.
+    """
+    path = f"/accounts/{account_id}/positions/history?symbol={symbol}"
+    return await call_executor_get(path)
+
+
 async def call_executor_close_position(
     account_id: str,
     symbol:     str,
