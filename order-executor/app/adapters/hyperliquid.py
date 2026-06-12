@@ -68,6 +68,7 @@ class HyperliquidAdapter(ExchangeAdapter):
             else "https://api.hyperliquid.xyz"
         )
         self._asset_cache: Optional[dict] = None
+        self._sz_decimals_cache: Optional[dict] = None  # coin → sz_decimals int
         logger.info(
             f"HyperliquidAdapter initialised "
             f"(wallet={self.wallet_address[:8]}..., "
@@ -195,11 +196,15 @@ class HyperliquidAdapter(ExchangeAdapter):
                 )
                 resp.raise_for_status()
                 meta = resp.json()
+            universe = meta.get("universe", [])
             self._asset_cache = {
                 asset["name"]: idx
-                for idx, asset in enumerate(meta.get("universe", []))
+                for idx, asset in enumerate(universe)
             }
-            
+            self._sz_decimals_cache = {
+                asset["name"]: int(asset.get("szDecimals", 4))
+                for asset in universe
+            }
             logger.info(
                 f"Loaded {len(self._asset_cache)} assets from Hyperliquid"
             )
@@ -207,6 +212,7 @@ class HyperliquidAdapter(ExchangeAdapter):
         if coin not in self._asset_cache:
             # Refresh cache once in case asset was recently added
             self._asset_cache = None
+            self._sz_decimals_cache = None
             raise ValueError(
                 f"Asset '{coin}' not found in Hyperliquid universe. "
                 f"Check symbol format (expected e.g. 'BTC', not 'BTC-USDT')."
@@ -402,6 +408,17 @@ class HyperliquidAdapter(ExchangeAdapter):
         except Exception as e:
             logger.error(f"HyperliquidAdapter.list_instruments failed: {e}")
             return []
+
+    async def get_min_order_size(self, symbol: str) -> float:
+        try:
+            coin = symbol.replace("-USDT", "").replace("-USD", "").upper()
+            if self._sz_decimals_cache is None:
+                await self._get_asset_index(symbol)  # populates both caches
+            sz_dec = self._sz_decimals_cache.get(coin, 4)
+            return 10 ** (-sz_dec)
+        except Exception as e:
+            logger.warning(f"HyperliquidAdapter.get_min_order_size({symbol}) failed: {e}")
+            return 0.0
 
     async def get_balance(self) -> dict:
         """Fetch balance from Hyperliquid.

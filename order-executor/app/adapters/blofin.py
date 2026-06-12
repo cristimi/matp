@@ -485,6 +485,18 @@ class BlofinAdapter(ExchangeAdapter):
             logger.error(f"BlofinAdapter.list_instruments failed: {e}")
             return []
 
+    async def get_min_order_size(self, symbol: str) -> float:
+        try:
+            inst = await self._get_instrument(symbol)
+            if not inst:
+                return 0.0
+            contract_val = float(inst.get("contractValue") or "0.001")
+            min_size     = float(inst.get("minSize")       or "0.1")
+            return min_size * contract_val
+        except Exception as e:
+            logger.warning(f"BlofinAdapter.get_min_order_size({symbol}) failed: {e}")
+            return 0.0
+
     async def get_closed_position_details(self, symbol: str) -> dict | None:
         try:
             path = f"/api/v1/account/positions-history?instId={symbol}&limit=5"

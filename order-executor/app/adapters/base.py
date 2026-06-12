@@ -82,3 +82,12 @@ class ExchangeAdapter(ABC):
                       (full address — this is public)
         """
         pass
+
+    @abstractmethod
+    async def get_min_order_size(self, symbol: str) -> float:
+        """
+        Return the minimum order size in base asset units for the given symbol.
+        Returns 0.0 if unknown (caller should fall back to a notional floor).
+        Must never raise.
+        """
+        pass

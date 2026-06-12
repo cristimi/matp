@@ -804,13 +804,29 @@ async def _process_order(
                 return
 
         # ── Step 7: Min-order-value guard ─────────────────────────────────────
+        # Fetch per-instrument min base size from executor; fall back to $1 floor
+        _min_base_size = 0.0
+        try:
+            from app.executor_client import call_executor_get
+            _instr_info = await call_executor_get(
+                f"/accounts/{account_id}/min-order-size/{pos_symbol}"
+            )
+            _min_base_size = float(_instr_info.get("min_base_size") or 0.0)
+        except Exception as _e:
+            logger.warning(f"min-order-size lookup failed for {pos_symbol}: {_e}")
+
         _price_est  = float(payload.indicator_price or payload.price or 0)
-        _notional   = float(payload.size) * _price_est
-        _min_notional = 1.0  # USD — below this the exchange rejects anyway
-        if _price_est > 0 and _notional < _min_notional:
+        _order_size = float(payload.size)
+        _notional   = _order_size * _price_est
+        _size_rejected = (
+            (_min_base_size > 0 and _order_size < _min_base_size)
+            or (_price_est > 0 and _notional < 1.0)
+        )
+        if _size_rejected:
             logger.warning(
-                f"Order {order_id} rejected: notional {_notional:.4f} < "
-                f"{_min_notional} (size={payload.size}, price={_price_est})"
+                f"Order {order_id} rejected: size={_order_size} "
+                f"(min_base={_min_base_size:.8g}), "
+                f"notional={_notional:.4f} (size={payload.size}, price={_price_est})"
             )
             await _update_order_status(pool, order_id, "size_too_small", payload, None, account_id, account_label, strategy_id)
             await _finalize_signal_log(pool, signal_log_id, 200, "guard_rejected", "size_too_small", start_ms)

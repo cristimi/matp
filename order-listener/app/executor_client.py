@@ -67,6 +67,22 @@ async def call_executor(order_request: dict) -> dict:
         }
 
 
+async def call_executor_get(path: str) -> dict:
+    """
+    GET request to the executor at the given path.
+    Returns the JSON response dict or {} on any error. Never raises.
+    """
+    url = f"{EXECUTOR_URL}{path}"
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(url)
+            response.raise_for_status()
+            return response.json()
+    except Exception as e:
+        logger.warning(f"Executor GET {path} failed: {e}")
+        return {}
+
+
 async def call_executor_close_position(
     account_id: str,
     symbol:     str,

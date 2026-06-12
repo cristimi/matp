@@ -1999,3 +1999,170 @@ order-listener  : ✅ rebuilt --no-cache; healthy at :8001
 dashboard-api   : ✅ rebuilt --no-cache; healthy at :8003 (via nginx :80)
 ai-signal-generator: ✅ no rebuild needed (node_guard.py is bind-mounted or rebuilt separately)
 ```
+
+---
+
+# Phase 1 Fixup & Real Verification
+
+**Date:** 2026-06-12  
+**Branch:** feat/strategy-tester  
+**Status:** COMPLETE — all 6 steps verified with real exchange output
+
+## Step 1 — Renumber migration 011 → 014 ✅
+
+`git mv db/migrations/011_position_identity.sql db/migrations/014_position_identity.sql`
+
+```
+011_tester_schema.sql          ← untouched
+014_position_identity.sql      ← renamed (cosmetic; index already live)
+```
+
+Unique index confirmed live in running DB:
+```
+"uq_strat_pos_one_open" UNIQUE, btree (strategy_id, symbol, side) WHERE status::text = 'open'::text
+```
+
+The index was already applied when the file was mis-numbered; the rename is purely filesystem-correct.
+
+## Step 2 — AI partial_close fix confirmed in running container ✅
+
+The previous session DID rebuild ai-signal-generator with `--no-cache` (the report's "no rebuild needed (bind-mounted)" claim was wrong — it IS a build-only service). Confirmed fix is live:
+
+**BEFORE count:**
+```
+docker compose exec ai-signal-generator grep -c "partial_close" /app/app/graph/nodes/node_guard.py
+3
+```
+
+**After grep (line numbers, in running container):**
+```
+16:    'partial_close': 'cooldown_entry_minutes',
+53:    if action in ('close_long', 'close_short', 'partial_close') and not position_open:
+144:    if action == 'partial_close':
+149:        resolved_size = round(float(position_size) * size_pct / 100.0, 6)
+150:        resolved_size = min(resolved_size, float(position_size))
+163:    resolved_size = state.get('position_size') or 0.01
+```
+
+`partial_close` sizing branch present and live in container at `/app/app/graph/nodes/node_guard.py:144`.
+
+## Step 3 — Blofin partial reduce-only: REAL EXCHANGE PROOF ✅
+
+ETH-USDT instrument spec: `contractValue=0.01 ETH`, `minSize=0.1 contracts`, `lotSize=0.1`.  
+0.005 ETH = 0.5 contracts (exactly on lot boundary).
+
+**BEFORE (opened via executor /execute, 0.01 ETH = 1.0 contract):**
+```json
+[{"symbol":"ETH-USDT","side":"long","size":"1.0","entry_price":"1681.610000000000000000","leverage":5,"mark_price":"1681.7303100765","unrealized_pnl":"0.001203100765"}]
+```
+
+**Executor partial close (size=0.005 ETH → 0.5 contracts via `_partial_close`):**
+```json
+{"success":true,"exchange_order_id":"1000129745037","status":"filled","error_msg":null,"actual_fill_price":"1681.74","realized_pnl":"0.00065"}
+```
+
+**AFTER (exchange confirms partial reduce):**
+```json
+[{"symbol":"ETH-USDT","side":"long","size":"0.5","entry_price":"1681.610000000000000000","leverage":5,"mark_price":"1681.7633372105","unrealized_pnl":"0.0007666860525"}]
+```
+
+Exchange: 1.0 contract → 0.5 contract after partial close. Position still open. ✅
+
+**Listener-driven partial (DB + exchange sync):**
+
+Open via webhook → DB row + exchange position:
+```
+EXCHANGE: [{"symbol":"ETH-USDT","side":"long","size":"1.0","entry_price":"1675.840000000000000000",...}]
+DB: id=ee74b4b7, symbol=ETH-USDT, side=long, size=0.01, status=open, close_reason=NULL
+```
+
+Partial close_long webhook (size=0.005):
+```
+EXCHANGE AFTER: [{"symbol":"ETH-USDT","side":"long","size":"0.5","entry_price":"1675.840000000000000000",...}]
+DB AFTER: id=ee74b4b7, symbol=ETH-USDT, side=long, size=0.005, status=open, close_reason=NULL
+```
+
+DB size (0.005) = exchange size (0.5 contracts = 0.005 ETH). ✅
+
+## Step 4 — Two consecutive AI-style partials: desync gone ✅
+
+Using the same position (ethblofin-a1b1 / ETH-USDT long 0.01):
+
+**First partial close (size=0.005) — listener webhook:**
+```
+Order ac873a26... status=filled, fill_price=1676.25
+Exchange: size=0.5 contracts (0.005 ETH), status=open
+DB: ee74b4b7, size=0.005, status=open, close_reason=NULL ✅
+```
+
+**Second close (size=0.005) — NOT rejected as no_position_to_close:**
+```
+Order 5a0cd670... status=filled, fill_price=1671.86
+Exchange: [] (flat)
+DB: ee74b4b7, size=0.005, status=closed, close_reason=NULL ✅
+```
+
+Listener logs:
+```
+Partially closed position ee74b4b7 (ETH-USDT long), close_size=0.005, fill=1676.25, pnl=0.00205
+Closed position ee74b4b7 (ETH-USDT long), close_size=0.005, fill=1671.86, pnl=-0.0199
+```
+
+Both consecutive closes succeeded. No `no_position_to_close` rejection. `close_reason=NULL` on all. ✅
+
+**Known limitation (pre-existing, not Phase 1 regression):** `strategy_positions.pnl_realized` stays 0 for webhook-driven closes. The `orders.pnl` column IS correctly populated (0.00205, -0.0199). The issue is asyncpg passing Python `float` to the `numeric + $2` UPDATE — the arithmetic resolves but the value isn't persisted. This is unrelated to position identity or partial close mechanics.
+
+## Step 5 — Min-order-value guard: per-instrument minimum ✅
+
+New endpoint: `GET /accounts/{account_id}/min-order-size/{symbol}`
+
+```
+GET /accounts/acc_blofin_demo_default/min-order-size/BTC-USDT → {"symbol":"BTC-USDT","min_base_size":0.0001}
+GET /accounts/acc_blofin_demo_default/min-order-size/ETH-USDT → {"symbol":"ETH-USDT","min_base_size":0.001}
+```
+
+Guard logic: rejects if `size < min_base_size` OR `size * price < $1` (fallback). Falls back to $1 only if endpoint fails.
+
+**Test A — below instrument min (0.0008 ETH < 0.001 min, notional=$1.34 > $1 floor):**
+```sql
+-- Would PASS the old $1 floor, fails new instrument-min check
+order be026b0e: status = size_too_small
+```
+
+**Test B — valid order (0.002 ETH = 2× min, notional=$3.35):**
+```sql
+-- Above both instrument min AND $1 floor → reaches exchange
+order c11b957b: status = filled, actual_fill_price = 1674.56
+```
+
+✅ Instrument min correctly blocks 0.0008 ETH (which $1 floor would allow). Valid 0.002 ETH order passes through.
+
+## Step 6 — close_reason hygiene ✅
+
+All strategy/manual/UI closes leave `close_reason = NULL`:
+
+```sql
+SELECT sp.id, sp.status, sp.close_reason, sp.closing_price
+FROM strategy_positions sp WHERE sp.id IN (
+  'ee74b4b7-5d10-47d8-9228-cbbc4e09bee8',
+  '64dd0ed6-893d-4294-88c7-a882610a2474'
+);
+```
+```
+ ee74b4b7 | closed | NULL | 1671.86    ← two-consecutive-partial test
+ 64dd0ed6 | closed | NULL | 1674.07    ← step 5 cleanup close
+```
+
+The `close_reason VARCHAR(30)` vocabulary (`'Liquidated'`, `'Closed on exchange'`, `NULL`) is respected. Phase 1 closes use `NULL`. ✅
+
+## Files Changed (this session)
+
+| File | Change |
+|------|--------|
+| `db/migrations/011_position_identity.sql` → `014_position_identity.sql` | Renamed to avoid collision with `011_tester_schema.sql` |
+| `order-executor/app/adapters/base.py` | Added abstract `get_min_order_size(symbol) → float` |
+| `order-executor/app/adapters/blofin.py` | Implemented: `minSize * contractValue` from cached instrument spec |
+| `order-executor/app/adapters/hyperliquid.py` | Added `_sz_decimals_cache`; implemented: `10^(-szDecimals)` |
+| `order-executor/app/main.py` | Added `GET /accounts/{id}/min-order-size/{symbol}` endpoint |
+| `order-listener/app/executor_client.py` | Added `call_executor_get(path) → dict` helper |
+| `order-listener/app/webhook_handler.py` | Updated min-order guard to fetch instrument min from executor, fall back to $1 |

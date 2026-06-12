@@ -215,6 +215,18 @@ async def get_instruments(account_id: str):
         return {"instruments": [], "error": str(e)}
 
 
+@app.get("/accounts/{account_id}/min-order-size/{symbol}")
+async def get_min_order_size(account_id: str, symbol: str):
+    """Return minimum order size in base asset units for the given symbol."""
+    try:
+        adapter  = await registry.get(account_id)
+        min_size = await adapter.get_min_order_size(symbol)
+        return {"symbol": symbol, "min_base_size": min_size}
+    except Exception as e:
+        logger.error(f"get_min_order_size failed for {account_id}/{symbol}: {e}")
+        return {"symbol": symbol, "min_base_size": 0.0, "error": str(e)}
+
+
 @app.get("/accounts/{account_id}/meta")
 async def get_account_meta(account_id: str):
     """Return safe public metadata for a specific account."""
