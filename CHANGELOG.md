@@ -1,3 +1,61 @@
+## [2026-06-13] - 2.8.0
+
+### Context
+A live HYPE-USDT short on Blofin was orphaned: still open on the exchange while MATP's DB marked
+it closed (no user action). Root cause was the reconciler treating a transient Blofin API failure
+as "position gone." Investigation surfaced three further coupled defects. All four are fixed below
+and covered by new unit tests.
+
+### Fixed
+- **Transient exchange/executor errors could close live positions** (Part 1): the position read
+  collapsed every failure into an empty list, so the reconciler could not distinguish "exchange
+  confirmed no position" from "failed to ask." A transient Blofin outage closed a still-live short
+  in the DB. The read is now three-state — confirmed list / confirmed empty / unknown — and
+  `unknown` leaves the position untouched (stays `open`, rendered stale), never incrementing the
+  miss counter and never closing.
+- **Miss counter was a one-way ratchet** (Part 2): `reconcile_miss_count` only reset on an exact
+  size match, so a position whose DB size never matched the exchange (see Part 3) accumulated
+  transient failures indefinitely until it crossed the close threshold — defeating the "3
+  consecutive misses" safeguard. A confirmed-present read at equal **or larger** size now resets
+  the counter.
+- **Blofin position size read in contracts instead of base coins** (Part 3): `get_open_positions`
+  returned the raw `positions` field (contracts) while the rest of MATP uses base coins, so a
+  5-coin position read as 50. This kept the reconciler's exact-match from ever firing (feeding the
+  ratchet), showed inconsistent sizes in the dashboard, and made `modify-stops` place TP/SL
+  triggers ~10x oversized (a double contracts conversion). The read path now converts contracts to
+  base coins using each instrument's `contractValue`.
+- **Closed-position PnL over-attributed** (Part 4): `get_closed_position_details` summed
+  Hyperliquid `closedPnl` across a coin's entire fill history (Blofin took the latest record
+  regardless of age), recording +30.01 USDT for a position actually worth +0.24 — a ~125x
+  over-attribution. History lookups are now scoped to the position's lifetime via `since_ms`
+  derived from `opened_at`.
+
+### Added
+- `order-executor/app/adapters/base.py`: `ExchangeUnavailableError`, raised when a position read
+  cannot be confirmed (network/API error) so callers can treat it as UNKNOWN rather than empty.
+- `order-listener/tests/test_reconciler.py`: 8 unit tests covering UNKNOWN-skip (no increment, no
+  close), present-equal/larger reset, absent/smaller increment and threshold actions (full close /
+  partial reduction), per-account isolation, and `opened_at`-scoped history. No live services or DB.
+
+### Changed
+- `order-executor/app/adapters/base.py`: `get_closed_position_details(symbol, since_ms=None)`.
+- `order-executor/app/adapters/blofin.py`: `get_open_positions` raises `ExchangeUnavailableError`
+  on API failure and returns base coins via new `_to_base()`; `get_closed_position_details` filters
+  positions-history by `since_ms`.
+- `order-executor/app/adapters/hyperliquid.py`: `get_open_positions` re-raises as
+  `ExchangeUnavailableError` on failure; `get_closed_position_details` filters `userFills` by
+  `since_ms` before summing `closedPnl`.
+- `order-executor/app/main.py`: `GET /accounts/{id}/positions` returns HTTP 503 on failure instead
+  of `[]`; `GET /accounts/{id}/positions/history` accepts a `since` (epoch ms) query param.
+- `order-listener/app/executor_client.py`: `get_account_positions` returns `None` (UNKNOWN) vs a
+  list (confirmed, possibly empty); `get_position_history` forwards `opened_at` as `since`.
+- `order-listener/app/reconciler.py`: skips accounts whose read is UNKNOWN; resets the miss counter
+  on any confirmed-present read (incl. `will not grow`); passes `opened_at` to history lookups in
+  both `_handle_full_external_close` and `_recover_manual_close_pnl`.
+
+### Commits
+- Part 1 `fa712a0`, Part 2 `584a1a0`, Part 3 `8fe4d0e`, Part 4 `c306ef6`, tests `44fe289`.
+
 ## [2026-06-07] - 2.7.0
 
 ### Added
