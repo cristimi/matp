@@ -67,32 +67,98 @@ async def call_executor(order_request: dict) -> dict:
         }
 
 
+async def call_executor_get(path: str) -> dict:
+    """
+    GET request to the executor at the given path.
+    Returns the JSON response dict or {} on any error. Never raises.
+    """
+    url = f"{EXECUTOR_URL}{path}"
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(url)
+            response.raise_for_status()
+            return response.json()
+    except Exception as e:
+        logger.warning(f"Executor GET {path} failed: {e}")
+        return {}
+
+
+async def get_account_positions(account_id: str) -> list:
+    """
+    Fetch live open positions for an account from the executor.
+    Returns a list of position dicts (symbol, side, size, ...). Never raises.
+    """
+    url = f"{EXECUTOR_URL}/accounts/{account_id}/positions"
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(url)
+            response.raise_for_status()
+            return response.json()
+    except Exception as e:
+        logger.warning(f"get_account_positions({account_id}) failed: {e}")
+        return []
+
+
+async def get_position_history(account_id: str, symbol: str) -> dict:
+    """
+    Fetch the most recent closed-position history for a symbol from the executor.
+    Returns the history dict or {} on any error. Never raises.
+    """
+    path = f"/accounts/{account_id}/positions/history?symbol={symbol}"
+    return await call_executor_get(path)
+
+
+async def call_executor_modify_stops(
+    account_id: str,
+    symbol:     str,
+    side:       str,
+    tp_price=None,
+    sl_price=None,
+) -> dict:
+    """
+    POST to /accounts/{account_id}/positions/modify-stops.
+    Returns result dict. Never raises.
+    """
+    url = f"{EXECUTOR_URL}/accounts/{account_id}/positions/modify-stops"
+    body: dict = {"symbol": symbol, "side": side}
+    if tp_price is not None:
+        body["tp_price"] = float(tp_price)
+    if sl_price is not None:
+        body["sl_price"] = float(sl_price)
+    try:
+        async with httpx.AsyncClient(timeout=TIMEOUT_SECONDS) as client:
+            response = await client.post(url, json=body)
+            response.raise_for_status()
+            return response.json()
+    except Exception as e:
+        logger.error(f"Executor modify-stops failed: {e}")
+        return {"success": False, "error_msg": str(e)}
+
+
 async def call_executor_close_position(
     account_id: str,
     symbol:     str,
     side:       str,
+    size=None,
 ) -> dict:
     """
-    POST to /close-position to close an open position.
-    Returns the OrderResult dict.
-    Never raises — catches all errors and returns route_failed result.
+    POST to /close-position to close or partially close an open position.
+    size=None means full close; Decimal/str size means partial reduce-only.
+    Returns the OrderResult dict. Never raises.
     """
     url = f"{EXECUTOR_URL}/close-position"
     logger.info(
         f"Calling executor close-position: account={account_id} "
-        f"symbol={symbol} side={side}"
+        f"symbol={symbol} side={side} size={size}"
     )
+
+    body: dict = {"account_id": account_id, "symbol": symbol, "side": side}
+    if size is not None:
+        body["size"] = str(size)
 
     try:
         async with httpx.AsyncClient(timeout=TIMEOUT_SECONDS) as client:
-            response = await client.post(
-                url,
-                json={
-                    "account_id": account_id,
-                    "symbol":     symbol,
-                    "side":       side,
-                }
-            )
+            response = await client.post(url, json=body)
             response.raise_for_status()
             return response.json()
 

@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from typing import Literal, Optional
 
@@ -28,6 +29,9 @@ class LLMSignalOutput(BaseModel):
     reasoning:       str
 
 
+_LLM_TIMEOUT = 90  # seconds — hard ceiling per LLM call
+
+
 def _get_llm(provider: str, model: str):
     if provider == 'openai':
         from langchain_openai import ChatOpenAI
@@ -35,6 +39,7 @@ def _get_llm(provider: str, model: str):
             model=model,
             temperature=0.1,
             api_key=settings.openai_api_key or None,
+            max_retries=2,
         )
     elif provider == 'anthropic':
         from langchain_anthropic import ChatAnthropic
@@ -42,6 +47,7 @@ def _get_llm(provider: str, model: str):
             model=model,
             temperature=0.1,
             api_key=settings.anthropic_api_key or None,
+            max_retries=2,
         )
     else:  # google (default)
         from langchain_google_genai import ChatGoogleGenerativeAI
@@ -49,6 +55,7 @@ def _get_llm(provider: str, model: str):
             model=model,
             temperature=0.1,
             google_api_key=settings.gemini_api_key or None,
+            max_retries=2,
         )
 
 
@@ -63,7 +70,9 @@ async def node_analyze(state: AgentState) -> AgentState:
 
         llm            = _get_llm(provider, model)
         structured_llm = llm.with_structured_output(LLMSignalOutput)
-        signal: LLMSignalOutput = await structured_llm.ainvoke(prompt)
+        signal: LLMSignalOutput = await asyncio.wait_for(
+            structured_llm.ainvoke(prompt), timeout=_LLM_TIMEOUT
+        )
 
         logger.info(
             "LLM [%s/%s] → action=%s confidence=%.3f",

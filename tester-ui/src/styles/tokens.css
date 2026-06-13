@@ -1,0 +1,31 @@
+/* Design tokens verbatim from matp-ui-v0.37.html */
+:root {
+  --bg:              #f4f6fa;
+  --bg2:             #ffffff;
+  --bg3:             #f8fafc;
+  --border:          #e2e8f0;
+  --border-hi:       #cbd5e1;
+  --text:            #0f172a;
+  --muted:           #475569;
+  --dim:             #64748b;
+  --green:           #00a877;
+  --green-a:         rgba(0,168,119,.08);
+  --green-b:         rgba(0,168,119,.22);
+  --red:             #e11d48;
+  --red-a:           rgba(225,29,72,.08);
+  --red-b:           rgba(225,29,72,.22);
+  --orange:          #ea580c;
+  --orange-a:        rgba(234,88,12,.08);
+  --orange-b:        rgba(234,88,12,.24);
+  --failed-color:    #E69802;
+  --failed-color-a:  rgba(230,152,2,.08);
+  --failed-color-b:  rgba(230,152,2,.24);
+  --gray:            #64748b;
+  --gray-a:          rgba(100,116,139,.10);
+  --gray-b:          rgba(100,116,139,.25);
+  --blue:            #2563eb;
+  --blue-a:          rgba(37,99,235,.08);
+  --blue-b:          rgba(37,99,235,.22);
+  --r:               14px;
+  --pill-r:          6px;
+}

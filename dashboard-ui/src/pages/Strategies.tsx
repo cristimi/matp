@@ -600,9 +600,12 @@ export default function Strategies() {
   const [strategies, setStrategies] = useState<Strategy[]>([]);
   const [loading, setLoading]       = useState(true);
 
-  const [filterPair,   setFilterPair]   = useState<string>('all');
-  const [filterStatus, setFilterStatus] = useState<string>('all');
-  const [filterSource, setFilterSource] = useState<string>('all');
+  const [filterPair,   setFilterPairRaw]   = useState<string>(() => sessionStorage.getItem('matp_strat_pair')   ?? 'all');
+  const [filterStatus, setFilterStatusRaw] = useState<string>(() => sessionStorage.getItem('matp_strat_status') ?? 'all');
+  const [filterSource, setFilterSourceRaw] = useState<string>(() => sessionStorage.getItem('matp_strat_source') ?? 'all');
+  const setFilterPair   = (v: string) => { sessionStorage.setItem('matp_strat_pair',   v); setFilterPairRaw(v);   };
+  const setFilterStatus = (v: string) => { sessionStorage.setItem('matp_strat_status', v); setFilterStatusRaw(v); };
+  const setFilterSource = (v: string) => { sessionStorage.setItem('matp_strat_source', v); setFilterSourceRaw(v); };
 
   const [showAdd, setShowAdd] = useState(false);
   const [addType, setAddType] = useState<'tradingview' | 'ai'>('tradingview');
@@ -827,6 +830,7 @@ export default function Strategies() {
             account_id:       editForm.account_id,
             margin_mode:      editForm.margin_mode,
             default_leverage: parseInt(editForm.default_leverage),
+            max_leverage:     parseInt(editForm.max_leverage),
           }),
         });
         if (!s1.ok) { setEditError((await s1.json()).error || 'Failed to update strategy'); return; }
@@ -1168,43 +1172,6 @@ export default function Strategies() {
             ✕ Clear
           </span>
         )}
-      </div>
-
-      {/* Summary bar */}
-      <div style={{
-        display:'flex', background:'var(--bg2)',
-        borderBottom:'1px solid var(--border)', flexShrink:0,
-      }}>
-        {[
-          { count:active.length,   label:'Active',   variant:'live'   },
-          { count:inactive.length, label:'Inactive', variant:'closed' },
-        ].map((cell, i, arr) => (
-          <div key={cell.label} style={{
-            flex:1, display:'flex', flexDirection:'column',
-            alignItems:'center', padding:'10px 0 9px',
-            borderRight: i < arr.length - 1 ? '1px solid var(--border)' : 'none',
-            gap:'3px', position:'relative',
-          }}>
-            <span style={{
-              fontFamily:'JetBrains Mono, monospace', fontSize:'24px',
-              fontWeight:700, letterSpacing:'-.02em', lineHeight:1,
-              color: cell.variant === 'live' ? 'var(--green)' : 'var(--gray)',
-            }}>
-              {cell.count}
-            </span>
-            <span style={{
-              fontSize:'10px', fontWeight:600, letterSpacing:'.08em',
-              textTransform:'uppercase', color:'var(--dim)',
-            }}>
-              {cell.label}
-            </span>
-            <div style={{
-              position:'absolute', bottom:0, left:'18%', right:'18%',
-              height:'2px', borderRadius:'2px',
-              background: cell.variant === 'live' ? 'var(--green)' : 'var(--gray)',
-            }} />
-          </div>
-        ))}
       </div>
 
       {/* Scroll area */}
@@ -1736,11 +1703,17 @@ export default function Strategies() {
                     ))}
                   </select>
                 </div>
-                <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'10px', marginBottom:'14px' }}>
+                <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:'10px', marginBottom:'14px' }}>
                   <div>
                     <label style={labelStyle}>Default Leverage</label>
                     <input type="number" value={editForm.default_leverage}
                       onChange={e => setEditForm((f:any) => ({ ...f, default_leverage: e.target.value }))}
+                      style={inputStyle} />
+                  </div>
+                  <div>
+                    <label style={labelStyle}>Max Leverage</label>
+                    <input type="number" value={editForm.max_leverage}
+                      onChange={e => setEditForm((f:any) => ({ ...f, max_leverage: e.target.value }))}
                       style={inputStyle} />
                   </div>
                   <div>

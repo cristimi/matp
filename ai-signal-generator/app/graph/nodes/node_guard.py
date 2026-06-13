@@ -37,8 +37,8 @@ async def node_guard(state: AgentState) -> AgentState:
     signal = state['llm_signal']
     action = signal['action']
 
-    # ── 2. Hold / adjust_stops — not an error, just no webhook ──────────
-    if action in ('hold', 'adjust_stops'):
+    # ── 2. Hold — no webhook ─────────────────────────────────────────────
+    if action == 'hold':
         return {**state, 'gate_passed': False, 'gate_rejection_reason': 'hold_or_adjust'}
 
     # ── 3. Confidence threshold ──────────────────────────────────────────
@@ -94,6 +94,21 @@ async def node_guard(state: AgentState) -> AgentState:
     except Exception as exc:
         logger.warning("PnL check failed: %s", exc)
 
+    # ── adjust_stops: resolve new prices from signal ─────────────────────
+    if action == 'adjust_stops':
+        new_tp = signal.get('new_tp_price')
+        new_sl = signal.get('new_sl_price')
+        if new_tp is None and new_sl is None:
+            return _reject(state, 'adjust_stops_no_prices')
+        return {
+            **state,
+            'gate_passed':           True,
+            'gate_rejection_reason': None,
+            'resolved_size':         None,
+            'resolved_sl_price':     float(new_sl) if new_sl is not None else None,
+            'resolved_tp_price':     float(new_tp) if new_tp is not None else None,
+        }
+
     # ── Size resolution (opening actions) ───────────────────────────────
     if action in ('open_long', 'open_short'):
         try:
@@ -108,14 +123,15 @@ async def node_guard(state: AgentState) -> AgentState:
                     bal.get('available_balance') or bal.get('total_balance') or 0
                 )
 
-            size_pct     = min(float(signal['size_pct']), float(rc.get('max_position_size_pct') or 5.0))
-            usdt_alloc   = usdt_balance * size_pct / 100.0
+            size_pct      = min(float(signal['size_pct']), float(rc.get('max_position_size_pct') or 5.0))
+            leverage      = int(sc.get('default_leverage') or 1)
+            usdt_margin   = usdt_balance * size_pct / 100.0
             current_price = float((state.get('ohlcv_data') or {}).get('current_price') or 0)
 
             if current_price <= 0:
                 return _reject(state, 'size_resolution_failed')
 
-            base_qty = round(usdt_alloc / current_price, 4)
+            base_qty = round((usdt_margin * leverage) / current_price, 4)
             sl_pct   = float(signal['stop_loss_pct'])
             tp_pct   = float(signal['take_profit_pct'])
 
@@ -139,7 +155,26 @@ async def node_guard(state: AgentState) -> AgentState:
             logger.error("Size resolution failed: %s", exc)
             return _reject(state, 'size_resolution_failed')
 
-    # ── Close actions — use current position size ────────────────────────
+    # ── Partial close: size from position_size * size_pct ───────────────
+    if action == 'partial_close':
+        position_size = state.get('position_size')
+        if not position_size:
+            return _reject(state, 'size_resolution_failed')
+        size_pct = float(signal.get('size_pct') or 50.0)
+        resolved_size = round(float(position_size) * size_pct / 100.0, 6)
+        resolved_size = min(resolved_size, float(position_size))
+        if resolved_size <= 0:
+            return _reject(state, 'size_resolution_failed')
+        return {
+            **state,
+            'gate_passed':           True,
+            'gate_rejection_reason': None,
+            'resolved_size':         resolved_size,
+            'resolved_sl_price':     None,
+            'resolved_tp_price':     None,
+        }
+
+    # ── Full close actions — use full position size ──────────────────────
     resolved_size = state.get('position_size') or 0.01
     return {
         **state,

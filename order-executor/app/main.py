@@ -56,6 +56,8 @@ async def invalidate_account(account_id: str):
 
 
 import base64
+from decimal import Decimal as _Decimal
+from typing import Optional as _Optional
 from pydantic import BaseModel as PydanticBaseModel
 
 class EncryptRequest(PydanticBaseModel):
@@ -69,6 +71,7 @@ class ClosePositionRequest(PydanticBaseModel):
     account_id: str
     symbol:     str
     side:       str
+    size:       _Optional[_Decimal] = None
 
 
 @app.post("/close-position")
@@ -76,7 +79,7 @@ async def close_position_endpoint(request: ClosePositionRequest):
     """Close an open position on the exchange for the given account."""
     try:
         adapter = await registry.get(request.account_id)
-        result  = await adapter.close_position(request.symbol, request.side)
+        result  = await adapter.close_position(request.symbol, request.side, size=request.size)
         return result
     except Exception as e:
         logger.error(f"close_position failed: {e}")
@@ -160,6 +163,18 @@ async def encrypt_credentials(request: EncryptRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/accounts/{account_id}/positions/history")
+async def get_position_history(account_id: str, symbol: str):
+    """Return the most recent closed position details for a symbol (for stale-position recovery)."""
+    try:
+        adapter = await registry.get(account_id)
+        details = await adapter.get_closed_position_details(symbol)
+        return details or {}
+    except Exception as e:
+        logger.error(f"get_position_history failed for {account_id}/{symbol}: {e}")
+        return {}
+
+
 @app.get("/accounts/{account_id}/positions")
 async def get_positions(account_id: str):
     """Return open positions for a specific account."""
@@ -200,6 +215,18 @@ async def get_instruments(account_id: str):
         return {"instruments": [], "error": str(e)}
 
 
+@app.get("/accounts/{account_id}/min-order-size/{symbol}")
+async def get_min_order_size(account_id: str, symbol: str):
+    """Return minimum order size in base asset units for the given symbol."""
+    try:
+        adapter  = await registry.get(account_id)
+        min_size = await adapter.get_min_order_size(symbol)
+        return {"symbol": symbol, "min_base_size": min_size}
+    except Exception as e:
+        logger.error(f"get_min_order_size failed for {account_id}/{symbol}: {e}")
+        return {"symbol": symbol, "min_base_size": 0.0, "error": str(e)}
+
+
 @app.get("/accounts/{account_id}/meta")
 async def get_account_meta(account_id: str):
     """Return safe public metadata for a specific account."""
@@ -228,6 +255,76 @@ async def close_position(account_id: str, request: dict):
     except Exception as e:
         logger.error(f"close_position failed for {account_id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+class ModifyStopsRequest(PydanticBaseModel):
+    symbol:   str
+    side:     str                         # position side: "long" | "short"
+    tp_price: _Optional[float] = None
+    sl_price: _Optional[float] = None
+
+
+@app.post("/accounts/{account_id}/positions/modify-stops")
+async def modify_stops(account_id: str, request: ModifyStopsRequest):
+    """
+    Cancel existing TP/SL trigger orders for a position and place new ones.
+    Does not touch the position itself — pure stop management.
+    Returns: {success, cancelled, placed}
+    """
+    try:
+        adapter = await registry.get(account_id)
+
+        # 1. Resolve position size (needed for trigger order sizing)
+        positions = await adapter.get_open_positions()
+        target = next(
+            (p for p in positions
+             if p.symbol == request.symbol and p.side == request.side),
+            None,
+        )
+        if not target:
+            return {
+                "success":   False,
+                "error_msg": f"No open {request.side} position for {request.symbol}",
+            }
+        position_size = float(target.size)
+
+        # 2. List existing trigger orders
+        existing = await adapter.list_trigger_orders(request.symbol)
+        logger.info(
+            f"modify-stops {account_id}/{request.symbol}: found {len(existing)} trigger orders"
+        )
+
+        # 3. Cancel them
+        cancelled = []
+        for trig in existing:
+            oid = trig["oid"]
+            cancel_result = await adapter.cancel_order(request.symbol, oid)
+            cancelled.append({"oid": oid, "tpsl": trig.get("tpsl"), **cancel_result})
+            if cancel_result.get("success"):
+                logger.info(f"Cancelled trigger oid={oid} ({trig.get('tpsl')}) for {request.symbol}")
+            else:
+                logger.warning(f"Cancel failed oid={oid}: {cancel_result.get('error')}")
+
+        # 4. Place new trigger orders
+        trigger_side = "sell" if request.side == "long" else "buy"
+        place_result = await adapter.place_trigger_orders(
+            symbol       = request.symbol,
+            trigger_side = trigger_side,
+            size         = position_size,
+            tp_price     = request.tp_price,
+            sl_price     = request.sl_price,
+        )
+
+        return {
+            "success":   place_result.get("success", False),
+            "cancelled": cancelled,
+            "placed":    place_result.get("placed", []),
+            "error_msg": place_result.get("error"),
+        }
+
+    except Exception as e:
+        logger.error(f"modify_stops failed for {account_id}/{request.symbol}: {e}")
+        return {"success": False, "error_msg": str(e)}
 
 
 @app.get("/health")

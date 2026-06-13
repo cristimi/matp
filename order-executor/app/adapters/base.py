@@ -21,8 +21,8 @@ class ExchangeAdapter(ABC):
         pass
 
     @abstractmethod
-    async def close_position(self, symbol: str, side: str, margin_mode: str = "isolated") -> OrderResult:
-        """Close an existing position (market close)."""
+    async def close_position(self, symbol: str, side: str, size=None, margin_mode: str = "isolated") -> OrderResult:
+        """Close an existing position. size=None means full close; size present means partial reduce-only."""
         pass
 
     @abstractmethod
@@ -55,6 +55,21 @@ class ExchangeAdapter(ABC):
         pass
 
     @abstractmethod
+    async def get_closed_position_details(self, symbol: str) -> dict | None:
+        """
+        Query the exchange for the most recent closed position for the given symbol.
+        Returns a dict with keys:
+            close_reason:   str   — 'Liquidated' or 'Closed on exchange'
+            closing_price:  Decimal
+            pnl_realized:   Decimal  (net of fees where available)
+            closed_at:      datetime (tz-aware UTC)
+            raw:            dict     (full exchange response for audit)
+        Returns None if no closed position history is found.
+        Must never raise.
+        """
+        pass
+
+    @abstractmethod
     async def get_account_meta(self) -> dict:
         """
         Return safe public metadata about the account.
@@ -65,5 +80,14 @@ class ExchangeAdapter(ABC):
                   (first 3 + last 4 chars of api_key)
         Hyperliquid: { "wallet_address": "0x1234...abcd" }
                       (full address — this is public)
+        """
+        pass
+
+    @abstractmethod
+    async def get_min_order_size(self, symbol: str) -> float:
+        """
+        Return the minimum order size in base asset units for the given symbol.
+        Returns 0.0 if unknown (caller should fall back to a notional floor).
+        Must never raise.
         """
         pass

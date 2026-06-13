@@ -184,8 +184,10 @@ class BlofinAdapter(ExchangeAdapter):
                 body_data["price"] = str(order.price)
             if order.tp_price:
                 body_data["tpTriggerPrice"] = str(order.tp_price)
+                body_data["tpOrderPrice"] = "-1"  # market execution when triggered
             if order.sl_price:
                 body_data["slTriggerPrice"] = str(order.sl_price)
+                body_data["slOrderPrice"] = "-1"  # market execution when triggered
 
             body_str = json.dumps(body_data, separators=(",", ":"))
             headers = self._headers("POST", path, body_str)
@@ -278,7 +280,12 @@ class BlofinAdapter(ExchangeAdapter):
             
         return mapped_positions
 
-    async def close_position(self, symbol: str, side: str, margin_mode: str = "isolated") -> OrderResult:
+    async def close_position(self, symbol: str, side: str, size=None, margin_mode: str = "isolated") -> OrderResult:
+        # Partial close: place a reduce-only market order of opposite side
+        if size is not None:
+            return await self._partial_close(symbol, side, Decimal(str(size)), margin_mode)
+
+        # Full close: use the dedicated close-position endpoint
         path = "/api/v1/trade/close-position"
 
         body_data = {
@@ -286,13 +293,13 @@ class BlofinAdapter(ExchangeAdapter):
             "marginMode": margin_mode,
             "positionSide": "net",
         }
-        
+
         body_str = json.dumps(body_data, separators=(",", ":"))
         headers = self._headers("POST", path, body_str)
-        
+
         async with httpx.AsyncClient(base_url=self.base_url, timeout=10) as client:
             response = await client.post(path, content=body_str, headers=headers)
-            
+
         if response.status_code != 200:
             logger.warning(f"Blofin close failed. Status: {response.status_code}, Response: {response.text}")
             return OrderResult(
@@ -315,7 +322,7 @@ class BlofinAdapter(ExchangeAdapter):
             else:
                 order_info = {}
             exchange_order_id = order_info.get("orderId")
-            
+
             fill_price = None
             pnl = None
             try:
@@ -344,6 +351,73 @@ class BlofinAdapter(ExchangeAdapter):
                 error_msg=error,
                 raw_response=data,
             )
+
+    async def _partial_close(self, symbol: str, side: str, size: Decimal, margin_mode: str) -> OrderResult:
+        """Place a reduce-only market order to partially close a position."""
+        reduce_side = "sell" if side == "long" else "buy"
+        order_size = await self._to_contracts(symbol, size)
+
+        path = "/api/v1/trade/order"
+        body_data = {
+            "instId":       symbol,
+            "marginMode":   margin_mode,
+            "side":         reduce_side,
+            "orderType":    "market",
+            "size":         str(order_size),
+            "reduceOnly":   "true",
+            "positionSide": "net",
+        }
+        body_str = json.dumps(body_data, separators=(",", ":"))
+        headers  = self._headers("POST", path, body_str)
+
+        async with httpx.AsyncClient(base_url=self.base_url, timeout=10) as client:
+            response = await client.post(path, content=body_str, headers=headers)
+
+        if response.status_code != 200:
+            logger.warning(f"Blofin partial close failed. Status: {response.status_code}, Response: {response.text}")
+            return OrderResult(
+                success=False,
+                status="rejected",
+                error_msg=f"Blofin returned {response.status_code}",
+                raw_response={"text": response.text},
+            )
+
+        data = response.json()
+        code = data.get("code")
+
+        if str(code) not in ["0", "200"]:
+            return OrderResult(
+                success=False,
+                status="rejected",
+                error_msg=data.get("msg", "Unknown error"),
+                raw_response=data,
+            )
+
+        order_info = (data.get("data") or [{}])
+        if isinstance(order_info, list):
+            order_info = order_info[0] if order_info else {}
+        exchange_order_id = order_info.get("orderId")
+
+        fill_price = None
+        pnl = None
+        try:
+            await asyncio.sleep(2.0)
+            details = await self._get_order_details(symbol, exchange_order_id)
+            if details:
+                fill_price = self._parse_fill_price(details)
+                pnl_raw = details.get("pnl") or details.get("realizedPnl")
+                pnl = Decimal(str(pnl_raw)) if pnl_raw is not None else None
+        except Exception as e:
+            logger.warning(f"Blofin _partial_close: fill details fetch failed (order still filled): {e}")
+
+        return OrderResult(
+            success=True,
+            status="filled",
+            exchange_order_id=exchange_order_id,
+            raw_response=data,
+            actual_fill_price=fill_price,
+            realized_pnl=pnl,
+        )
 
     async def get_balance(self) -> dict:
         """Fetch USDT perpetual futures account balance from Blofin."""
@@ -411,6 +485,46 @@ class BlofinAdapter(ExchangeAdapter):
             logger.error(f"BlofinAdapter.list_instruments failed: {e}")
             return []
 
+    async def get_min_order_size(self, symbol: str) -> float:
+        try:
+            inst = await self._get_instrument(symbol)
+            if not inst:
+                return 0.0
+            contract_val = float(inst.get("contractValue") or "0.001")
+            min_size     = float(inst.get("minSize")       or "0.1")
+            return min_size * contract_val
+        except Exception as e:
+            logger.warning(f"BlofinAdapter.get_min_order_size({symbol}) failed: {e}")
+            return 0.0
+
+    async def get_closed_position_details(self, symbol: str) -> dict | None:
+        try:
+            path = f"/api/v1/account/positions-history?instId={symbol}&limit=5"
+            headers = self._headers("GET", path, "")
+            async with httpx.AsyncClient(base_url=self.base_url, timeout=10) as client:
+                resp = await client.get(path, headers=headers)
+            data = resp.json()
+            entries = data.get("data") or []
+            if not entries:
+                return None
+            entry = entries[0]
+            is_liquidation = int(entry.get("liquidationPositions") or 0) > 0
+            close_ts = int(entry.get("updateTime") or 0)
+            from datetime import datetime, timezone as tz
+            closed_at = datetime.fromtimestamp(close_ts / 1000, tz=tz.utc) if close_ts else None
+            pnl = Decimal(str(entry.get("realizedPnl") or "0"))
+            fee = Decimal(str(entry.get("fee") or "0"))
+            return {
+                "close_reason":  "Liquidated" if is_liquidation else "Closed on exchange",
+                "closing_price": Decimal(str(entry.get("closeAveragePrice") or "0")),
+                "pnl_realized":  pnl + fee,
+                "closed_at":     closed_at,
+                "raw":           entry,
+            }
+        except Exception as e:
+            logger.error(f"BlofinAdapter.get_closed_position_details failed: {e}")
+            return None
+
     async def get_account_meta(self) -> dict:
         """Return api_key — non-sensitive without the secret/passphrase."""
         try:
@@ -422,3 +536,111 @@ class BlofinAdapter(ExchangeAdapter):
         except Exception as e:
             logger.error(f"BlofinAdapter.get_account_meta failed: {e}")
             return {}
+
+    async def list_trigger_orders(self, symbol: str) -> list[dict]:
+        """
+        Return pending TP/SL algo orders for a symbol.
+        Each entry: {oid, tpsl, triggerPx, sz}
+        """
+        try:
+            path = f"/api/v1/trade/algo-orders-pending?instId={symbol}"
+            headers = self._headers("GET", path, "")
+            async with httpx.AsyncClient(base_url=self.base_url, timeout=10) as client:
+                resp = await client.get(path, headers=headers)
+            data = resp.json()
+            entries = data.get("data") or []
+            result = []
+            for o in entries:
+                tp_px = o.get("tpTriggerPrice") or o.get("tpTriggerPx")
+                sl_px = o.get("slTriggerPrice") or o.get("slTriggerPx")
+                order_id = o.get("algoOrderId") or o.get("orderId")
+                if tp_px:
+                    result.append({"oid": order_id, "tpsl": "tp", "triggerPx": tp_px, "sz": o.get("size")})
+                if sl_px:
+                    result.append({"oid": order_id, "tpsl": "sl", "triggerPx": sl_px, "sz": o.get("size")})
+            return result
+        except Exception as e:
+            logger.error(f"BlofinAdapter.list_trigger_orders failed: {e}")
+            return []
+
+    async def cancel_order(self, symbol: str, order_id: str) -> dict:
+        """Cancel a pending TP/SL algo order by its order_id."""
+        try:
+            path = "/api/v1/trade/cancel-algo-order"
+            body_data = {"instId": symbol, "algoOrderId": str(order_id)}
+            body_str = json.dumps(body_data, separators=(",", ":"))
+            headers = self._headers("POST", path, body_str)
+            async with httpx.AsyncClient(base_url=self.base_url, timeout=10) as client:
+                resp = await client.post(path, content=body_str, headers=headers)
+            data = resp.json()
+            code = str(data.get("code", "0"))
+            if code in ("0", "200"):
+                return {"success": True, "oid": order_id}
+            # Fall back to cancel-order endpoint
+            path2 = "/api/v1/trade/cancel-order"
+            body_data2 = {"instId": symbol, "orderId": str(order_id)}
+            body_str2 = json.dumps(body_data2, separators=(",", ":"))
+            headers2 = self._headers("POST", path2, body_str2)
+            async with httpx.AsyncClient(base_url=self.base_url, timeout=10) as client:
+                resp2 = await client.post(path2, content=body_str2, headers=headers2)
+            data2 = resp2.json()
+            code2 = str(data2.get("code", "0"))
+            if code2 in ("0", "200"):
+                return {"success": True, "oid": order_id}
+            return {"success": False, "error": data2.get("msg", "cancel failed")}
+        except Exception as e:
+            logger.error(f"BlofinAdapter.cancel_order failed: {e}")
+            return {"success": False, "error": str(e)}
+
+    async def place_trigger_orders(
+        self,
+        symbol: str,
+        trigger_side: str,
+        size: float,
+        tp_price: Optional[float] = None,
+        sl_price: Optional[float] = None,
+    ) -> dict:
+        """Place standalone TP/SL algo orders for an existing position."""
+        try:
+            contract_size = await self._to_contracts(symbol, Decimal(str(size)))
+            placed = []
+
+            for tpsl_type, price in [("tp", tp_price), ("sl", sl_price)]:
+                if price is None:
+                    continue
+                body_data: dict = {
+                    "instId":     symbol,
+                    "marginMode": "isolated",
+                    "side":       trigger_side,
+                    "orderType":  "market",
+                    "size":       str(contract_size),
+                    "reduceOnly": "true",
+                }
+                if tpsl_type == "tp":
+                    body_data["tpTriggerPrice"] = str(price)
+                    body_data["tpOrderPrice"]   = "-1"
+                else:
+                    body_data["slTriggerPrice"] = str(price)
+                    body_data["slOrderPrice"]   = "-1"
+
+                path = "/api/v1/trade/order"
+                body_str = json.dumps(body_data, separators=(",", ":"))
+                headers  = self._headers("POST", path, body_str)
+                async with httpx.AsyncClient(base_url=self.base_url, timeout=10) as client:
+                    resp = await client.post(path, content=body_str, headers=headers)
+                data = resp.json()
+                code = str(data.get("code", "0"))
+                if code in ("0", "200"):
+                    order_info = (data.get("data") or [{}])
+                    if isinstance(order_info, list):
+                        order_info = order_info[0] if order_info else {}
+                    placed.append({"tpsl": tpsl_type, "oid": order_info.get("orderId"), "status": "placed"})
+                    logger.info(f"Blofin trigger ({tpsl_type}) placed at {price} for {symbol}")
+                else:
+                    placed.append({"tpsl": tpsl_type, "error": data.get("msg")})
+                    logger.warning(f"Blofin trigger ({tpsl_type}) failed: {data.get('msg')}")
+
+            return {"success": True, "placed": placed}
+        except Exception as e:
+            logger.error(f"BlofinAdapter.place_trigger_orders failed: {e}")
+            return {"success": False, "error": str(e)}

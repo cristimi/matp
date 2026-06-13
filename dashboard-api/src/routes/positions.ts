@@ -3,6 +3,7 @@ import { getPool } from '../db';
 
 const router = Router();
 const EXECUTOR_URL = process.env.EXECUTOR_URL || 'http://order-executor:8004';
+const LISTENER_URL = process.env.LISTENER_URL || 'http://order-listener:8001';
 
 // GET /positions — aggregate strategy positions enriched with real-time executor data
 router.get('/', async (_req: Request, res: Response) => {
@@ -11,7 +12,7 @@ router.get('/', async (_req: Request, res: Response) => {
     
     // 1. Fetch all strategy positions (open, stale, and last 20 closed)
     const posResult = await pool.query(
-      `SELECT sp.*, s.name as strategy_name, s.type as strategy_type, s.account_id, ea.exchange as account_exchange, ea.label as account_label
+      `SELECT sp.*, s.name as strategy_name, s.type as strategy_type, s.strategy_source, s.account_id, ea.exchange as account_exchange, ea.label as account_label
        FROM strategy_positions sp
        JOIN strategies s ON sp.strategy_id = s.id
        LEFT JOIN exchange_accounts ea ON s.account_id = ea.id
@@ -49,7 +50,7 @@ router.get('/', async (_req: Request, res: Response) => {
     }));
 
     // 3. Merge and enrich
-    const enriched = dbPositions.map(dbPos => {
+    const enriched = await Promise.all(dbPositions.map(async dbPos => {
       const key = `${dbPos.account_id}:${dbPos.symbol}:${dbPos.side}`;
       const realPos = executorPositionsMap.get(key);
 
@@ -77,6 +78,7 @@ router.get('/', async (_req: Request, res: Response) => {
         pnl_pct:           0,
         close_reason:      dbPos.close_reason || (dbPos.status === 'closed' ? 'Manual Close' : null),
         strategy_type:     dbPos.strategy_type,
+        strategy_source:   dbPos.strategy_source,
         destination:       dbPos.account_exchange || 'exchange',
       };
 
@@ -91,13 +93,8 @@ router.get('/', async (_req: Request, res: Response) => {
         : (enrichedPos.unrealized_pnl || 0);
       enrichedPos.pnl_pct = enrichedPos.margin > 0 ? (pnlForPct / enrichedPos.margin) * 100 : 0;
 
-      // Determine 'stale' status
-      if (enrichedPos.status === 'open' && !realPos) {
-        enrichedPos.status = 'stale';
-      }
-
       return enrichedPos;
-    });
+    }));
 
     res.json(enriched);
   } catch (e: any) {
@@ -105,57 +102,27 @@ router.get('/', async (_req: Request, res: Response) => {
   }
 });
 
-// POST /positions/:id/close — close a position via executor
+// POST /positions/:id/close — close a position via listener (which attributes to strategy)
 router.post('/:id/close', async (req: Request, res: Response) => {
   try {
-    const pool = getPool();
-    // 1. Fetch position details
-    const posResult = await pool.query(
-      `SELECT sp.id, sp.symbol, sp.side, sp.margin_mode, s.account_id, sp.status
-       FROM strategy_positions sp
-       JOIN strategies s ON sp.strategy_id = s.id
-       WHERE sp.id = $1`,
-      [req.params.id]
-    );
+    const size = req.body?.size ?? undefined;
 
-    if (posResult.rowCount === 0) {
-      return res.status(404).json({ error: 'Position not found' });
-    }
-
-    const pos = posResult.rows[0];
-    if (pos.status === 'closed') {
-      return res.status(400).json({ error: 'Position already closed' });
-    }
-
-    // 2. Call executor to close on exchange
-    const execResp = await fetch(`${EXECUTOR_URL}/accounts/${pos.account_id}/positions/close`, {
+    const listenerResp = await fetch(`${LISTENER_URL}/positions/${req.params.id}/close`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ symbol: pos.symbol, side: pos.side, margin_mode: pos.margin_mode })
+      body: JSON.stringify(size !== undefined ? { size: Number(size) } : {}),
+      signal: AbortSignal.timeout(35000),
     });
 
-    if (!execResp.ok) {
-      const errorData = await execResp.json() as any;
-      return res.status(execResp.status).json({ error: errorData.detail || 'Executor failed to close position' });
+    if (!listenerResp.ok) {
+      const errorData = await listenerResp.json() as any;
+      return res.status(listenerResp.status).json({ error: errorData.detail || errorData.error || 'Listener failed to close position' });
     }
 
-    const result = await execResp.json() as any;
-
-    // Guard: if the exchange itself rejected the close, do NOT mark position closed in DB
+    const result = await listenerResp.json() as any;
     if (!result.success) {
-      return res.status(502).json({ error: result.error_msg || 'Exchange rejected close order — position remains open' });
+      return res.status(502).json({ error: result.error || result.error_msg || 'Close failed' });
     }
-
-    // 3. Update DB status to closed
-    await pool.query(
-      `UPDATE strategy_positions
-       SET status = 'closed',
-           closed_at = NOW(),
-           closing_price = $1,
-           pnl_realized = $2
-       WHERE id = $3`,
-      [result.actual_fill_price, result.realized_pnl, pos.id]
-    );
 
     res.json({ success: true, result });
   } catch (e: any) {
