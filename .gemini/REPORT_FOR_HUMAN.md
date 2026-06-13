@@ -217,3 +217,158 @@ BTC-USDT short on Hyperliquidtest: **not present** (position was genuinely close
 |---|---|---|---|
 | HYPE-USDT | Reconciler — **BloFin API failure** at 00:27 UTC June 13 caused `get_account_positions` to return empty; miss jumped to 3/3 in one step; history call also failed so fill price = NULL | **1.5675 USDT** (from earlier TradingView close_short order; reconciler wrote `pnl_unconfirmed`, did not overwrite) | **YES** — 50 contracts short, entry 61.4435, mark 58.53, unrealized PnL +14.55 USDT |
 | BTC-USDT | Reconciler — **3 consecutive successful Hyperliquid polls** (HTTP 200) all returned no position; history call confirmed close | **30.01278 USDT** (confirmed from exchange history, closing_price = 62995.20) | **NO** — genuinely closed on Hyperliquid prior to reconciler detection |
+
+---
+
+# Capital Allocation Foundation (Prompt #1 of 3)
+
+**Migration:** `016_capital_allocation.sql`  
+**Branch:** `feat/strategy-tester`
+
+---
+
+## STEP 1 — Schema ✅
+
+**Migration 016** adds to `strategies`:
+
+| Column | Type | Default | Purpose |
+|---|---|---|---|
+| `capital_allocation` | NUMERIC | 100 | Initial $ bankroll / loss cap |
+| `margin_per_trade` | NUMERIC | 5 | Fixed $ margin per trade |
+| `max_drawdown_pct` | NUMERIC | 50 | % of initial allocation as cumulative stop |
+| `drawdown_anchor_pnl` | NUMERIC | 0 | pnl_total snapshot when allocation last set |
+
+Note: `capital_allocation_percent` (a %) and `max_daily_drawdown_percent` (daily) remain as-is (legacy).
+
+`\d strategies` confirms all 4 columns:
+```
+ capital_allocation         | numeric | not null | 100
+ margin_per_trade           | numeric | not null | 5
+ max_drawdown_pct           | numeric | not null | 50
+ drawdown_anchor_pnl        | numeric | not null | 0
+```
+
+**`init.sql` Phase 1–3 schema folded in:**
+- `strategies.strategy_source VARCHAR(20) NOT NULL DEFAULT 'tradingview'`
+- `strategy_positions.close_reason VARCHAR(30)`
+- `strategy_positions.reconcile_miss_count INTEGER NOT NULL DEFAULT 0`
+- `orders.closes_position_id UUID REFERENCES strategy_positions(id)`
+- `CREATE INDEX idx_orders_closes_position ON orders (closes_position_id) WHERE closes_position_id IS NOT NULL`
+- `CREATE UNIQUE INDEX uq_strat_pos_one_open ON strategy_positions (strategy_id, symbol, side) WHERE status = 'open'`
+
+All confirmed in live DB (`\d strategy_positions`, `\d orders`).
+
+---
+
+## STEP 2 — AI Sizing → Fixed Margin ✅
+
+**`ai-signal-generator/app/graph/nodes/node_guard.py`:**
+- Removed balance fetch and `size_pct` usage for sizing
+- New: `base_qty = round((margin_per_trade * leverage) / current_price, 4)`
+- `margin_per_trade` read from `strategy_config` (included via `s.*` in scheduler query)
+
+**Numbers (hltest-76b3: margin=5, lev=20, BTC=107000):**
+```
+base_qty = (5.0 × 20) / 107000.0 = 0.0009
+notional = 0.0009 × 107000.0 = 96.30 USD
+```
+
+Balance no longer affects size. SL/TP prices still computed from LLM's `stop_loss_pct` / `take_profit_pct`.
+
+---
+
+## STEP 3 — TV Sizing → Clamp to Margin ✅
+
+**`order-listener/app/webhook_handler.py`:**
+- After Guard 3, for `open_long`/`open_short`: `margin_qty = (margin_per_trade × leverage) / indicator_price`
+- If `payload.size > margin_qty`: clamp to `margin_qty`, write `size_scaled_to_margin / original_size / used_size` into `signal_metadata`
+
+**Test — size above margin (hltest-76b3: margin=5, lev=20, price=107000 → margin_qty≈0.000935):**
+
+Send `size=0.01`:
+```
+Listener: Strategy hltest-76b3 margin clamp: 0.01 → 0.00093458 (margin=5.0, lev=20, price=107000.0)
+```
+
+Order row (id=e56b6288):
+```
+size=0.00093458 | scaled=true | orig=0.01 | used=0.00093458
+```
+
+**Test — size within margin (size=0.0005 < 0.000935):**
+```
+id=1d756207 | size=0.0005 | scaled=(null)
+```
+
+No clamp applied ✅.
+
+---
+
+## STEP 4 — Per-Account Fund Cap ✅
+
+**`dashboard-api/src/routes/strategies.ts`:**
+- Helpers `getAccountAvailableBalance()` (executor balance endpoint) + `getAllocatedOnAccount()`
+- POST /strategies: fund cap check before INSERT
+- PUT /strategies/:id: fund cap check when `capital_allocation` changes
+
+**Hyperliquidtest account:** available=$619.78, already allocated=$400 (4 strategies)
+
+**Reject (400+300=700 > 619):**
+```json
+POST /strategies {"capital_allocation": 300, "account_id": "Hyperliquidtest"}
+→ 422: "Insufficient free funds on account: $300 requested, $219.78 available
+        ($400.00 already allocated of $619.78 total)."
+```
+
+**Accept (400+100=500 < 619):**
+```json
+POST /strategies {"capital_allocation": 100, "account_id": "Hyperliquidtest"}
+→ 201: {"id": "fund-cap-test-ok-ad5a", "enabled": true, ...}
+```
+
+✅ Fund cap enforced.
+
+---
+
+## STEP 5 — Drawdown Stop ✅
+
+**`order-listener/app/webhook_handler.py`:**
+- Guard before open signals: `loss = pnl_total - drawdown_anchor_pnl`; limit = `-(capital_allocation × max_drawdown_pct / 100)`
+- If `loss <= limit`: disable strategy, reject 429 `drawdown_stop`
+- `pnl_total` now updated alongside `pnl_today` on every trade close
+
+**Test (eth-range-ba4f: capital=100, max_dd=50%, anchor=0 → limit=-50, seeded pnl_total=-55):**
+
+```json
+POST /webhook/eth-range-ba4f {signal: "open_long"}
+→ 429: "Drawdown stop hit for strategy eth-range-ba4f: realized loss $55.00 >= $50.00
+        (50% of $100.00 allocation). Strategy auto-disabled."
+```
+
+```sql
+SELECT enabled FROM strategies WHERE id='eth-range-ba4f';
+-- enabled=f
+```
+
+Subsequent order returns `403 Strategy stopped` ✅.
+
+---
+
+## STEP 6 — Reset Drawdown Anchor on Allocation Change ✅
+
+**`dashboard-api/src/routes/strategies.ts`:**
+- PUT /strategies/:id: `drawdown_anchor_pnl = pnl_total` when `capital_allocation` is in body
+- Returns `drawdown_anchor_reset: true`
+
+**Test (eth-range-ba4f: pnl_total=-55, new capital_allocation=200):**
+```json
+PUT /strategies/eth-range-ba4f {"capital_allocation": 200}
+→ {
+    "capital_allocation": "200",
+    "drawdown_anchor_pnl": "-55",
+    "pnl_total": "-55",
+    "drawdown_anchor_reset": true
+  }
+```
+
+Anchor reset to -55. New stop fires if total loss exceeds -55 - (200 × 50%) = -155. ✅

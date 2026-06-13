@@ -95,7 +95,13 @@ CREATE TABLE IF NOT EXISTS strategies (
     default_leverage           INTEGER      NOT NULL DEFAULT 1,
     margin_mode                VARCHAR(10)  NOT NULL DEFAULT 'isolated',
     is_deleted                 BOOLEAN      NOT NULL DEFAULT FALSE,
+    strategy_source            VARCHAR(20)  NOT NULL DEFAULT 'tradingview',
     blofin_token               TEXT,
+    -- capital allocation foundation (migration 016)
+    capital_allocation         NUMERIC      NOT NULL DEFAULT 100,
+    margin_per_trade           NUMERIC      NOT NULL DEFAULT 5,
+    max_drawdown_pct           NUMERIC      NOT NULL DEFAULT 50,
+    drawdown_anchor_pnl        NUMERIC      NOT NULL DEFAULT 0,
     created_at                 TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
     updated_at                 TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 );
@@ -130,9 +136,10 @@ CREATE TABLE IF NOT EXISTS orders (
     raw_response      JSONB,
     error_msg         TEXT,
     signal_source     VARCHAR(100) NOT NULL DEFAULT 'unknown',
-    signal_metadata   JSONB        DEFAULT '{}',
-    indicator_price   NUMERIC(18,8),
-    updated_at        TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+    signal_metadata     JSONB        DEFAULT '{}',
+    indicator_price     NUMERIC(18,8),
+    closes_position_id  UUID REFERENCES strategy_positions(id),
+    updated_at          TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 );
 
 CREATE INDEX IF NOT EXISTS orders_received_at_idx       ON orders (received_at DESC);
@@ -142,6 +149,7 @@ CREATE INDEX IF NOT EXISTS orders_account_id_idx        ON orders (account_id);
 CREATE INDEX IF NOT EXISTS orders_platform_idx          ON orders (platform);
 CREATE INDEX IF NOT EXISTS orders_pair_id_idx           ON orders (pair_id);
 CREATE INDEX IF NOT EXISTS idx_orders_strategy_source   ON orders (strategy_id, signal_source);
+CREATE INDEX IF NOT EXISTS idx_orders_closes_position   ON orders (closes_position_id) WHERE closes_position_id IS NOT NULL;
 
 -- ─── Dead letter queue ───────────────────────────────────────────────────────
 
@@ -185,14 +193,16 @@ CREATE TABLE IF NOT EXISTS strategy_positions (
     leverage          INTEGER,
     margin_mode       VARCHAR(20),
     pnl_unrealized    NUMERIC,
-    pnl_realized      NUMERIC      DEFAULT 0,
-    status            VARCHAR(20)  DEFAULT 'open',
-    opening_order_id  UUID REFERENCES orders(id) ON DELETE RESTRICT,
-    closing_order_id  UUID REFERENCES orders(id) ON DELETE RESTRICT,
-    opened_at         TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
-    closed_at         TIMESTAMPTZ,
-    created_at        TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
-    updated_at        TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+    pnl_realized          NUMERIC      DEFAULT 0,
+    status                VARCHAR(20)  DEFAULT 'open',
+    opening_order_id      UUID REFERENCES orders(id) ON DELETE RESTRICT,
+    closing_order_id      UUID REFERENCES orders(id) ON DELETE RESTRICT,
+    close_reason          VARCHAR(30),
+    reconcile_miss_count  INTEGER      NOT NULL DEFAULT 0,
+    opened_at             TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    closed_at             TIMESTAMPTZ,
+    created_at            TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    updated_at            TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 );
 
 CREATE INDEX IF NOT EXISTS sp_strategy_id_idx            ON strategy_positions (strategy_id);
@@ -202,6 +212,7 @@ CREATE INDEX IF NOT EXISTS idx_strat_pos_strategy_status ON strategy_positions (
 CREATE INDEX IF NOT EXISTS idx_strat_pos_symbol_status   ON strategy_positions (symbol, status);
 CREATE INDEX IF NOT EXISTS idx_strat_pos_opened_at       ON strategy_positions (opened_at DESC);
 CREATE INDEX IF NOT EXISTS idx_strat_pos_closing_order_id ON strategy_positions (closing_order_id);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_strat_pos_one_open ON strategy_positions (strategy_id, symbol, side) WHERE status = 'open';
 
 -- ─── Strategy statistics ─────────────────────────────────────────────────────
 
