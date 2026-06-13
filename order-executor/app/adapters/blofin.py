@@ -74,6 +74,17 @@ class BlofinAdapter(ExchangeAdapter):
         enforced = max(min_size, rounded)
         return f"{enforced:g}"
 
+    async def _to_base(self, inst_id: str, contracts: Decimal) -> Decimal:
+        """Convert a Blofin contract count to base-asset volume (inverse of _to_contracts).
+        base_coins = contracts * contractValue. Uses the cached instrument spec."""
+        inst = await self._get_instrument(inst_id)
+        if not inst:
+            logger.warning(
+                f"BlofinAdapter: no instrument spec for {inst_id}, using default contractValue 0.001"
+            )
+        contract_val = (inst or {}).get("contractValue") or "0.001"
+        return contracts * Decimal(str(contract_val))
+
     def _sign(self, method: str, path: str, body: str, timestamp: str, nonce: str) -> str:
         # Blofin Prehash: requestPath + method + timestamp + nonce + body
         message = f"{path}{method.upper()}{timestamp}{nonce}{body}"
@@ -268,18 +279,23 @@ class BlofinAdapter(ExchangeAdapter):
             size_val = float(p.get("positions", 0))
             if size_val == 0:
                 continue
-                
+
+            inst_id   = p.get("instId")
+            # BloFin reports quantity in contracts; convert to base coins so every consumer
+            # (reconciler, dashboard, modify-stops) gets the same unit the DB stores.
+            base_size = await self._to_base(inst_id, Decimal(str(abs(size_val))))
+
             mark_raw = p.get("markPrice") or p.get("last") or p.get("averagePrice", "0")
             mapped_positions.append(Position(
-                symbol=p.get("instId"),
+                symbol=inst_id,
                 side="long" if size_val > 0 else "short",
-                size=Decimal(str(abs(size_val))),
+                size=base_size,
                 entry_price=Decimal(p.get("averagePrice", "0")),
                 leverage=int(p.get("lever") or p.get("leverage") or 10),
                 mark_price=Decimal(str(mark_raw)),
                 unrealized_pnl=Decimal(p.get("unrealizedPnl", "0"))
             ))
-            
+
         return mapped_positions
 
     async def close_position(self, symbol: str, side: str, size=None, margin_mode: str = "isolated") -> OrderResult:
