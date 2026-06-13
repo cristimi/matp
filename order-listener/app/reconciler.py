@@ -122,11 +122,27 @@ async def reconcile_once(pool) -> None:
             continue
 
         if ex_size is not None and ex_size_dec > db_size + _SIZE_EPSILON:
-            # Exchange size is LARGER than DB — never grow from reconciliation
+            # Exchange size is LARGER than DB — never grow from reconciliation.
+            # The position IS confirmed present, so reset the miss streak: positive evidence
+            # it is NOT disappearing. Previously this branch reset nothing, which turned
+            # reconcile_miss_count into a one-way ratchet whenever db_size never matched the
+            # exchange (e.g. a size/units tracking mismatch), letting transient failures
+            # accumulate to a false close.
             logger.warning(
                 f"reconciler: position {pos_id} ({symbol} {side}) exchange_size={ex_size_dec}"
                 f" > db_size={db_size} — ignoring (will not grow)"
             )
+            if miss_count != 0:
+                async with pool.acquire() as conn:
+                    await conn.execute(
+                        "UPDATE strategy_positions SET reconcile_miss_count = 0,"
+                        " updated_at = NOW() WHERE id = $1",
+                        pos_id,
+                    )
+                logger.info(
+                    f"reconciler: position {pos_id} ({symbol} {side}) confirmed present "
+                    f"(exchange_size={ex_size_dec}) — miss streak reset"
+                )
             continue
 
         # Discrepancy: absent or smaller on exchange → increment miss counter
