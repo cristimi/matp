@@ -97,14 +97,7 @@ async def node_guard_sim(state: AgentState) -> AgentState:
             except Exception as exc:
                 logger.warning("Sim cooldown check failed: %s", exc)
 
-    # 7. Daily loss cap (uses sim pnl, not DB lookup)
-    sim_pnl = float(state.get('sim_pnl_today') or 0.0)
-    if sim_pnl < -float(rc.get('max_daily_loss_pct') or 3.0):
-        return _reject(state, 'daily_loss_cap')
-    if sim_pnl < -float(rc.get('max_drawdown_pct') or 8.0):
-        return _reject(state, 'max_drawdown')
-
-    # 8. Size resolution for opening actions (uses sim_balance)
+    # 7. Size resolution for opening actions (uses sim_balance)
     if action in ('open_long', 'open_short'):
         usdt_balance  = float(state.get('sim_balance') or 0.0)
         size_pct      = min(float(signal['size_pct']), float(rc.get('max_position_size_pct') or 5.0))

@@ -221,14 +221,11 @@ async def from_matp(body: FromMaTPRequest):
                     """
                     INSERT INTO tester.ai_risk_config (
                         strategy_id,
-                        max_position_size_pct, max_daily_loss_pct,
-                        max_drawdown_pct, max_concurrent_trades
-                    ) VALUES ($1,$2,$3,$4,$5)
+                        max_position_size_pct, max_concurrent_trades
+                    ) VALUES ($1,$2,$3)
                     """,
                     new_id,
                     float(pub_arc['max_position_size_pct'] or 5.0),
-                    float(pub_arc['max_daily_loss_pct'] or 3.0),
-                    float(pub_arc['max_drawdown_pct'] or 8.0),
                     int(pub_arc['max_concurrent_trades'] or 1),
                 )
             else:
@@ -418,14 +415,11 @@ async def to_matp(strategy_id: str, body: ToMaTPRequest):
                     """
                     INSERT INTO public.ai_risk_config (
                         strategy_id,
-                        max_position_size_pct, max_daily_loss_pct,
-                        max_drawdown_pct, max_concurrent_trades
-                    ) VALUES ($1,$2,$3,$4,$5)
+                        max_position_size_pct, max_concurrent_trades
+                    ) VALUES ($1,$2,$3)
                     """,
                     new_public_id,
                     float(tst_arc['max_position_size_pct'] or 5.0),
-                    float(tst_arc['max_daily_loss_pct'] or 3.0),
-                    float(tst_arc['max_drawdown_pct'] or 8.0),
                     int(tst_arc['max_concurrent_trades'] or 1),
                 )
             else:

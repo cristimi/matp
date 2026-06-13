@@ -76,22 +76,6 @@ async def node_guard(state: AgentState) -> AgentState:
         except Exception as exc:
             logger.warning("Cooldown check failed: %s", exc)
 
-    # ── 6 & 7. Daily loss cap + max drawdown ────────────────────────────
-    try:
-        async with pool.acquire() as conn:
-            pnl_today = await conn.fetchval(
-                "SELECT COALESCE(pnl_today, 0) FROM strategies WHERE id = $1",
-                state['strategy_id'],
-            )
-        if pnl_today is not None:
-            pnl = float(pnl_today)
-            if pnl < -float(rc.get('max_daily_loss_pct') or 3.0):
-                return _reject(state, 'daily_loss_cap')
-            if pnl < -float(rc.get('max_drawdown_pct') or 8.0):
-                return _reject(state, 'max_drawdown')
-    except Exception as exc:
-        logger.warning("PnL check failed: %s", exc)
-
     # ── adjust_stops: resolve new prices from signal ─────────────────────
     if action == 'adjust_stops':
         new_tp = signal.get('new_tp_price')

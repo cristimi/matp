@@ -561,8 +561,6 @@ interface AiFormState {
   custom_instructions:    string;
   dry_run:                boolean;
   max_position_size_pct:  string;
-  max_daily_loss_pct:     string;
-  max_drawdown_pct:       string;
 }
 
 const AI_FORM_DEFAULTS: AiFormState = {
@@ -584,8 +582,6 @@ const AI_FORM_DEFAULTS: AiFormState = {
   custom_instructions:    '',
   dry_run:                true,
   max_position_size_pct:  '5.0',
-  max_daily_loss_pct:     '3.0',
-  max_drawdown_pct:       '8.0',
 };
 
 const TV_FORM_DEFAULTS = {
@@ -797,8 +793,6 @@ export default function Strategies() {
           custom_instructions:    config.custom_instructions    ?? '',
           dry_run:                config.dry_run                ?? true,
           max_position_size_pct:  String(risk.max_position_size_pct ?? '5.0'),
-          max_daily_loss_pct:     String(risk.max_daily_loss_pct    ?? '3.0'),
-          max_drawdown_pct:       String(risk.max_drawdown_pct      ?? '8.0'),
         });
         fetchEditAiModels(config.llm_provider ?? 'google');
         if (aiTemplates.length === 0) fetchAITemplates();
@@ -863,8 +857,6 @@ export default function Strategies() {
           method: 'PUT', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             max_position_size_pct: parseFloat(aiEditForm.max_position_size_pct),
-            max_daily_loss_pct:    parseFloat(aiEditForm.max_daily_loss_pct),
-            max_drawdown_pct:      parseFloat(aiEditForm.max_drawdown_pct),
           }),
         });
         if (!s3.ok) { setEditError((await s3.json()).error || 'Failed to update risk config'); return; }
@@ -1015,8 +1007,6 @@ export default function Strategies() {
           headers: { 'Content-Type': 'application/json' },
           body:    JSON.stringify({
             max_position_size_pct: parseFloat(aiForm.max_position_size_pct),
-            max_daily_loss_pct:    parseFloat(aiForm.max_daily_loss_pct),
-            max_drawdown_pct:      parseFloat(aiForm.max_drawdown_pct),
           }),
         });
         const riskData = await riskRes.json();
@@ -1565,20 +1555,6 @@ export default function Strategies() {
                       style={inputStyle} />
                   </div>
                   <div>
-                    <label style={labelStyle}>Daily Loss Cap %</label>
-                    <input type="number" step="0.1"
-                      value={aiForm.max_daily_loss_pct}
-                      onChange={e => setAiForm(f => ({ ...f, max_daily_loss_pct: e.target.value }))}
-                      style={inputStyle} />
-                  </div>
-                  <div>
-                    <label style={labelStyle}>Max Drawdown %</label>
-                    <input type="number" step="0.1"
-                      value={aiForm.max_drawdown_pct}
-                      onChange={e => setAiForm(f => ({ ...f, max_drawdown_pct: e.target.value }))}
-                      style={inputStyle} />
-                  </div>
-                  <div>
                     <label style={labelStyle}>Dry Run Mode</label>
                     <div style={{
                       display:'flex', gap:'12px', padding:'9px 12px',
@@ -1859,20 +1835,6 @@ export default function Strategies() {
                     <input type="number" step="0.1"
                       value={aiEditForm.max_position_size_pct}
                       onChange={e => setAiEditForm(f => ({ ...f, max_position_size_pct: e.target.value }))}
-                      style={inputStyle} />
-                  </div>
-                  <div>
-                    <label style={labelStyle}>Daily Loss Cap %</label>
-                    <input type="number" step="0.1"
-                      value={aiEditForm.max_daily_loss_pct}
-                      onChange={e => setAiEditForm(f => ({ ...f, max_daily_loss_pct: e.target.value }))}
-                      style={inputStyle} />
-                  </div>
-                  <div>
-                    <label style={labelStyle}>Max Drawdown %</label>
-                    <input type="number" step="0.1"
-                      value={aiEditForm.max_drawdown_pct}
-                      onChange={e => setAiEditForm(f => ({ ...f, max_drawdown_pct: e.target.value }))}
                       style={inputStyle} />
                   </div>
                   <div>

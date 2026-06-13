@@ -167,8 +167,6 @@ async def get_strategy(strategy_id: str):
                 aic.interval_at_risk,        aic.at_risk_threshold_pct,
                 aic.dry_run,                 aic.custom_instructions,
                 arc.max_position_size_pct,
-                arc.max_daily_loss_pct,
-                arc.max_drawdown_pct         AS risk_max_drawdown_pct,
                 arc.max_concurrent_trades
             FROM tester.strategies s
             LEFT JOIN tester.ai_strategy_config aic ON aic.strategy_id = s.id

@@ -432,7 +432,6 @@ router.get('/:id/ai-config/preview-prompt', async (req: Request, res: Response) 
       },
       risk_config: {
         max_position_size_pct: riskConfig ? Number(riskConfig.max_position_size_pct) : 5.0,
-        max_daily_loss_pct:    riskConfig ? Number(riskConfig.max_daily_loss_pct)    : 3.0,
       },
       position_open:               false,
       position_side:               null,

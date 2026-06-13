@@ -453,8 +453,7 @@ async def _execute_run(pool, run_id: str) -> None:
             SELECT s.*, aic.cooldown_entry_minutes, aic.cooldown_stop_adj_minutes,
                    aic.confidence_threshold, aic.use_technical, aic.indicators,
                    aic.template_id, aic.llm_provider, aic.llm_model, aic.custom_instructions,
-                   arc.max_position_size_pct, arc.max_daily_loss_pct, arc.max_drawdown_pct,
-                   arc.max_concurrent_trades
+                   arc.max_position_size_pct, arc.max_concurrent_trades
             FROM tester.strategies s
             LEFT JOIN tester.ai_strategy_config aic ON aic.strategy_id = s.id
             LEFT JOIN tester.ai_risk_config arc     ON arc.strategy_id = s.id
@@ -551,8 +550,6 @@ async def _execute_run(pool, run_id: str) -> None:
     }
     risk_config = {
         'max_position_size_pct': float(strategy['max_position_size_pct'] or 5.0),
-        'max_daily_loss_pct':    float(strategy['max_daily_loss_pct'] or 3.0),
-        'max_drawdown_pct':      float(strategy['max_drawdown_pct'] or 8.0),
         'max_concurrent_trades': int(strategy['max_concurrent_trades'] or 1),
     }
 
@@ -591,7 +588,6 @@ async def _execute_run(pool, run_id: str) -> None:
         candle_window = candles[window_start : abs_idx + 1]
 
         # sim_pnl_today: sum of net_pnl from trades closed in last 24 simulated hours
-        # expressed as percentage of initial_balance for comparison with max_daily_loss_pct
         cutoff_24h = candle_ts.timestamp() - 86400
         pnl_today = sum(
             t['net_pnl'] / eng.initial_balance * 100
