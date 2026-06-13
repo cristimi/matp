@@ -515,7 +515,7 @@ class BlofinAdapter(ExchangeAdapter):
             logger.warning(f"BlofinAdapter.get_min_order_size({symbol}) failed: {e}")
             return 0.0
 
-    async def get_closed_position_details(self, symbol: str) -> dict | None:
+    async def get_closed_position_details(self, symbol: str, since_ms: int | None = None) -> dict | None:
         try:
             path = f"/api/v1/account/positions-history?instId={symbol}&limit=5"
             headers = self._headers("GET", path, "")
@@ -525,6 +525,10 @@ class BlofinAdapter(ExchangeAdapter):
             entries = data.get("data") or []
             if not entries:
                 return None
+            if since_ms is not None:
+                entries = [e for e in entries if int(e.get("updateTime") or 0) >= since_ms]
+                if not entries:
+                    return None
             entry = entries[0]
             is_liquidation = int(entry.get("liquidationPositions") or 0) > 0
             close_ts = int(entry.get("updateTime") or 0)

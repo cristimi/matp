@@ -165,11 +165,13 @@ async def encrypt_credentials(request: EncryptRequest):
 
 
 @app.get("/accounts/{account_id}/positions/history")
-async def get_position_history(account_id: str, symbol: str):
-    """Return the most recent closed position details for a symbol (for stale-position recovery)."""
+async def get_position_history(account_id: str, symbol: str, since: int | None = None):
+    """Return the most recent closed position details for a symbol (for stale-position recovery).
+    `since` (epoch ms) scopes the exchange lookup to a single position's lifetime so PnL is not
+    summed across the coin's entire history."""
     try:
         adapter = await registry.get(account_id)
-        details = await adapter.get_closed_position_details(symbol)
+        details = await adapter.get_closed_position_details(symbol, since_ms=since)
         return details or {}
     except Exception as e:
         logger.error(f"get_position_history failed for {account_id}/{symbol}: {e}")

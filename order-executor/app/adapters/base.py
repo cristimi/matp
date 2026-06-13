@@ -61,7 +61,7 @@ class ExchangeAdapter(ABC):
         pass
 
     @abstractmethod
-    async def get_closed_position_details(self, symbol: str) -> dict | None:
+    async def get_closed_position_details(self, symbol: str, since_ms: int | None = None) -> dict | None:
         """
         Query the exchange for the most recent closed position for the given symbol.
         Returns a dict with keys:

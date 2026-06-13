@@ -536,7 +536,7 @@ class HyperliquidAdapter(ExchangeAdapter):
                 "error":             str(e),
             }
 
-    async def get_closed_position_details(self, symbol: str) -> dict | None:
+    async def get_closed_position_details(self, symbol: str, since_ms: int | None = None) -> dict | None:
         try:
             coin = symbol.replace("-USDT", "").replace("-USD", "").upper()
             async with httpx.AsyncClient(timeout=10) as client:
@@ -547,13 +547,16 @@ class HyperliquidAdapter(ExchangeAdapter):
                 resp.raise_for_status()
             fills = resp.json()
 
-            # Keep only closing fills for this coin (dir contains "Close" or "Liq")
+            # Keep only closing fills for this coin (dir contains "Close" or "Liq"),
+            # scoped to fills at or after since_ms so PnL is not summed across the whole
+            # coin history.
             close_fills = [
                 f for f in fills
                 if f.get("coin") == coin and (
                     "Close" in (f.get("dir") or "") or
                     "Liq"   in (f.get("dir") or "")
                 )
+                and (since_ms is None or int(f.get("time", 0)) >= since_ms)
             ]
             if not close_fills:
                 return None

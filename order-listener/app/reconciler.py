@@ -210,7 +210,7 @@ async def _handle_full_external_close(
 ) -> None:
     from app.webhook_handler import close_strategy_position
 
-    history = await get_position_history(acct_id, symbol)
+    history = await get_position_history(acct_id, symbol, opened_at)
 
     close_reason   = history.get("close_reason") or "Closed on exchange"
     closing_price  = history.get("closing_price")
@@ -346,7 +346,7 @@ async def _recover_manual_close_pnl(pool) -> None:
         opened_at = row["opened_at"]
 
         try:
-            history = await get_position_history(acct_id, symbol)
+            history = await get_position_history(acct_id, symbol, opened_at)
         except Exception as e:
             logger.warning(f"reconciler: history fetch failed for {pos_id} ({symbol}): {e}")
             continue

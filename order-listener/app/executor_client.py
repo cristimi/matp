@@ -110,12 +110,20 @@ async def get_account_positions(account_id: str) -> Optional[list]:
         return None
 
 
-async def get_position_history(account_id: str, symbol: str) -> dict:
+async def get_position_history(account_id: str, symbol: str, opened_at=None) -> dict:
     """
-    Fetch the most recent closed-position history for a symbol from the executor.
+    Fetch closed-position history for a symbol from the executor.
+    When opened_at is provided, the lookup is scoped (via ?since=) to this position's lifetime
+    so PnL is not summed across the coin's entire close history.
     Returns the history dict or {} on any error. Never raises.
     """
     path = f"/accounts/{account_id}/positions/history?symbol={symbol}"
+    if opened_at is not None:
+        try:
+            since_ms = int(opened_at.timestamp() * 1000)
+        except AttributeError:
+            since_ms = int(opened_at)
+        path += f"&since={since_ms}"
     return await call_executor_get(path)
 
 
