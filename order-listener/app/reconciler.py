@@ -56,10 +56,23 @@ async def reconcile_once(pool) -> None:
             by_account[acct] = []
         by_account[acct].append(row)
 
-    # Fetch live exchange positions once per account
+    # Fetch live exchange positions once per account.
+    # get_account_positions returns None when the exchange/executor is unreachable (UNKNOWN).
+    # UNKNOWN must NOT be treated as "no positions": we skip the whole account this pass so a
+    # transient outage can never close or shrink a position. The rows stay 'open' in the DB
+    # (the dashboard renders them as stale).
     exchange_map: dict[str, dict[tuple, Decimal]] = {}
+    unknown_accounts: set[str] = set()
     for acct_id in by_account:
         positions = await get_account_positions(acct_id)
+        if positions is None:
+            unknown_accounts.add(acct_id)
+            logger.warning(
+                f"reconciler: positions UNKNOWN for account {acct_id} "
+                f"(exchange/executor unreachable) — leaving its "
+                f"{len(by_account[acct_id])} open position(s) untouched this pass"
+            )
+            continue
         pos_map: dict[tuple, Decimal] = {}
         for p in positions:
             try:
@@ -76,6 +89,9 @@ async def reconcile_once(pool) -> None:
     # Process each open DB row
     for row in rows:
         acct_id   = row["account_id"]
+        if acct_id in unknown_accounts:
+            # Exchange state UNKNOWN this pass — do not increment misses, do not act.
+            continue
         pos_id    = row["id"]
         symbol    = row["symbol"]
         side      = row["side"]

@@ -12,6 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.database import init_db
 from app.models import OrderRequest
 from app.registry import registry
+from app.adapters.base import ExchangeUnavailableError
 
 logging.basicConfig(
     level=logging.INFO,
@@ -177,14 +178,26 @@ async def get_position_history(account_id: str, symbol: str):
 
 @app.get("/accounts/{account_id}/positions")
 async def get_positions(account_id: str):
-    """Return open positions for a specific account."""
+    """Return open positions for a specific account.
+
+    Three-state contract:
+      - 200 + list (possibly empty): a CONFIRMED read. [] means the exchange confirmed
+        no open positions.
+      - 503: UNKNOWN — could not get a confirmed answer (network/API error). Callers must
+        NOT treat this as 'no positions'.
+    Never return [] to mask an error — that previously let the reconciler close live
+    positions during a transient outage.
+    """
     try:
         adapter = await registry.get(account_id)
         positions = await adapter.get_open_positions()
         return positions
+    except ExchangeUnavailableError as e:
+        logger.warning(f"get_positions UNKNOWN for {account_id}: {e}")
+        raise HTTPException(status_code=503, detail=f"exchange positions unavailable: {e}")
     except Exception as e:
         logger.error(f"get_positions failed for {account_id}: {e}")
-        return []
+        raise HTTPException(status_code=503, detail=f"exchange positions unavailable: {e}")
 
 
 @app.get("/accounts/{account_id}/balance")

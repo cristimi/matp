@@ -10,7 +10,7 @@ from typing import Dict, List, Optional
 
 import httpx
 
-from app.adapters.base import ExchangeAdapter
+from app.adapters.base import ExchangeAdapter, ExchangeUnavailableError
 from app.models import OrderRequest, OrderResult, Position
 
 logger = logging.getLogger(__name__)
@@ -256,7 +256,9 @@ class BlofinAdapter(ExchangeAdapter):
         
         if response.status_code != 200:
             logger.error(f"Failed to fetch positions: {response.text}")
-            return []
+            raise ExchangeUnavailableError(
+                f"blofin positions HTTP {response.status_code}: {response.text[:200]}"
+            )
             
         data = response.json()
         raw_positions = data.get("data", [])

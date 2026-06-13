@@ -7,6 +7,8 @@ returning 200 to TradingView and writing the final status to the DB.
 """
 import logging
 import os
+from typing import Optional
+
 import httpx
 
 logger = logging.getLogger(__name__)
@@ -83,20 +85,29 @@ async def call_executor_get(path: str) -> dict:
         return {}
 
 
-async def get_account_positions(account_id: str) -> list:
+async def get_account_positions(account_id: str) -> Optional[list]:
     """
     Fetch live open positions for an account from the executor.
-    Returns a list of position dicts (symbol, side, size, ...). Never raises.
+
+    Returns:
+      - list (possibly empty): a CONFIRMED read. [] means the exchange confirmed no positions.
+      - None: UNKNOWN — executor/exchange unreachable or returned an error. Callers MUST NOT
+        treat None as 'no positions'.
+    Never raises.
     """
     url = f"{EXECUTOR_URL}/accounts/{account_id}/positions"
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.get(url)
             response.raise_for_status()
-            return response.json()
+            data = response.json()
+            return data if isinstance(data, list) else []
     except Exception as e:
-        logger.warning(f"get_account_positions({account_id}) failed: {e}")
-        return []
+        logger.warning(
+            f"get_account_positions({account_id}) UNKNOWN "
+            f"(treating as unreachable, NOT as empty): {e}"
+        )
+        return None
 
 
 async def get_position_history(account_id: str, symbol: str) -> dict:

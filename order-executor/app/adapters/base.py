@@ -6,6 +6,12 @@ from abc import ABC, abstractmethod
 from app.models import OrderRequest, OrderResult
 
 
+class ExchangeUnavailableError(Exception):
+    """Raised when an exchange/executor read could not be completed (network or API error).
+    Callers MUST treat this as UNKNOWN — never as 'no positions'."""
+    pass
+
+
 class ExchangeAdapter(ABC):
     def __init__(self, credentials: dict, mode: str):
         """

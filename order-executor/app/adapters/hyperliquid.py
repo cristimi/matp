@@ -20,7 +20,7 @@ import httpx
 from eth_account import Account
 from eth_account.messages import encode_typed_data
 
-from app.adapters.base import ExchangeAdapter
+from app.adapters.base import ExchangeAdapter, ExchangeUnavailableError
 from app.models import OrderRequest, OrderResult
 
 logger = logging.getLogger(__name__)
@@ -157,9 +157,11 @@ class HyperliquidAdapter(ExchangeAdapter):
                     unrealized_pnl=D(str(p.get("unrealizedPnl", 0))),
                 ))
             return positions
+        except ExchangeUnavailableError:
+            raise
         except Exception as e:
             logger.error(f"HyperliquidAdapter.get_open_positions failed: {e}")
-            return []
+            raise ExchangeUnavailableError(f"hyperliquid positions fetch failed: {e}") from e
 
     # ── Private helpers ──────────────────────────────────────────────
 
