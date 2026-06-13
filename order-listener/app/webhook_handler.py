@@ -516,6 +516,36 @@ async def receive_webhook(
         await _finalize_signal_log(pool, signal_log_id, 429, "guard_rejected", detail, start_ms)
         raise HTTPException(status_code=429, detail=detail)
 
+    # Guard 5: Cumulative drawdown stop (opening signals only)
+    if payload.signal in ("open_long", "open_short"):
+        _pnl_total         = float(strategy.get("pnl_total") or 0)
+        _anchor_pnl        = float(strategy.get("drawdown_anchor_pnl") or 0)
+        _cap_alloc         = float(strategy.get("capital_allocation") or 100)
+        _max_dd_pct        = float(strategy.get("max_drawdown_pct") or 50)
+        _loss              = _pnl_total - _anchor_pnl
+        _drawdown_limit    = -(_cap_alloc * _max_dd_pct / 100.0)
+        if _loss <= _drawdown_limit:
+            try:
+                async with pool.acquire() as conn:
+                    await conn.execute(
+                        "UPDATE strategies SET enabled = false, updated_at = NOW() WHERE id = $1",
+                        strategy_id,
+                    )
+            except Exception as _e:
+                logger.error(f"Failed to auto-disable strategy {strategy_id} on drawdown stop: {_e}")
+            _detail = (
+                f"Drawdown stop hit for strategy {strategy_id}: "
+                f"realized loss ${-_loss:.2f} >= ${-_drawdown_limit:.2f} "
+                f"({_max_dd_pct:.0f}% of ${_cap_alloc:.2f} allocation). "
+                f"Strategy auto-disabled."
+            )
+            logger.warning(
+                f"DRAWDOWN STOP strategy={strategy_id}: "
+                f"loss={_loss:.2f} limit={_drawdown_limit:.2f}"
+            )
+            await _finalize_signal_log(pool, signal_log_id, 429, "drawdown_stop", _detail, start_ms)
+            raise HTTPException(status_code=429, detail=_detail)
+
     # Guard 2: Max position size
     incoming_size = float(payload.size)
     max_size      = float(strategy.get("max_position_size", 1.0) or 1.0)
@@ -538,6 +568,27 @@ async def receive_webhook(
         logger.warning(f"Strategy {strategy_id} leverage {effective_leverage}x exceeds max {max_lev}x")
         await _finalize_signal_log(pool, signal_log_id, 422, "guard_rejected", detail, start_ms)
         raise HTTPException(status_code=422, detail=detail)
+
+    # Guard: Margin-per-trade clamp (opening signals only)
+    # Scale down TV-supplied size so notional never exceeds margin × leverage.
+    if payload.signal in ("open_long", "open_short"):
+        _margin_per_trade = float(strategy.get("margin_per_trade") or 5.0)
+        _ref_price        = float(payload.indicator_price or payload.price or 0)
+        if _ref_price > 0:
+            _margin_qty = round((_margin_per_trade * effective_leverage) / _ref_price, 8)
+            if float(payload.size) > _margin_qty:
+                _original_size = float(payload.size)
+                payload.size   = Decimal(str(_margin_qty))
+                _meta = dict(payload.signal_metadata or {})
+                _meta["size_scaled_to_margin"] = True
+                _meta["original_size"]         = _original_size
+                _meta["used_size"]             = _margin_qty
+                payload.signal_metadata        = _meta
+                logger.info(
+                    f"Strategy {strategy_id} margin clamp: "
+                    f"{_original_size} → {_margin_qty} "
+                    f"(margin={_margin_per_trade}, lev={effective_leverage}, price={_ref_price})"
+                )
 
     # ── End Risk Guards ───────────────────────────────────────────────
 
@@ -861,7 +912,7 @@ async def _process_order(
                 strategy_id,
             )
 
-            # Update pnl_today
+            # Update pnl_today + pnl_total
             result_pnl = close_result.get("realized_pnl")
             if result_pnl is not None:
                 try:
@@ -870,15 +921,16 @@ async def _process_order(
                             """
                             UPDATE strategies
                             SET pnl_today  = pnl_today + $1,
+                                pnl_total  = pnl_total + $1,
                                 updated_at = NOW()
                             WHERE id = $2
                             """,
                             float(result_pnl),
                             strategy['id'],
                         )
-                    logger.debug(f"Updated pnl_today for {strategy['id']}: delta={result_pnl}")
+                    logger.debug(f"Updated pnl_today/total for {strategy['id']}: delta={result_pnl}")
                 except Exception as e:
-                    logger.warning(f"Failed to update pnl_today for {strategy['id']}: {e}")
+                    logger.warning(f"Failed to update pnl_today/total for {strategy['id']}: {e}")
 
             return
         # ── End flat signal handler ───────────────────────────────────────
@@ -984,7 +1036,7 @@ async def _process_order(
             result.error_msg, start_ms,
         )
 
-        # ── Update pnl_today ──────────────────────────────────────────────────
+        # ── Update pnl_today + pnl_total ─────────────────────────────────────
         result_pnl = exec_result.get("pnl") or exec_result.get("realized_pnl")
         if result_pnl is not None:
             try:
@@ -993,15 +1045,16 @@ async def _process_order(
                         """
                         UPDATE strategies
                         SET pnl_today  = pnl_today + $1,
+                            pnl_total  = pnl_total + $1,
                             updated_at = NOW()
                         WHERE id = $2
                         """,
                         float(result_pnl),
                         strategy['id'],
                     )
-                logger.debug(f"Updated pnl_today for {strategy['id']}: delta={result_pnl}")
+                logger.debug(f"Updated pnl_today/total for {strategy['id']}: delta={result_pnl}")
             except Exception as e:
-                logger.warning(f"Failed to update pnl_today for {strategy['id']}: {e}")
+                logger.warning(f"Failed to update pnl_today/total for {strategy['id']}: {e}")
 
         logger.info(f"Order {order_id} processed for strategy {strategy['id']}: {final_status}")
 

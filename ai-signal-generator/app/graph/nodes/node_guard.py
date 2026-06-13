@@ -1,8 +1,6 @@
 import logging
 from datetime import datetime, timezone, timedelta
 
-import httpx
-
 from app.config import settings
 from app.database import get_pool
 from app.graph.state import AgentState
@@ -112,26 +110,14 @@ async def node_guard(state: AgentState) -> AgentState:
     # ── Size resolution (opening actions) ───────────────────────────────
     if action in ('open_long', 'open_short'):
         try:
-            account_id = sc.get('account_id', '')
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                resp = await client.get(
-                    f"{settings.matp_executor_url}/accounts/{account_id}/balance"
-                )
-                resp.raise_for_status()
-                bal = resp.json()
-                usdt_balance = float(
-                    bal.get('available_balance') or bal.get('total_balance') or 0
-                )
-
-            size_pct      = min(float(signal['size_pct']), float(rc.get('max_position_size_pct') or 5.0))
             leverage      = int(sc.get('default_leverage') or 1)
-            usdt_margin   = usdt_balance * size_pct / 100.0
+            margin        = float(sc.get('margin_per_trade') or 5.0)
             current_price = float((state.get('ohlcv_data') or {}).get('current_price') or 0)
 
             if current_price <= 0:
                 return _reject(state, 'size_resolution_failed')
 
-            base_qty = round((usdt_margin * leverage) / current_price, 4)
+            base_qty = round((margin * leverage) / current_price, 4)
             sl_pct   = float(signal['stop_loss_pct'])
             tp_pct   = float(signal['take_profit_pct'])
 
