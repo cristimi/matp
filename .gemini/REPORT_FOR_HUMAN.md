@@ -737,4 +737,4 @@ A third position (`e2e-ai-test-btc-f376` BTC short, opened during testing) does 
 | emergency_exit_pct column | left for follow-up (dead, unused) |
 | open at deploy | ⚠️ 2 pre-existing positions — backfill SLs recommended |
 
-**Final commit hash:** (appended after commit)
+**Final commit hash:** e3c9efc
