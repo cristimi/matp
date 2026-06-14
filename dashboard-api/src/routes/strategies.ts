@@ -119,14 +119,14 @@ router.get('/', async (_req: Request, res: Response) => {
           1)::float
         END                AS win_rate,
         CASE
-          WHEN COALESCE(s.capital_allocation_percent, 0) = 0 THEN 0::float
+          WHEN COALESCE(s.capital_allocation, 0) = 0 THEN 0::float
           ELSE ROUND(
             COALESCE((
               SELECT SUM(sp.pnl_realized)
               FROM strategy_positions sp
               WHERE sp.strategy_id = s.id AND sp.status = 'closed'
             ), 0)::numeric /
-            NULLIF(s.capital_allocation_percent, 0)::numeric * 100,
+            NULLIF(s.capital_allocation, 0)::numeric * 100,
           2)::float
         END                AS total_return,
         aic.dry_run                AS ai_dry_run,
@@ -195,7 +195,6 @@ router.post('/', async (req: Request, res: Response) => {
     max_position_size          = 1.0,
     max_leverage               = 10,
     max_daily_signals          = 500,
-    capital_allocation_percent = 100,
     capital_allocation         = 100,
     margin_per_trade           = 5,
     max_drawdown_pct           = 50,
@@ -271,7 +270,6 @@ router.post('/', async (req: Request, res: Response) => {
         webhook_secret, webhook_enabled,
         default_leverage, margin_mode,
         max_position_size, max_leverage, max_daily_signals,
-        capital_allocation_percent,
         capital_allocation, margin_per_trade, max_drawdown_pct,
         allow_quote_variants, allow_cross_charting,
         strategy_source, enabled
@@ -280,17 +278,15 @@ router.post('/', async (req: Request, res: Response) => {
         'webhook', '',
         $7, true,
         $8, $9, $10, $11, $12,
-        $13,
-        $14, $15, $16,
-        $17, $18,
-        $19, true
+        $13, $14, $15,
+        $16, $17,
+        $18, true
       )`,
       [
         id, name, normalisedSymbol, account_id, interval, description,
         webhookSecret,
         default_leverage, margin_mode,
         max_position_size, max_leverage, max_daily_signals,
-        capital_allocation_percent,
         Number(capital_allocation), Number(margin_per_trade), Number(max_drawdown_pct),
         allow_quote_variants, allow_cross_charting,
         strategy_source,

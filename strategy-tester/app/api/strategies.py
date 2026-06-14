@@ -28,7 +28,6 @@ class StrategyCreate(BaseModel):
     max_position_size: float = 1.0
     max_leverage: int = 10
     max_daily_signals: int = 500
-    capital_allocation_percent: float = 100.0
     allow_quote_variants: bool = False
     allow_cross_charting: bool = False
 
@@ -44,7 +43,6 @@ class StrategyUpdate(BaseModel):
     max_position_size: float | None = None
     max_leverage: int | None = None
     max_daily_signals: int | None = None
-    capital_allocation_percent: float | None = None
     allow_quote_variants: bool | None = None
     allow_cross_charting: bool | None = None
 
@@ -104,7 +102,6 @@ async def create_strategy(body: StrategyCreate):
                     webhook_secret, webhook_enabled,
                     default_leverage, margin_mode,
                     max_position_size, max_leverage, max_daily_signals,
-                    capital_allocation_percent,
                     allow_quote_variants, allow_cross_charting,
                     enabled
                 ) VALUES (
@@ -113,8 +110,7 @@ async def create_strategy(body: StrategyCreate):
                     $6, false,
                     $7, $8,
                     $9, $10, $11,
-                    $12,
-                    $13, $14,
+                    $12, $13,
                     true
                 )
                 """,
@@ -123,7 +119,6 @@ async def create_strategy(body: StrategyCreate):
                 webhook_secret,
                 body.default_leverage, body.margin_mode,
                 body.max_position_size, body.max_leverage, body.max_daily_signals,
-                body.capital_allocation_percent,
                 body.allow_quote_variants, body.allow_cross_charting,
             )
             await conn.execute(
@@ -197,17 +192,15 @@ async def update_strategy(strategy_id: str, body: StrategyUpdate):
                 max_position_size          = COALESCE($8,  max_position_size),
                 max_leverage               = COALESCE($9,  max_leverage),
                 max_daily_signals          = COALESCE($10, max_daily_signals),
-                capital_allocation_percent = COALESCE($11, capital_allocation_percent),
-                allow_quote_variants       = COALESCE($12, allow_quote_variants),
-                allow_cross_charting       = COALESCE($13, allow_cross_charting),
+                allow_quote_variants       = COALESCE($11, allow_quote_variants),
+                allow_cross_charting       = COALESCE($12, allow_cross_charting),
                 updated_at                 = NOW()
-            WHERE id = $14 AND is_deleted = false
+            WHERE id = $13 AND is_deleted = false
             RETURNING id, name, symbol, interval, enabled, updated_at
             """,
             body.name, normalised_symbol, body.interval, body.enabled, body.description,
             body.default_leverage, body.margin_mode,
             body.max_position_size, body.max_leverage, body.max_daily_signals,
-            body.capital_allocation_percent,
             body.allow_quote_variants, body.allow_cross_charting,
             strategy_id,
         )

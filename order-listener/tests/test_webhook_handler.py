@@ -46,7 +46,6 @@ SAFE_STRATEGY = {
     "max_position_size":         1.0,
     "max_leverage":              20,
     "pnl_today":                 0.0,
-    "capital_allocation_percent": 100.0,
 }
 
 

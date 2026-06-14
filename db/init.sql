@@ -79,7 +79,6 @@ CREATE TABLE IF NOT EXISTS strategies (
     max_daily_signals          INTEGER               DEFAULT 500,
     max_position_size          NUMERIC               DEFAULT 1.0,
     max_leverage               INTEGER               DEFAULT 10,
-    capital_allocation_percent NUMERIC               DEFAULT 100,
     signals_today              INTEGER               DEFAULT 0,
     pnl_today                  NUMERIC               DEFAULT 0,
     pnl_total                  NUMERIC               DEFAULT 0,
