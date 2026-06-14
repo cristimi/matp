@@ -108,6 +108,10 @@ export interface Strategy {
   last_signal_at: string | null;
   win_rate: number;
   total_trades: number;
+  capital_allocation: number;
+  margin_per_trade: number;
+  max_drawdown_pct: number;
+  total_return?: number;
 }
 
 export interface StrategyStats {

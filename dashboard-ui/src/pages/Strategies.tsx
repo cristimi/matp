@@ -30,6 +30,9 @@ interface Strategy {
   allocated?:           number;
   pnl_fees?:            number;
   total_return?:        number;
+  capital_allocation?:  number;
+  margin_per_trade?:    number;
+  max_drawdown_pct?:    number;
   uptime_label?:        string;
   last_signal_at?:      string;
   stopped_at?:          string;
@@ -588,6 +591,7 @@ const TV_FORM_DEFAULTS = {
   default_leverage: '1',
   max_position_size: '1.0', max_leverage: '10',
   max_daily_signals: '500',
+  capital_allocation: '0', margin_per_trade: '0', max_drawdown_pct: '0',
   allow_quote_variants: false, allow_cross_charting: false,
 };
 
@@ -740,6 +744,8 @@ export default function Strategies() {
     }
   };
 
+  const [toast, setToast] = useState<string | null>(null);
+
   const [editTarget,  setEditTarget]  = useState<Strategy | null>(null);
   const [editForm,    setEditForm]    = useState<any>({});
   const [editLoading, setEditLoading] = useState(false);
@@ -760,6 +766,9 @@ export default function Strategies() {
       max_leverage:               String(strategy.max_leverage ?? 10),
       max_position_size:          String(strategy.max_position_size ?? 1),
       max_daily_signals:          String(strategy.max_daily_signals ?? 500),
+      capital_allocation:         String(strategy.capital_allocation ?? 0),
+      margin_per_trade:           String(strategy.margin_per_trade ?? 0),
+      max_drawdown_pct:           String(strategy.max_drawdown_pct ?? 0),
       allow_quote_variants:       strategy.allow_quote_variants ?? false,
       allow_cross_charting:       strategy.allow_cross_charting ?? false,
     });
@@ -868,16 +877,23 @@ export default function Strategies() {
           headers: { 'Content-Type': 'application/json' },
           body:    JSON.stringify({
             ...editForm,
-            default_leverage:           parseInt(editForm.default_leverage),
-            max_leverage:               parseInt(editForm.max_leverage),
-            max_position_size:          parseFloat(editForm.max_position_size),
-            max_daily_signals:          parseInt(editForm.max_daily_signals),
+            default_leverage:   parseInt(editForm.default_leverage),
+            max_leverage:       parseInt(editForm.max_leverage),
+            max_position_size:  parseFloat(editForm.max_position_size),
+            max_daily_signals:  parseInt(editForm.max_daily_signals),
+            capital_allocation: parseFloat(editForm.capital_allocation),
+            margin_per_trade:   parseFloat(editForm.margin_per_trade),
+            max_drawdown_pct:   parseFloat(editForm.max_drawdown_pct),
           }),
         });
+        const data = await res.json();
         if (!res.ok) {
-          const err = await res.json();
-          setEditError(err.error || 'Failed to update strategy');
+          setEditError(data.error || 'Failed to update strategy');
           return;
+        }
+        if (data.drawdown_anchor_reset) {
+          setToast('Drawdown anchor reset — tracking restarts from current equity.');
+          setTimeout(() => setToast(null), 5000);
         }
         setEditTarget(null);
         setWebhookInfo(null);
@@ -929,11 +945,14 @@ export default function Strategies() {
           headers: { 'Content-Type': 'application/json' },
           body:    JSON.stringify({
             ...addForm,
-            strategy_source:            'tradingview',
-            default_leverage:           parseInt(addForm.default_leverage),
-            max_position_size:          parseFloat(addForm.max_position_size),
-            max_leverage:               parseInt(addForm.max_leverage),
-            max_daily_signals:          parseInt(addForm.max_daily_signals),
+            strategy_source:    'tradingview',
+            default_leverage:   parseInt(addForm.default_leverage),
+            max_position_size:  parseFloat(addForm.max_position_size),
+            max_leverage:       parseInt(addForm.max_leverage),
+            max_daily_signals:  parseInt(addForm.max_daily_signals),
+            capital_allocation: parseFloat(addForm.capital_allocation),
+            margin_per_trade:   parseFloat(addForm.margin_per_trade),
+            max_drawdown_pct:   parseFloat(addForm.max_drawdown_pct),
           }),
         });
         const data = await res.json();
@@ -1327,6 +1346,38 @@ export default function Strategies() {
                     </div>
                   ))}
                 </div>
+
+                <SectionDivider label="Capital & Risk" />
+                <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:'10px', marginBottom:'14px' }}>
+                  <div>
+                    <label style={labelStyle}>Capital ($)</label>
+                    <input type="number" step="0.01" min="0"
+                      value={addForm.capital_allocation}
+                      onChange={e => setAddForm(f => ({ ...f, capital_allocation: e.target.value }))}
+                      style={inputStyle} />
+                  </div>
+                  <div>
+                    <label style={labelStyle}>Margin / Trade ($)</label>
+                    <input type="number" step="0.01" min="0"
+                      value={addForm.margin_per_trade}
+                      onChange={e => setAddForm(f => ({ ...f, margin_per_trade: e.target.value }))}
+                      style={inputStyle} />
+                  </div>
+                  <div>
+                    <label style={labelStyle}>Max Drawdown %</label>
+                    <input type="number" step="0.1" min="0"
+                      value={addForm.max_drawdown_pct}
+                      onChange={e => setAddForm(f => ({ ...f, max_drawdown_pct: e.target.value }))}
+                      style={inputStyle} />
+                  </div>
+                </div>
+                {parseFloat(addForm.margin_per_trade) > 0 && parseFloat(addForm.default_leverage) > 0 && (
+                  <p style={{ fontSize:'11px', color:'var(--dim)', marginBottom:'14px' }}>
+                    Max order size: <strong style={{ color:'var(--text)', fontFamily:'JetBrains Mono, monospace' }}>
+                      ${(parseFloat(addForm.margin_per_trade) * parseFloat(addForm.default_leverage)).toFixed(2)}
+                    </strong> (margin × leverage)
+                  </p>
+                )}
 
                 <div style={{
                   display:'flex', gap:'20px', marginBottom:'20px',
@@ -1931,6 +1982,43 @@ export default function Strategies() {
                   ))}
                 </div>
 
+                <SectionDivider label="Capital & Risk" />
+                <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:'10px', marginBottom:'14px' }}>
+                  <div>
+                    <label style={labelStyle}>Capital ($)</label>
+                    <input type="number" step="0.01" min="0"
+                      value={editForm.capital_allocation ?? '0'}
+                      onChange={e => setEditForm((f:any) => ({ ...f, capital_allocation: e.target.value }))}
+                      style={inputStyle} />
+                    {editTarget && parseFloat(editForm.capital_allocation ?? '0') !== (editTarget.capital_allocation ?? 0) && (
+                      <p style={{ fontSize:'10px', color:'#d97706', marginTop:'4px' }}>
+                        Changing capital allocation will reset the drawdown anchor.
+                      </p>
+                    )}
+                  </div>
+                  <div>
+                    <label style={labelStyle}>Margin / Trade ($)</label>
+                    <input type="number" step="0.01" min="0"
+                      value={editForm.margin_per_trade ?? '0'}
+                      onChange={e => setEditForm((f:any) => ({ ...f, margin_per_trade: e.target.value }))}
+                      style={inputStyle} />
+                  </div>
+                  <div>
+                    <label style={labelStyle}>Max Drawdown %</label>
+                    <input type="number" step="0.1" min="0"
+                      value={editForm.max_drawdown_pct ?? '0'}
+                      onChange={e => setEditForm((f:any) => ({ ...f, max_drawdown_pct: e.target.value }))}
+                      style={inputStyle} />
+                  </div>
+                </div>
+                {parseFloat(editForm.margin_per_trade ?? '0') > 0 && parseFloat(editForm.default_leverage ?? '0') > 0 && (
+                  <p style={{ fontSize:'11px', color:'var(--dim)', marginBottom:'14px' }}>
+                    Max order size: <strong style={{ color:'var(--text)', fontFamily:'JetBrains Mono, monospace' }}>
+                      ${(parseFloat(editForm.margin_per_trade) * parseFloat(editForm.default_leverage)).toFixed(2)}
+                    </strong> (margin × leverage)
+                  </p>
+                )}
+
                 <div style={{
                   display:'flex', gap:'20px', marginBottom:'20px',
                   padding:'10px 14px', background:'var(--bg3)',
@@ -2167,6 +2255,19 @@ export default function Strategies() {
       )}
 
       {/* ── Webhook Secret Display — shown once after TV strategy creation ── */}
+      {toast && (
+        <div style={{
+          position:'fixed', bottom:'24px', right:'24px',
+          background:'#1a1a1a', border:'1px solid #d97706',
+          borderRadius:'8px', padding:'12px 16px',
+          fontSize:'13px', color:'#d97706', fontWeight:600,
+          boxShadow:'0 4px 16px rgba(0,0,0,.4)', zIndex:1100,
+          maxWidth:'360px',
+        }}>
+          {toast}
+        </div>
+      )}
+
       {createdSecret && (
         <div style={{
           position:'fixed', inset:0, background:'rgba(0,0,0,.55)',

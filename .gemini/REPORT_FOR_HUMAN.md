@@ -806,3 +806,52 @@ DB confirms: `status=closed`, `closing_price=59.699`, `pnl_realized=-5.84`.
 | 0a5745d8 | test-strategy-4-4750 | HYPE-USDT | short | ✅ Closed (fill 59.699, pnl -5.84) |
 
 All pre-deploy unmonitored positions are now either SL-protected or closed.
+
+---
+
+## Task: UI #3 — Capital-Allocation Config Fields + Accounts Allocated/Free
+
+**Date:** 2026-06-14
+
+### Changes
+
+**Part A — `dashboard-ui/src/api.ts`**
+Added to `Strategy` interface:
+- `capital_allocation: number`
+- `margin_per_trade: number`
+- `max_drawdown_pct: number`
+- `total_return?: number`
+
+**Part B — `dashboard-ui/src/pages/Strategies.tsx`**
+- Local `Strategy` interface: added `capital_allocation?`, `margin_per_trade?`, `max_drawdown_pct?`
+- `TV_FORM_DEFAULTS`: added `capital_allocation: '0'`, `margin_per_trade: '0'`, `max_drawdown_pct: '0'`
+- `handleEdit`: populates 3 new fields into `editForm` from the strategy object
+- `handleEditSubmit` (TV branch): sends 3 new fields (parsed as float) in PUT body; reads response JSON before checking `res.ok`; if `data.drawdown_anchor_reset === true`, shows 5-second amber toast
+- `handleAddStrategy` (TV branch): sends 3 new fields (parsed as float) in POST body
+- Add modal TV form: new "Capital & Risk" section (3-column grid: Capital $, Margin/Trade $, Max Drawdown %) + live max-order-size preview (`margin × leverage`) shown when both > 0
+- Edit modal TV form: same "Capital & Risk" section with inline amber warning under Capital field when value differs from saved; same max-order-size preview
+- Toast component: fixed bottom-right amber banner, auto-dismisses after 5 s
+
+**Part C — `dashboard-ui/src/pages/Accounts.tsx`**
+- Added `strategies` state and `fetchStrategies()` (fetches `/api/dashboard/strategies` on mount)
+- Row 3 (balance bar) extended from 3 to 5 cells: Equity, Available, Used, Allocated, Free
+  - Allocated = Σ `capital_allocation` of strategies assigned to the account
+  - Free = Equity − Allocated; rendered red when negative
+- Row 4 added: compact strategy-name chips (with `$N` capital suffix when > 0) if any strategies exist for the account
+
+**Part D — `StrategyForm.tsx` removed**
+- Deleted `dashboard-ui/src/pages/StrategyForm.tsx`
+- Removed `import StrategyForm from './pages/StrategyForm'` from `App.tsx`
+- Removed routes `/strategies/new` and `/strategies/:id/edit` from `App.tsx`
+
+### Verification
+
+| Check | Result |
+|---|---|
+| V1: api.ts — 4 new fields in Strategy interface | ✅ lines 111-114 |
+| V2: Strategies.tsx — fields in interface, defaults, handleEdit, handleEditSubmit, handleAddStrategy, both modal UIs | ✅ 30 references confirmed |
+| V3: drawdown_anchor_reset toast in Strategies.tsx; strategies fetch + Allocated/Free in Accounts.tsx | ✅ confirmed |
+| V4: StrategyForm.tsx deleted; import + 2 routes removed from App.tsx | ✅ file gone, grep clean |
+| V5: dashboard-ui serving (HTTP 200) | ✅ |
+| TypeScript build: `tsc && vite build` | ✅ clean (no errors) |
+

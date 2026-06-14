@@ -27,9 +27,10 @@ interface AccountMeta {
 const API = '/api/dashboard';
 
 export default function Accounts() {
-  const [accounts, setAccounts]   = useState<Account[]>([]);
-  const [balances, setBalances]   = useState<Record<string, Balance>>({});
-  const [metas,    setMetas]      = useState<Record<string, AccountMeta>>({});
+  const [accounts,   setAccounts]   = useState<Account[]>([]);
+  const [balances,   setBalances]   = useState<Record<string, Balance>>({});
+  const [metas,      setMetas]      = useState<Record<string, AccountMeta>>({});
+  const [strategies, setStrategies] = useState<{id:string; name:string; account_id:string; capital_allocation:number}[]>([]);
   const [loading,  setLoading]    = useState(true);
   const [showAdd,      setShowAdd]      = useState(false);
   const [credAccount,  setCredAccount]  = useState<Account | null>(null);
@@ -96,11 +97,20 @@ export default function Accounts() {
     }
   }, []);
 
+  const fetchStrategies = useCallback(async () => {
+    try {
+      const res  = await fetch(`${API}/strategies`);
+      const data = await res.json();
+      setStrategies(Array.isArray(data) ? data : []);
+    } catch {}
+  }, []);
+
   useEffect(() => {
     fetchAccounts();
+    fetchStrategies();
     const interval = setInterval(fetchAccounts, 60000);
     return () => clearInterval(interval);
-  }, [fetchAccounts]);
+  }, [fetchAccounts, fetchStrategies]);
 
   // Aggregate totals across all active accounts
   const totalBalance     = Object.values(balances).reduce((s, b) => s + (b.total_balance     || 0), 0);
@@ -331,35 +341,78 @@ export default function Accounts() {
                 </div>
 
                 {/* Row 3: Balance Data */}
-                <div style={{
-                  display:'flex', background:'var(--bg2)',
-                  borderTop:'1px solid var(--border)',
-                }}>
-                  {[
-                    { label:'Equity', value: bal ? `${bal.total_balance.toFixed(2)} ${bal.currency}` : '---' },
-                    { label:'Available', value: bal ? `${bal.available_balance.toFixed(2)} ${bal.currency}` : '---' },
-                    { label:'Used', value: bal ? `${bal.used_margin.toFixed(2)} ${bal.currency}` : '---' },
-                  ].map((cell, idx) => (
-                    <div key={cell.label} style={{
-                      flex:1, padding:'10px 12px', display:'flex',
-                      flexDirection:'column', gap:'2px',
-                      borderRight: idx < 2 ? '1px solid var(--border)' : 'none',
-                    }}>
-                      <span style={{
-                        fontSize:'10px', fontWeight:600, textTransform:'uppercase',
-                        color:'var(--dim)', letterSpacing:'.04em',
-                      }}>
-                        {cell.label}
-                      </span>
-                      <span style={{
-                        fontFamily:'JetBrains Mono, monospace', fontSize:'13px',
-                        fontWeight:700, color:'var(--text)',
-                      }}>
-                        {cell.value}
-                      </span>
+                {(() => {
+                  const allocated = strategies
+                    .filter(s => s.account_id === acc.id)
+                    .reduce((sum, s) => sum + (s.capital_allocation || 0), 0);
+                  const equity = bal?.total_balance || 0;
+                  const free   = equity - allocated;
+                  const cur    = bal?.currency || 'USDT';
+                  const cells = [
+                    { label:'Equity',    value: bal ? `${equity.toFixed(2)} ${cur}` : '---',                      color:'var(--text)' },
+                    { label:'Available', value: bal ? `${bal.available_balance.toFixed(2)} ${cur}` : '---',       color:'var(--text)' },
+                    { label:'Used',      value: bal ? `${bal.used_margin.toFixed(2)} ${cur}` : '---',             color:'var(--text)' },
+                    { label:'Allocated', value: `${allocated.toFixed(2)} ${cur}`,                                 color:'var(--text)' },
+                    { label:'Free',      value: `${free.toFixed(2)} ${cur}`,                                      color: free < 0 ? 'var(--red)' : 'var(--green)' },
+                  ];
+                  return (
+                    <div style={{ display:'flex', background:'var(--bg2)', borderTop:'1px solid var(--border)' }}>
+                      {cells.map((cell, idx) => (
+                        <div key={cell.label} style={{
+                          flex:1, padding:'10px 12px', display:'flex',
+                          flexDirection:'column', gap:'2px',
+                          borderRight: idx < cells.length - 1 ? '1px solid var(--border)' : 'none',
+                        }}>
+                          <span style={{
+                            fontSize:'10px', fontWeight:600, textTransform:'uppercase',
+                            color:'var(--dim)', letterSpacing:'.04em',
+                          }}>
+                            {cell.label}
+                          </span>
+                          <span style={{
+                            fontFamily:'JetBrains Mono, monospace', fontSize:'13px',
+                            fontWeight:700, color: cell.color,
+                          }}>
+                            {cell.value}
+                          </span>
+                        </div>
+                      ))}
                     </div>
-                  ))}
-                </div>
+                  );
+                })()}
+
+                {/* Row 4: Strategies */}
+                {(() => {
+                  const acctStrategies = strategies.filter(s => s.account_id === acc.id);
+                  if (acctStrategies.length === 0) return null;
+                  return (
+                    <div style={{ borderTop:'1px solid var(--border)', padding:'8px 12px 8px 18px' }}>
+                      <span style={{
+                        fontSize:'9px', fontWeight:600, textTransform:'uppercase',
+                        letterSpacing:'.1em', color:'var(--dim)',
+                      }}>
+                        Strategies
+                      </span>
+                      <div style={{ display:'flex', flexWrap:'wrap', gap:'4px', marginTop:'5px' }}>
+                        {acctStrategies.map(s => (
+                          <span key={s.id} style={{
+                            fontFamily:'JetBrains Mono, monospace', fontSize:'10px',
+                            color:'var(--muted)', background:'var(--bg2)',
+                            border:'1px solid var(--border)', borderRadius:'4px',
+                            padding:'2px 6px',
+                          }}>
+                            {s.name}
+                            {s.capital_allocation > 0 && (
+                              <span style={{ color:'var(--dim)', marginLeft:'4px' }}>
+                                ${s.capital_allocation.toFixed(0)}
+                              </span>
+                            )}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })()}
 
                 {/* Hover Actions */}
                 <div style={{
