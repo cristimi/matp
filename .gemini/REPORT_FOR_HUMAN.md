@@ -484,3 +484,92 @@ DO
 - dashboard-api ✅
 - dashboard-ui ✅
 - strategy-tester ✅
+
+---
+
+## Task 5 — cleanup(capital-allocation): Drop capital_allocation_percent + Repoint total_return (migration 019)
+
+**Commit:** `0e2e65b` — branch `feat/strategy-tester`  
+**Date:** 2026-06-14
+
+### What was removed
+- `capital_allocation_percent` removed from all INSERT/UPDATE/SELECT in:
+  - `dashboard-api/src/routes/strategies.ts` (INSERT renumbered to remove $13 gap; `total_return` denominator repointed from `capital_allocation_percent` → `capital_allocation`)
+  - `order-listener/tests/test_webhook_handler.py` (removed from `SAFE_STRATEGY` dict)
+  - `strategy-tester/app/api/strategies.py` (StrategyCreate, StrategyUpdate, INSERT $12→removed, UPDATE $11→removed, renumbered to $12/$13)
+  - `strategy-tester/app/api/migrate.py` (both cross-schema copy flows: public→tester and tester→public)
+  - `db/init.sql` (`capital_allocation_percent NUMERIC DEFAULT 100` line removed)
+- Migration 019 created and applied
+
+### Repointed total_return (substantive change)
+Old formula (divided by %-based field, default 100):
+```sql
+CASE
+  WHEN COALESCE(s.capital_allocation_percent, 0) = 0 THEN 0::float
+  ELSE ROUND(... / NULLIF(s.capital_allocation_percent, 0)::numeric * 100, 2)::float
+END AS total_return
+```
+
+New formula (divides by $ bankroll):
+```sql
+CASE
+  WHEN COALESCE(s.capital_allocation, 0) = 0 THEN 0::float
+  ELSE ROUND(
+    COALESCE((SELECT SUM(sp.pnl_realized) FROM strategy_positions sp
+              WHERE sp.strategy_id = s.id AND sp.status = 'closed'), 0)::numeric /
+    NULLIF(s.capital_allocation, 0)::numeric * 100,
+  2)::float
+END AS total_return
+```
+
+### Grep sweep (clean)
+```
+grep -rn "capital_allocation_percent" \
+  ai-signal-generator/ order-listener/ dashboard-api/src/ \
+  dashboard-ui/src/ strategy-tester/app/ db/init.sql → (no output)
+```
+
+### Migration 019 output
+```
+ALTER TABLE
+ALTER TABLE
+NOTICE:  Migration 019 verified OK — capital_allocation_percent gone from both schemas
+DO
+```
+
+### \d public.strategies (relevant columns after)
+```
+ capital_allocation   | numeric | not null | 100
+ max_drawdown_pct     | numeric | not null | 50
+ drawdown_anchor_pnl  | numeric | not null | 0
+```
+`capital_allocation_percent` absent ✅  
+`capital_allocation_percent` absent from tester.strategies ✅
+
+### Sanity check — total_return with capital_allocation=200 and realized PnL=+50
+```sql
+SELECT
+  CASE
+    WHEN COALESCE(200, 0) = 0 THEN 0::float
+    ELSE ROUND(50::numeric / NULLIF(200, 0)::numeric * 100, 2)::float
+  END AS total_return;
+-- total_return = 25  ✅  (not 50)
+```
+
+### Live API spot-check (GET /strategies from dashboard-api)
+```
+hltest-76b3:          capital_allocation=100, realized_pnl=72.77, total_return=72.77 ✅
+e2e-ai-test-btc-f376: capital_allocation=100, realized_pnl=1.39,  total_return=1.39  ✅
+test_blofin_demo_01:  capital_allocation=100, realized_pnl=9.83,  total_return=9.83  ✅
+```
+Formula confirmed: SUM(pnl_realized) / capital_allocation × 100.
+
+### Listener test suite
+```
+29 passed, 2 warnings in 6.61s  ✅
+```
+
+### All 3 edited services rebuilt --no-cache and healthy ✅
+- dashboard-api ✅ (built --no-cache, restarted healthy)
+- order-listener ✅ (pytest 29/29)
+- strategy-tester ✅ (built --no-cache, healthy)
