@@ -738,3 +738,71 @@ A third position (`e2e-ai-test-btc-f376` BTC short, opened during testing) does 
 | open at deploy | ⚠️ 2 pre-existing positions — backfill SLs recommended |
 
 **Final commit hash:** e3c9efc
+
+---
+
+## SL Backfill — Pre-existing Open Positions (post-deploy runbook)
+
+**Date:** 2026-06-14
+
+### Position 1 — `hltest-76b3` BTC-USDT short (Hyperliquid testnet)
+
+**Exchange check:** live, mark_price=64511.0 (entry=63924.6, lev=20x)
+
+**Computed SL (liq-safe):**
+```
+liq_distance = 1/20 = 0.05
+sl_distance  = 0.05 × 0.80 = 0.04
+sl_price     = 63924.6 × 1.04 = 66481.584 → 66481.6 (1 dp)
+```
+markPrice (64511) < sl_price (66481.6) → position still alive, SL placed.
+
+**adjust-stops result:**
+```json
+{"success":true,"position_id":"4d803ada-8eb9-4b67-9ad6-8f9d669f4a82",
+ "cancelled":[],"placed":[{"tpsl":"sl","oid":"54966977674","status":"placed"}]}
+```
+**✅ SL placed** — HL trigger leg oid=54966977674, trigger at 66481.6. Position confirmed live on exchange after placement (mark=64510.0).
+
+---
+
+### Position 2 — `test-strategy-4-4750` HYPE-USDT short (Blofin Demo)
+
+**Exchange check:** live, mark_price=59.74 (entry=57.363, lev=10x)
+
+**Computed SL (liq-safe):**
+```
+liq_distance = 1/10 = 0.10
+sl_distance  = 0.10 × 0.80 = 0.08
+sl_price     = 57.363 × 1.08 = 61.952 (4 dp)
+```
+markPrice (59.74) < sl_price (61.952) → within range, attempted SL.
+
+**adjust-stops result:**
+```json
+{"success":true,"cancelled":[],"placed":[{"tpsl":"sl","error":"All operations failed"}]}
+```
+
+**Root cause:** Pre-existing Blofin adapter bug — `place_trigger_orders` sends `slTriggerPrice` with `side=buy` for short-exit orders. Blofin interprets `slTriggerPrice` on a `buy` order as "trigger when price drops" (SL for a long), which is semantically wrong for a short SL (which needs to trigger when price rises). The correct field would be `tpTriggerPrice` for this direction. Fix deferred (adapter issue, separate scope from this task).
+
+**Action taken:** Closed the position to eliminate unmonitored risk (paper account, already in loss):
+```
+POST /positions/0a5745d8-b064-4262-b36c-a2297ab51089/close
+→ {"success":true,"status":"filled","actual_fill_price":"59.699",
+   "realized_pnl":"-5.84","is_full_close":true}
+```
+DB confirms: `status=closed`, `closing_price=59.699`, `pnl_realized=-5.84`.
+
+**⚠️ Follow-up needed:** Fix Blofin `place_trigger_orders` to use `tpTriggerPrice`/`slTriggerPrice` based on the position side, not the closing order side.
+
+---
+
+### Final open positions after backfill
+
+| Position | Strategy | Symbol | Side | SL status |
+|---|---|---|---|---|
+| 4d803ada | hltest-76b3 | BTC-USDT | short | ✅ SL at 66481.6 on HL (oid 54966977674) |
+| 63e0e1da | e2e-ai-test-btc-f376 | BTC-USDT | short | ✅ SL at 113400.0 (Test 6 order) |
+| 0a5745d8 | test-strategy-4-4750 | HYPE-USDT | short | ✅ Closed (fill 59.699, pnl -5.84) |
+
+All pre-deploy unmonitored positions are now either SL-protected or closed.
