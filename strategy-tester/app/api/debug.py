@@ -136,8 +136,7 @@ async def debug_invoke_graph(body: InvokeGraphRequest):
                    aic.confidence_threshold, aic.cooldown_entry_minutes,
                    aic.cooldown_stop_adj_minutes, aic.dry_run,
                    aic.custom_instructions,
-                   arc.max_position_size_pct, arc.max_daily_loss_pct,
-                   arc.max_drawdown_pct, arc.max_concurrent_trades
+                   arc.max_position_size_pct, arc.max_concurrent_trades
             FROM tester.strategies s
             LEFT JOIN tester.ai_strategy_config aic ON aic.strategy_id = s.id
             LEFT JOIN tester.ai_risk_config arc     ON arc.strategy_id = s.id
@@ -204,8 +203,6 @@ async def debug_invoke_graph(body: InvokeGraphRequest):
     }
     risk_config = {
         'max_position_size_pct': float(strategy_row['max_position_size_pct'] or 5.0),
-        'max_daily_loss_pct':    float(strategy_row['max_daily_loss_pct'] or 3.0),
-        'max_drawdown_pct':      float(strategy_row['max_drawdown_pct'] or 8.0),
         'max_concurrent_trades': int(strategy_row['max_concurrent_trades'] or 1),
     }
 

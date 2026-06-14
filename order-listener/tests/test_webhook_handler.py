@@ -46,8 +46,6 @@ SAFE_STRATEGY = {
     "max_position_size":         1.0,
     "max_leverage":              20,
     "pnl_today":                 0.0,
-    "max_daily_drawdown_percent": 20.0,
-    "capital_allocation_percent": 100.0,
 }
 
 
@@ -219,26 +217,6 @@ async def test_excessive_leverage_returns_422():
             )
         assert resp.status_code == 422
         assert "leverage" in resp.json().get("detail", "").lower()
-
-
-# ── Risk Guard 4: Daily drawdown stop ────────────────────────────────
-
-@pytest.mark.asyncio
-async def test_drawdown_breach_returns_429_and_disables():
-    from app.main import app
-    pool, conn = make_mock_db({"pnl_today": -25.0, "max_daily_drawdown_percent": 20.0})
-
-    with patch("app.webhook_handler.get_pool", return_value=pool):
-        async with AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            resp = await client.post(
-                f"/webhook/{STRATEGY_ID}", json=BASE_PAYLOAD
-            )
-        assert resp.status_code == 429
-        assert "drawdown" in resp.json().get("detail", "").lower()
-        # Verify the DB was called to disable the strategy
-        assert conn.execute.called
 
 
 # ── Disabled strategy ────────────────────────────────────────────────

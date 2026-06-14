@@ -99,7 +99,6 @@ export interface Strategy {
   margin_mode: 'isolated' | 'cross';
   max_position_size: number;
   max_leverage: number;
-  max_daily_drawdown_percent: number;
   allow_quote_variants: boolean;
   allow_cross_charting: boolean;
   pnl_today: number;

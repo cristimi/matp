@@ -132,7 +132,6 @@ class AdaptiveScheduler:
             strategy = await conn.fetchrow(
                 """
                 SELECT s.*, a.*, r.max_position_size_pct,
-                       r.max_daily_loss_pct, r.max_drawdown_pct,
                        r.max_concurrent_trades
                 FROM strategies s
                 JOIN ai_strategy_config a ON a.strategy_id = s.id
@@ -189,8 +188,6 @@ class AdaptiveScheduler:
             'strategy_config': sc,
             'risk_config': {
                 'max_position_size_pct': float(sc.get('max_position_size_pct') or 5.0),
-                'max_daily_loss_pct':    float(sc.get('max_daily_loss_pct') or 3.0),
-                'max_drawdown_pct':      float(sc.get('max_drawdown_pct') or 8.0),
             },
             'trigger_reason':  trigger_reason,
             'cycle_interval':  interval_label,

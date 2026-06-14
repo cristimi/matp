@@ -223,13 +223,11 @@ def _render_macro(state: dict) -> str:
 
 def _render_portfolio(state: dict) -> str:
     rc       = state.get('risk_config') or {}
-    max_loss = _v(rc.get('max_daily_loss_pct'))
     max_size = _v(rc.get('max_position_size_pct'))
 
     lines = [
         'PORTFOLIO CONTEXT:',
         'Account Balance:      (resolved at execution time)',
-        f"Today's P&L:          N/A%  (cap: {max_loss}%)",
         f"Max Position Size:    {max_size}%",
     ]
     if not state.get('position_open'):

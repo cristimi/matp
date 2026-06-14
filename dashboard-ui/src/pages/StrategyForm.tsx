@@ -21,7 +21,6 @@ const StrategyForm = () => {
     margin_mode: 'isolated',
     max_position_size: 1.0,
     max_leverage: 10,
-    max_daily_drawdown_percent: 20,
     config_yaml: '',
     webhook_enabled: true,
     enabled: true
@@ -210,15 +209,6 @@ const StrategyForm = () => {
                 className="w-full bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg px-3 py-2 text-sm"
                 value={formData.max_leverage}
                 onChange={(e) => setFormData({...formData, max_leverage: parseInt(e.target.value)})}
-              />
-            </div>
-            <div className="space-y-1">
-              <label className="text-[10px] font-bold text-gray-400 uppercase">Max DD %</label>
-              <input
-                type="number"
-                className="w-full bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg px-3 py-2 text-sm"
-                value={formData.max_daily_drawdown_percent}
-                onChange={(e) => setFormData({...formData, max_daily_drawdown_percent: parseInt(e.target.value)})}
               />
             </div>
           </div>

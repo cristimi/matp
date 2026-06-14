@@ -22,13 +22,11 @@ const ALLOWED_CONFIG_FIELDS = [
 ];
 
 const RISK_FIELDS = [
-  'max_position_size_pct', 'max_daily_loss_pct', 'max_drawdown_pct', 'max_concurrent_trades',
+  'max_position_size_pct', 'max_concurrent_trades',
 ];
 
 const RISK_DEFAULTS: Record<string, number> = {
   max_position_size_pct: 5.00,
-  max_daily_loss_pct:    3.00,
-  max_drawdown_pct:      8.00,
   max_concurrent_trades: 1,
 };
 
@@ -51,8 +49,6 @@ function formatRiskConfig(row: any): any {
   return {
     ...row,
     max_position_size_pct: Number(row.max_position_size_pct),
-    max_daily_loss_pct:    Number(row.max_daily_loss_pct),
-    max_drawdown_pct:      Number(row.max_drawdown_pct),
   };
 }
 
@@ -141,7 +137,6 @@ router.get('/strategies/:id/config/preview-prompt', async (req: Request, res: Re
       },
       risk_config: {
         max_position_size_pct: riskConfig ? Number(riskConfig.max_position_size_pct) : 5.0,
-        max_daily_loss_pct:    riskConfig ? Number(riskConfig.max_daily_loss_pct)    : 3.0,
       },
       position_open:               false,
       position_side:               null,
@@ -411,8 +406,6 @@ router.get('/strategies/:id/risk-config', async (req: Request, res: Response) =>
       return res.json({
         strategy_id:           req.params.id,
         max_position_size_pct: 5.00,
-        max_daily_loss_pct:    3.00,
-        max_drawdown_pct:      8.00,
         max_concurrent_trades: 1,
         updated_at:            null,
         updated_by:            null,
@@ -436,18 +429,6 @@ router.put('/strategies/:id/risk-config', async (req: Request, res: Response) =>
     const v = Number(body.max_position_size_pct);
     if (isNaN(v) || v <= 0 || v > 20.0) {
       return res.status(400).json({ error: 'max_position_size_pct must be > 0 and <= 20.0' });
-    }
-  }
-  if (body.max_daily_loss_pct !== undefined) {
-    const v = Number(body.max_daily_loss_pct);
-    if (isNaN(v) || v < 0.5 || v > 100.0) {
-      return res.status(400).json({ error: 'max_daily_loss_pct must be >= 0.5 and <= 100.0' });
-    }
-  }
-  if (body.max_drawdown_pct !== undefined) {
-    const v = Number(body.max_drawdown_pct);
-    if (isNaN(v) || v < 1.0 || v > 100.0) {
-      return res.status(400).json({ error: 'max_drawdown_pct must be >= 1.0 and <= 100.0' });
     }
   }
   if (body.max_concurrent_trades !== undefined) {
@@ -476,8 +457,6 @@ router.put('/strategies/:id/risk-config', async (req: Request, res: Response) =>
     // Baseline values for diff comparison
     const baseline: Record<string, number> = currentRow ? {
       max_position_size_pct: Number(currentRow.max_position_size_pct),
-      max_daily_loss_pct:    Number(currentRow.max_daily_loss_pct),
-      max_drawdown_pct:      Number(currentRow.max_drawdown_pct),
       max_concurrent_trades: Number(currentRow.max_concurrent_trades),
     } : { ...RISK_DEFAULTS };
 
