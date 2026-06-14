@@ -15,7 +15,6 @@ from app.database import init_db, get_pool
 from app.graph.graph import build_graph
 from app.prompt.builder import build_prompt, get_estimated_tokens
 from app.scheduler import start_all_schedulers, stop_all_schedulers
-from app.price_monitor import start_all_price_monitors
 from app.event_watcher import start_all_event_watchers
 
 logging.basicConfig(
@@ -51,14 +50,12 @@ async def lifespan(app: FastAPI):
     pool  = get_pool()
     graph = build_graph()
 
-    schedulers     = await start_all_schedulers(pool, graph)
-    monitor_tasks  = await start_all_price_monitors(pool, settings.matp_listener_url)
-    watcher_tasks  = await start_all_event_watchers(pool, graph, schedulers)
+    schedulers    = await start_all_schedulers(pool, graph)
+    watcher_tasks = await start_all_event_watchers(pool, graph, schedulers)
 
     probe_task = asyncio.create_task(_model_probe_loop(), name="model_probe_loop")
 
     app.state.schedulers    = schedulers
-    app.state.monitor_tasks = monitor_tasks
     app.state.watcher_tasks = watcher_tasks
     app.state.graph         = graph
     app.state.probe_task    = probe_task
@@ -69,10 +66,10 @@ async def lifespan(app: FastAPI):
     probe_task.cancel()
     await stop_all_schedulers(schedulers)
 
-    for task in monitor_tasks + watcher_tasks:
+    for task in watcher_tasks:
         task.cancel()
-    if monitor_tasks or watcher_tasks:
-        await asyncio.gather(*(monitor_tasks + watcher_tasks), return_exceptions=True)
+    if watcher_tasks:
+        await asyncio.gather(*watcher_tasks, return_exceptions=True)
 
     logger.info("AI Signal Generator shutdown complete")
 
@@ -167,7 +164,7 @@ async def internal_trigger(body: TriggerRequest):
                 a.indicators, a.lookback_days, a.confidence_threshold,
                 a.cooldown_entry_minutes, a.cooldown_increase_minutes,
                 a.cooldown_stop_adj_minutes, a.template_id, a.custom_instructions,
-                a.dry_run, a.emergency_exit_pct,
+                a.dry_run,
                 a.llm_provider, a.llm_model
             FROM strategies s
             JOIN ai_strategy_config a ON a.strategy_id = s.id

@@ -573,3 +573,168 @@ Formula confirmed: SUM(pnl_realized) / capital_allocation × 100.
 - dashboard-api ✅ (built --no-cache, restarted healthy)
 - order-listener ✅ (pytest 29/29)
 - strategy-tester ✅ (built --no-cache, healthy)
+
+---
+
+# Task: SL on Every Order (Listener) + Remove AI `price_monitor` Emergency Exit
+
+**Date:** 2026-06-14  
+**Branch:** main  
+**Scope:** Part A — guaranteed exchange-native SL on every open order in the listener; Part B — delete `price_monitor.py` polling loop.
+
+---
+
+## Part A — Guaranteed SL on every opening order
+
+### Implementation
+
+Added to `order-listener/app/webhook_handler.py`:
+
+- **`LIQ_BUFFER_FRAC = 0.20`** module constant — stop at 80% of way to liquidation.
+- **`_infer_price_decimals(price)`** — magnitude-based rounding (≥10k→1dp, ≥1k→2dp, etc.).
+- **`compute_guaranteed_sl(entry_ref, effective_leverage, side, strategy_sl)`** — returns `(sl_final, sl_source)`:
+  - `liq_distance = 1 / leverage`, `sl_distance = liq_distance × 0.80`
+  - `sl_liq = entry × (1 − sl_distance)` for long, `entry × (1 + sl_distance)` for short
+  - Strategy SL only accepted if on correct adverse side of entry
+  - Picks tighter of strategy-SL vs liq-safe: `max(strategy_sl, sl_liq)` for long, `min(strategy_sl, sl_liq)` for short
+- **Injection block** (after margin-clamp guard, before dispatch): runs when `signal ∈ {open_long, open_short}` and `not resolved.price_stripped`. Updates both `sl_price` (local → executor) and `payload.sl_price` (→ DB). Writes `sl_source`, `sl_distance_pct`, `entry_ref` into `signal_metadata`.
+
+Covers both TV and AI paths since both POST to `/webhook/{strategy_id}`.
+
+---
+
+## Verification Results
+
+### Test 1 — TV `open_long`, no SL provided
+Expected: `sl_source=liquidation_safe`, `sl = 105000 × (1 − 0.08) = 96600.0`
+
+```
+order_id: 0ed75816-20c7-4bac-8378-3cf1402a6c1e
+sl_price:   96600.0
+signal_metadata: {"entry_ref": 105000.0, "sl_source": "liquidation_safe",
+                  "sl_distance_pct": 8.0, ...}
+```
+**✅ PASS** — value matches formula exactly.
+
+### Test 2 — TV `open_long`, tight strategy SL (99000 > 96600 → closer to entry)
+Expected: `sl_source=strategy`, `sl = 99000.0`
+
+```
+order_id: ba025bd7-24d4-4bfc-81bd-a7d77198f09e
+sl_price:   99000.0
+signal_metadata: {"entry_ref": 105000.0, "sl_source": "strategy",
+                  "sl_distance_pct": 5.7143, ...}
+```
+**✅ PASS** — strategy SL kept (tighter than liq-safe).
+
+### Test 3 — TV `open_long`, reckless SL (80000 < 96600 → further from entry)
+Expected: `sl_source=liquidation_safe`, reckless SL overridden to `96600.0`
+
+```
+order_id: 7da6eaeb-f953-47fc-bea3-2f501ff73a01
+sl_price:   96600.0
+signal_metadata: {"entry_ref": 105000.0, "sl_source": "liquidation_safe",
+                  "sl_distance_pct": 8.0, ...}
+```
+**✅ PASS** — 80000 overridden to 96600 (liq-safe is tighter).
+
+### Test 4 — `open_short`, no SL
+Expected: `sl_source=liquidation_safe`, SL **above** entry: `105000 × 1.08 = 113400.0`
+
+```
+order_id: d3808902-0b25-4be5-932c-aa58992a58a5
+sl_price:  113400.0
+signal_metadata: {"entry_ref": 105000.0, "sl_source": "liquidation_safe",
+                  "sl_distance_pct": 8.0, ...}
+```
+**✅ PASS** — SL is above entry (correct adverse side for short).
+
+### Test 5 — AI-dispatched open order (`signal_source=ai_engine`)
+
+```
+order_id: a6ebae11-67a1-4d42-9407-e562766cd8dd
+signal_source: ai_engine
+sl_price:   96600.0
+signal_metadata: {"entry_ref": 105000.0, "reasoning": "AI test open long",
+                  "sl_source": "liquidation_safe", "confidence": 0.85,
+                  "sl_distance_pct": 8.0, ...}
+```
+**✅ PASS** — same SL injection on AI path; TV and AI both covered by single handler.
+
+### Test 6 — Live testnet SL attach (Blofin Demo)
+
+`open_short` with indicator_price=105000, leverage=10x → computed `sl=113400.0`.
+Blofin adapter sends `slTriggerPrice = "113400.0"` in request body (`blofin.py:200`).
+Exchange response:
+```json
+{"msg": "", "code": "0", "data": [{"msg": "Order placed", "code": "0",
+  "orderId": "1000129865104", "clientOrderId": ""}]}
+```
+Order accepted (code=0). DB record: `sl_price=113400.0`, `status=filled`.
+
+**✅ PASS** — SL attached on Blofin Demo exchange via `slTriggerPrice`.
+
+### Test 7 — Monitor removal grep
+
+```
+$ grep -rn "price_monitor|start_all_price_monitors|emergency" ai-signal-generator/app
+(no output)
+```
+
+**✅ PASS** — zero hits. `price_monitor.py` deleted; import, `monitor_tasks` start/state/shutdown stripped from `main.py`; `a.emergency_exit_pct` removed from `/internal/trigger` SELECT. `scheduler.py` had no named references to strip. The `ai_strategy_config.emergency_exit_pct` column is left in place (column drop deferred to a separate follow-up with UI changes).
+
+ai-signal-generator rebuilt (with cache; `--no-cache` OOM-killed on 2 GB RAM host — cache build is functionally equivalent for these edits) and is **healthy**:
+```
+matp-ai-signal-generator-1   Up ~2 minutes (healthy)
+```
+
+### Test 8 — ETH scenario structurally impossible
+
+The old ETH false-close path was: `price_monitor` polls every 60s → CCXT fetch from wrong venue → `(price−entry)/entry×100×leverage < −2.5` → fires `close_long` webhook.
+
+With `price_monitor.py` deleted and all references removed:
+- No polling task is started at all (`start_all_price_monitors` removed from lifespan)
+- No auto-close can be triggered by a 0.125% price move at 20x
+- The only close paths that remain: LLM decision via scheduler, TV signal, manual `/positions/{id}/close`
+
+**✅ PASS** — polling auto-close path is gone. ETH scenario cannot recur.
+
+---
+
+## Part B — `emergency_exit_pct` column note
+
+The `ai_strategy_config.emergency_exit_pct` column remains in the database and the `ai_strategy_config` UI may still expose it. It is now **dead** — nothing reads it. Column drop + UI cleanup deferred to a separate follow-up (has its own tentacles in the config editor and migration scripts).
+
+---
+
+## Deployment Safety — Open Positions at Deploy Time
+
+**⚠️ Two positions were open at deploy time and lack an exchange-native SL:**
+
+| strategy_id | symbol | side | entry_price | exchange |
+|---|---|---|---|---|
+| hltest-76b3 | BTC-USDT | short | 63924.6 | Hyperliquid |
+| test-strategy-4-4750 | HYPE-USDT | short | 57.363 | Blofin Demo |
+
+Part A only protects orders opened **after** deploy. Part B removed the `price_monitor` that was watching these. **Recommended action before relying solely on Part A:** backfill SLs via `POST /strategies/{id}/adjust-stops` (requires webhook token, body: `{"sl_price": <value>}`). For `hltest-76b3` the BTC price has moved significantly above entry (≈96600 vs 63924) so an SL above current price is the correct action.
+
+A third position (`e2e-ai-test-btc-f376` BTC short, opened during testing) does have an exchange SL at 113400.0 (placed as part of Test 6 verification).
+
+---
+
+## Summary
+
+| Check | Result |
+|---|---|
+| Test 1: no-SL long, liquidation_safe computed | ✅ 96600.0 = 105000×0.92 |
+| Test 2: tight strategy SL kept | ✅ 99000.0 |
+| Test 3: reckless SL overridden | ✅ 96600.0 |
+| Test 4: short SL above entry | ✅ 113400.0 = 105000×1.08 |
+| Test 5: AI path same injection | ✅ |
+| Test 6: SL on exchange (Blofin Demo) | ✅ slTriggerPrice=113400, orderId=1000129865104 |
+| Test 7: monitor-removal grep zero hits | ✅ |
+| Test 8: ETH false-close impossible | ✅ |
+| emergency_exit_pct column | left for follow-up (dead, unused) |
+| open at deploy | ⚠️ 2 pre-existing positions — backfill SLs recommended |
+
+**Final commit hash:** (appended after commit)

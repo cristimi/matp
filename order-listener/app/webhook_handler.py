@@ -24,6 +24,62 @@ from app.symbol_validator import resolve_symbol, SymbolMismatchError
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
+# Stop triggers at 80% of the way to liquidation — robust at all leverages
+LIQ_BUFFER_FRAC = 0.20
+
+
+def _infer_price_decimals(price: float) -> int:
+    """Infer sensible decimal precision from price magnitude."""
+    if price >= 10_000:
+        return 1
+    elif price >= 1_000:
+        return 2
+    elif price >= 100:
+        return 3
+    elif price >= 10:
+        return 4
+    elif price >= 1:
+        return 5
+    return 6
+
+
+def compute_guaranteed_sl(
+    entry_ref: float,
+    effective_leverage: int,
+    side: str,
+    strategy_sl: Optional[float],
+) -> tuple[float, str]:
+    """
+    Compute the tighter of (strategy SL, liquidation-safe SL).
+    Returns (sl_final, sl_source) where sl_source is 'strategy' or 'liquidation_safe'.
+    side must be 'long' or 'short'.
+    """
+    liq_distance = 1.0 / effective_leverage
+    sl_distance  = liq_distance * (1 - LIQ_BUFFER_FRAC)
+    sl_liq = (
+        entry_ref * (1 - sl_distance) if side == "long"
+        else entry_ref * (1 + sl_distance)
+    )
+
+    strategy_sl_valid = (
+        strategy_sl is not None
+        and ((side == "long"  and strategy_sl < entry_ref)
+             or  (side == "short" and strategy_sl > entry_ref))
+    )
+
+    if strategy_sl_valid:
+        if side == "long":
+            sl_final  = max(strategy_sl, sl_liq)   # higher price = closer to entry
+            sl_source = "strategy" if strategy_sl >= sl_liq else "liquidation_safe"
+        else:
+            sl_final  = min(strategy_sl, sl_liq)   # lower price = closer to entry
+            sl_source = "strategy" if strategy_sl <= sl_liq else "liquidation_safe"
+    else:
+        sl_final  = sl_liq
+        sl_source = "liquidation_safe"
+
+    return round(sl_final, _infer_price_decimals(entry_ref)), sl_source
+
 
 async def _verify_token(token: str, secret: str) -> bool:
     """Constant-time token comparison to prevent timing attacks."""
@@ -593,6 +649,34 @@ async def receive_webhook(
                 )
 
     # ── End Risk Guards ───────────────────────────────────────────────
+
+    # ── Guaranteed SL injection (opening signals, not price-stripped) ─────────
+    if payload.signal in ("open_long", "open_short") and not resolved.price_stripped:
+        _entry_ref = float(payload.indicator_price or payload.price or 0)
+        if _entry_ref <= 0:
+            logger.warning(
+                f"strategy={strategy_id}: no reference price for guaranteed SL "
+                f"— proceeding with payload sl_price={sl_price}"
+            )
+        else:
+            _open_side   = "long" if payload.signal == "open_long" else "short"
+            _strategy_sl = float(sl_price) if sl_price is not None else None
+            _sl_final, _sl_source = compute_guaranteed_sl(
+                _entry_ref, effective_leverage, _open_side, _strategy_sl
+            )
+            _sl_dist_pct     = abs(_sl_final - _entry_ref) / _entry_ref * 100
+            sl_price         = Decimal(str(_sl_final))
+            payload.sl_price = sl_price
+            _meta = dict(payload.signal_metadata or {})
+            _meta["sl_source"]       = _sl_source
+            _meta["sl_distance_pct"] = round(_sl_dist_pct, 4)
+            _meta["entry_ref"]       = _entry_ref
+            payload.signal_metadata  = _meta
+            logger.info(
+                f"Guaranteed SL: strategy={strategy_id} side={_open_side} "
+                f"entry={_entry_ref} sl={_sl_final} source={_sl_source} "
+                f"distance={_sl_dist_pct:.3f}%"
+            )
 
     order_id = uuid.uuid4()
 
