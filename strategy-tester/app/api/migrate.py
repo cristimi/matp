@@ -75,7 +75,7 @@ async def from_matp(body: FromMaTPRequest):
             SELECT id, name, class, symbol, interval, platform,
                    config_yaml, config, webhook_secret, webhook_enabled,
                    description, platform_override, max_daily_signals,
-                   max_position_size, max_leverage, max_daily_drawdown_percent,
+                   max_position_size, max_leverage,
                    capital_allocation_percent, tags, type, margin_mode,
                    default_leverage, blofin_token
             FROM public.strategies
@@ -110,7 +110,7 @@ async def from_matp(body: FromMaTPRequest):
                     enabled, config_yaml, config,
                     webhook_secret, webhook_enabled,
                     description, platform_override, max_daily_signals,
-                    max_position_size, max_leverage, max_daily_drawdown_percent,
+                    max_position_size, max_leverage,
                     capital_allocation_percent, tags, type, margin_mode,
                     default_leverage, blofin_token,
                     source_matp_id
@@ -119,10 +119,10 @@ async def from_matp(body: FromMaTPRequest):
                     true,$7,$8,
                     $9,false,
                     $10,$11,$12,
-                    $13,$14,$15,
-                    $16,$17,$18,$19,
-                    $20,$21,
-                    $22
+                    $13,$14,
+                    $15,$16,$17,$18,
+                    $19,$20,
+                    $21
                 )
                 """,
                 new_id,
@@ -139,7 +139,6 @@ async def from_matp(body: FromMaTPRequest):
                 pub['max_daily_signals'] or 500,
                 pub['max_position_size'] or 1.0,
                 pub['max_leverage'] or 10,
-                pub['max_daily_drawdown_percent'] or 20,
                 pub['capital_allocation_percent'] or 100,
                 list(pub['tags']) if pub['tags'] else [],
                 pub['type'] or 'internal',
@@ -278,7 +277,7 @@ async def to_matp(strategy_id: str, body: ToMaTPRequest):
             SELECT id, name, class, symbol, interval, platform,
                    config_yaml, config, description, platform_override,
                    max_daily_signals, max_position_size, max_leverage,
-                   max_daily_drawdown_percent, capital_allocation_percent,
+                   capital_allocation_percent,
                    tags, type, margin_mode, default_leverage, blofin_token
             FROM tester.strategies
             WHERE id = $1 AND is_deleted = false
@@ -315,7 +314,7 @@ async def to_matp(strategy_id: str, body: ToMaTPRequest):
                     webhook_secret, webhook_enabled,
                     description,
                     max_daily_signals, max_position_size, max_leverage,
-                    max_daily_drawdown_percent, capital_allocation_percent,
+                    capital_allocation_percent,
                     tags, type, margin_mode, default_leverage, blofin_token,
                     account_id, strategy_source
                 ) VALUES (
@@ -324,9 +323,9 @@ async def to_matp(strategy_id: str, body: ToMaTPRequest):
                     $9,FALSE,
                     $10,
                     $11,$12,$13,
-                    $14,$15,
-                    $16,$17,$18,$19,$20,
-                    $21,'ai'
+                    $14,
+                    $15,$16,$17,$18,$19,
+                    $20,'ai'
                 )
                 """,
                 new_public_id,
@@ -342,7 +341,6 @@ async def to_matp(strategy_id: str, body: ToMaTPRequest):
                 tst['max_daily_signals'] or 500,
                 tst['max_position_size'] or 1.0,
                 tst['max_leverage'] or 10,
-                tst['max_daily_drawdown_percent'] or 20,
                 tst['capital_allocation_percent'] or 100,
                 list(tst['tags']) if tst['tags'] else [],
                 tst['type'] or 'internal',

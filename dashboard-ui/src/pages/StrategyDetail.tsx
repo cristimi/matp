@@ -195,7 +195,6 @@ export default function StrategyDetail() {
         <div className="grid grid-cols-2 md:grid-cols-3 gap-3 text-xs text-gray-500 dark:text-gray-400">
           <div><span className="font-medium text-gray-700 dark:text-gray-300">Max Size</span><br />{strategy.max_position_size}</div>
           <div><span className="font-medium text-gray-700 dark:text-gray-300">Max Leverage</span><br />{strategy.max_leverage}×</div>
-          <div><span className="font-medium text-gray-700 dark:text-gray-300">Daily Drawdown</span><br />{strategy.max_daily_drawdown_percent}%</div>
         </div>
       </div>
 

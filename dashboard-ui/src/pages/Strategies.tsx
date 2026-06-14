@@ -21,7 +21,6 @@ interface Strategy {
   realized_pnl?:          number;
   max_position_size?:          number;
   max_daily_signals?:          number;
-  max_daily_drawdown_percent?: number;
   signals_today:        number;
   pnl_total:            string;
   open_positions?:      number;
@@ -588,7 +587,7 @@ const TV_FORM_DEFAULTS = {
   name: '', symbol: '', account_id: '', interval: '1h',
   default_leverage: '1',
   max_position_size: '1.0', max_leverage: '10',
-  max_daily_signals: '500', max_daily_drawdown_percent: '20',
+  max_daily_signals: '500',
   allow_quote_variants: false, allow_cross_charting: false,
 };
 
@@ -761,7 +760,6 @@ export default function Strategies() {
       max_leverage:               String(strategy.max_leverage ?? 10),
       max_position_size:          String(strategy.max_position_size ?? 1),
       max_daily_signals:          String(strategy.max_daily_signals ?? 500),
-      max_daily_drawdown_percent: String(strategy.max_daily_drawdown_percent ?? 20),
       allow_quote_variants:       strategy.allow_quote_variants ?? false,
       allow_cross_charting:       strategy.allow_cross_charting ?? false,
     });
@@ -874,7 +872,6 @@ export default function Strategies() {
             max_leverage:               parseInt(editForm.max_leverage),
             max_position_size:          parseFloat(editForm.max_position_size),
             max_daily_signals:          parseInt(editForm.max_daily_signals),
-            max_daily_drawdown_percent: parseFloat(editForm.max_daily_drawdown_percent),
           }),
         });
         if (!res.ok) {
@@ -937,7 +934,6 @@ export default function Strategies() {
             max_position_size:          parseFloat(addForm.max_position_size),
             max_leverage:               parseInt(addForm.max_leverage),
             max_daily_signals:          parseInt(addForm.max_daily_signals),
-            max_daily_drawdown_percent: parseFloat(addForm.max_daily_drawdown_percent),
           }),
         });
         const data = await res.json();
@@ -1319,7 +1315,6 @@ export default function Strategies() {
                     { key:'max_position_size',          label:'Max Size',      placeholder:'1.0' },
                     { key:'max_leverage',               label:'Max Leverage',  placeholder:'10' },
                     { key:'max_daily_signals',          label:'Daily Signals', placeholder:'500' },
-                    { key:'max_daily_drawdown_percent', label:'Drawdown %',    placeholder:'20' },
                   ].map(field => (
                     <div key={field.key}>
                       <label style={{ ...labelStyle, fontSize:'10px' }}>{field.label}</label>
@@ -1925,7 +1920,6 @@ export default function Strategies() {
                   {[
                     { key:'max_position_size',          label:'Max Size' },
                     { key:'max_daily_signals',          label:'Daily Signals' },
-                    { key:'max_daily_drawdown_percent', label:'Drawdown %' },
                   ].map(field => (
                     <div key={field.key}>
                       <label style={labelStyle}>{field.label}</label>

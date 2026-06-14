@@ -488,34 +488,6 @@ async def receive_webhook(
         await _finalize_signal_log(pool, signal_log_id, 429, "guard_rejected", detail, start_ms)
         raise HTTPException(status_code=429, detail=detail)
 
-    # Guard 4: Daily drawdown stop
-    pnl_today        = float(strategy.get("pnl_today", 0) or 0)
-    max_drawdown_pct = float(strategy.get("max_daily_drawdown_percent", 20) or 20)
-    drawdown_limit   = -(max_drawdown_pct)
-
-    if pnl_today < drawdown_limit:
-        logger.warning(
-            f"Strategy {strategy_id} daily drawdown limit reached "
-            f"(pnl_today={pnl_today:.2f}, limit={drawdown_limit:.2f}) — auto-disabling"
-        )
-        try:
-            async with pool.acquire() as conn:
-                await conn.execute(
-                    "UPDATE strategies SET enabled = false, updated_at = NOW() WHERE id = $1",
-                    strategy_id,
-                )
-        except Exception as e:
-            logger.error(f"Failed to auto-disable strategy {strategy_id}: {e}")
-
-        detail = (
-            f"Daily drawdown limit reached for strategy {strategy_id}. "
-            f"P&L today: {pnl_today:.2f}. Limit: {drawdown_limit:.2f}. "
-            f"Strategy has been automatically disabled. "
-            f"Use POST /strategies/{strategy_id}/reset-daily to re-enable."
-        )
-        await _finalize_signal_log(pool, signal_log_id, 429, "guard_rejected", detail, start_ms)
-        raise HTTPException(status_code=429, detail=detail)
-
     # Guard 5: Cumulative drawdown stop (opening signals only)
     if payload.signal in ("open_long", "open_short"):
         _pnl_total         = float(strategy.get("pnl_total") or 0)

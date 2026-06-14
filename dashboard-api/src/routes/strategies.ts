@@ -195,7 +195,6 @@ router.post('/', async (req: Request, res: Response) => {
     max_position_size          = 1.0,
     max_leverage               = 10,
     max_daily_signals          = 500,
-    max_daily_drawdown_percent = 20,
     capital_allocation_percent = 100,
     capital_allocation         = 100,
     margin_per_trade           = 5,
@@ -272,7 +271,7 @@ router.post('/', async (req: Request, res: Response) => {
         webhook_secret, webhook_enabled,
         default_leverage, margin_mode,
         max_position_size, max_leverage, max_daily_signals,
-        max_daily_drawdown_percent, capital_allocation_percent,
+        capital_allocation_percent,
         capital_allocation, margin_per_trade, max_drawdown_pct,
         allow_quote_variants, allow_cross_charting,
         strategy_source, enabled
@@ -281,17 +280,17 @@ router.post('/', async (req: Request, res: Response) => {
         'webhook', '',
         $7, true,
         $8, $9, $10, $11, $12,
-        $13, $14,
-        $15, $16, $17,
-        $18, $19,
-        $20, true
+        $13,
+        $14, $15, $16,
+        $17, $18,
+        $19, true
       )`,
       [
         id, name, normalisedSymbol, account_id, interval, description,
         webhookSecret,
         default_leverage, margin_mode,
         max_position_size, max_leverage, max_daily_signals,
-        max_daily_drawdown_percent, capital_allocation_percent,
+        capital_allocation_percent,
         Number(capital_allocation), Number(margin_per_trade), Number(max_drawdown_pct),
         allow_quote_variants, allow_cross_charting,
         strategy_source,
@@ -512,7 +511,6 @@ router.put('/:id', async (req: Request, res: Response) => {
     max_position_size,
     max_leverage,
     max_daily_signals,
-    max_daily_drawdown_percent,
     capital_allocation,
     margin_per_trade,
     max_drawdown_pct,
@@ -579,13 +577,12 @@ router.put('/:id', async (req: Request, res: Response) => {
          max_position_size          = COALESCE($10, max_position_size),
          max_leverage               = COALESCE($11, max_leverage),
          max_daily_signals          = COALESCE($12, max_daily_signals),
-         max_daily_drawdown_percent = COALESCE($13, max_daily_drawdown_percent),
-         capital_allocation         = COALESCE($15, capital_allocation),
-         margin_per_trade           = COALESCE($16, margin_per_trade),
-         max_drawdown_pct           = COALESCE($17, max_drawdown_pct),
-         drawdown_anchor_pnl        = CASE WHEN $15 IS NOT NULL THEN pnl_total ELSE drawdown_anchor_pnl END,
+         capital_allocation         = COALESCE($14, capital_allocation),
+         margin_per_trade           = COALESCE($15, margin_per_trade),
+         max_drawdown_pct           = COALESCE($16, max_drawdown_pct),
+         drawdown_anchor_pnl        = CASE WHEN $14 IS NOT NULL THEN pnl_total ELSE drawdown_anchor_pnl END,
          updated_at                 = NOW()
-       WHERE id = $14
+       WHERE id = $13
        RETURNING id, name, symbol, interval, enabled, webhook_enabled,
                  default_leverage, margin_mode,
                  allow_quote_variants, allow_cross_charting, account_id,
@@ -604,7 +601,6 @@ router.put('/:id', async (req: Request, res: Response) => {
         max_position_size ?? null,
         max_leverage ?? null,
         max_daily_signals ?? null,
-        max_daily_drawdown_percent ?? null,
         req.params.id,
         capital_allocation !== undefined ? Number(capital_allocation) : null,
         margin_per_trade   !== undefined ? Number(margin_per_trade)   : null,
@@ -789,33 +785,6 @@ router.post('/:id/disable', async (req: Request, res: Response) => {
   } catch (err) {
     console.error('Error disabling strategy:', err);
     res.status(500).json({ error: 'Database error' });
-  }
-});
-
-// POST /strategies/:id/reset-daily — reset daily counters
-router.post('/:id/reset-daily', async (req: Request, res: Response) => {
-  try {
-    const result = await getPool().query(
-      `UPDATE strategies
-       SET signals_today = 0,
-           pnl_today     = 0,
-           enabled       = true,
-           updated_at    = NOW()
-       WHERE id = $1
-       RETURNING id, signals_today, pnl_today, enabled`,
-      [req.params.id]
-    );
-    if (result.rowCount === 0) {
-      return res.status(404).json({ error: `Strategy not found: ${req.params.id}` });
-    }
-    res.json({
-      reset:         req.params.id,
-      signals_today: result.rows[0].signals_today,
-      pnl_today:     result.rows[0].pnl_today,
-      enabled:       result.rows[0].enabled,
-    });
-  } catch (e: any) {
-    res.status(500).json({ error: e.message });
   }
 });
 
