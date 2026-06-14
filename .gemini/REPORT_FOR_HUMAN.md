@@ -372,3 +372,115 @@ PUT /strategies/eth-range-ba4f {"capital_allocation": 200}
 ```
 
 Anchor reset to -55. New stop fires if total loss exceeds -55 - (200 × 50%) = -155. ✅
+
+---
+
+## Task 3 — cleanup(risk): Drop Daily-Loss Cap + Collapse to Single Drawdown Stop (migration 017)
+
+**Commit:** `478e2e7` — branch `feat/strategy-tester`  
+**Date:** 2026-06-14
+
+### What was removed
+- `ai_risk_config.max_daily_loss_pct` and `ai_risk_config.max_drawdown_pct` from all code readers (15 files) and then from both `public.ai_risk_config` and `tester.ai_risk_config` via migration 017.
+- `node_guard.py` daily-loss-cap + old AI-gate drawdown block deleted.
+- `node_guard_sim.py` sim daily-loss gate deleted.
+- Prompt builder (live + vendored): daily-loss cap line removed from portfolio context.
+- All dashboard-api risk-config RISK_FIELDS, RISK_DEFAULTS, validation, GET/PUT handlers cleaned.
+- All dashboard-ui AiFormState type fields, form defaults, inputs, and PUT bodies cleaned.
+- All strategy-tester SELECT queries, risk_config dicts, and migrate INSERTs cleaned.
+- `strategy-tester/app/_vendored/CHECKSUMS` updated for modified `prompt_builder.py`.
+
+### Grep sweeps (both clean)
+```
+grep -rn "max_daily_loss_pct|daily_loss_cap" ... → (no output)
+grep -rn "max_drawdown_pct" ... → only legitimate references:
+  - order-listener webhook_handler.py:524 (Guard 5 canonical stop — KEEP)
+  - dashboard-api routes/strategies.ts (strategies.max_drawdown_pct columns — KEEP)
+  - strategy-tester engine/backtest_engine.py (result metric — KEEP)
+  - strategy-tester api/strategies.py (backtest_runs result — KEEP)
+```
+
+### Migration 017 output
+```
+ALTER TABLE
+ALTER TABLE
+NOTICE:  Migration 017 verified OK — daily-loss columns gone from both schemas
+DO
+```
+
+### \d public.ai_risk_config (after)
+```
+ strategy_id           | character varying(100) | not null
+ max_position_size_pct | numeric(5,2)           | not null | 5.00
+ max_concurrent_trades | integer                | not null | 1
+ updated_at            | timestamptz            | not null | now()
+ updated_by            | character varying(100)
+```
+
+### All 5 edited services rebuilt --no-cache and healthy ✅
+
+---
+
+## Task 4 — cleanup(risk): Remove Guard 4 Daily Drawdown + max_daily_drawdown_percent (migration 018)
+
+**Commit:** `10a6574` — branch `feat/strategy-tester`  
+**Date:** 2026-06-14
+
+### What was removed
+- Guard 4 block (~28 lines) deleted from `order-listener/app/webhook_handler.py`
+- Guard 4 test deleted from `order-listener/tests/test_webhook_handler.py`
+- `max_daily_drawdown_percent` removed from all INSERT/UPDATE/SELECT in:
+  - `dashboard-api/src/routes/strategies.ts` (create + PUT renumbered from $13 to remove gap)
+  - `dashboard-ui/src/api.ts`, `Strategies.tsx`, `StrategyForm.tsx`, `StrategyDetail.tsx`
+  - `strategy-tester/app/api/strategies.py` (StrategyCreate, StrategyUpdate, INSERT $12→$11, UPDATE $11→$10)
+  - `strategy-tester/app/api/migrate.py` (both cross-schema copy flows)
+- `POST /:id/reset-daily` endpoint deleted from `dashboard-api/src/routes/strategies.ts`
+- `db/init.sql` line `max_daily_drawdown_percent NUMERIC DEFAULT 20` removed
+- Migration 018 created and applied
+
+### Grep sweeps (both clean)
+```
+grep -rn "max_daily_drawdown_percent|reset-daily|reset_daily" \
+  ai-signal-generator/ order-listener/ dashboard-api/src/ \
+  dashboard-ui/src/ strategy-tester/app/ db/init.sql → (no output)
+
+grep -n "Guard 4" order-listener/ → (no output)
+grep -n "Guard 5" order-listener/app/webhook_handler.py → line 491: # Guard 5: Cumulative drawdown stop ✅
+```
+
+### Listener test suite
+```
+29 passed, 2 warnings in 13.22s  ✅  (Guard 4 test removed; 28 remaining + 1 new pass)
+```
+
+### Guard 5 regression
+Strategy `test_blofin_demo_01` (BTC-USDT, capital_allocation=100, max_drawdown_pct=50):
+- Seeded `pnl_total=-51`, `drawdown_anchor_pnl=0` (limit is −50)
+- Fired `open_long` webhook → received:
+```json
+{"detail":"Drawdown stop hit for strategy test_blofin_demo_01: realized loss $51.00 >= $50.00 (50% of $100.00 allocation). Strategy auto-disabled."}
+```
+- HTTP 429, `enabled=false` confirmed in DB ✅
+
+### Migration 018 output
+```
+ALTER TABLE
+ALTER TABLE
+NOTICE:  Migration 018 verified OK — max_daily_drawdown_percent gone from both schemas
+DO
+```
+
+### \d public.strategies (relevant columns after)
+```
+ max_daily_signals          | integer  | DEFAULT 500
+ capital_allocation_percent | numeric  | DEFAULT 100
+ capital_allocation         | numeric  | not null | DEFAULT 100
+ max_drawdown_pct           | numeric  | not null | DEFAULT 50
+```
+`max_daily_drawdown_percent` absent ✅
+
+### All 4 edited services rebuilt --no-cache and healthy ✅
+- order-listener ✅
+- dashboard-api ✅
+- dashboard-ui ✅
+- strategy-tester ✅
