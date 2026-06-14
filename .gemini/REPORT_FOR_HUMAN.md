@@ -855,3 +855,178 @@ Added to `Strategy` interface:
 | V5: dashboard-ui serving (HTTP 200) | ✅ |
 | TypeScript build: `tsc && vite build` | ✅ clean (no errors) |
 
+---
+
+## Task: Strategy-Form Defaults + Blofin Trigger-Field Fix
+
+**Date:** 2026-06-14  
+**Branch:** main
+
+---
+
+### Part 1 — Strategy-Form Defaults (Strategies.tsx)
+
+**`TV_FORM_DEFAULTS`** changed from all-zero to meaningful defaults:
+
+| Field | Before | After |
+|---|---|---|
+| `capital_allocation` | `'0'` | `'100'` |
+| `margin_per_trade` | `'0'` | `'5'` |
+| `max_drawdown_pct` | `'0'` | `'50'` |
+
+**`handleEdit` fallbacks** changed from `?? 0` to `?? 100`, `?? 5`, `?? 50`.
+
+**Submit guards** added:
+- `handleAddStrategy` (TV branch): if `capital_allocation <= 0 || margin_per_trade <= 0` → show error, return
+- `handleEditSubmit` (TV branch): same guard
+- Error message: `"Capital allocation and margin per trade must be greater than 0"`
+
+dashboard-ui rebuilt `--no-cache` and verified healthy.
+
+---
+
+### Part 2 — Blofin Trigger-Field Fix (`order-executor/app/adapters/blofin.py`)
+
+#### Root Cause
+
+`place_trigger_orders` was sending TPSL orders via `/api/v1/trade/order` with `orderType: "market"` and `reduceOnly: "true"`. A market reduce-only order on Blofin fills **immediately** at the current market price, regardless of any `slTriggerPrice`/`tpTriggerPrice` field present in the body. This caused every SL/TP placement to close the position instantly.
+
+An intermediate incorrect fix applied a field-swap (XOR of `slTriggerPrice`/`tpTriggerPrice` based on position side), which was empirically confirmed wrong — the order still filled immediately at market price (`order 1000129925156` filled at `$63,771.3`, not the intended trigger price of `$66,000`).
+
+#### Correct Endpoint
+
+Blofin's **`/api/v1/trade/order-tpsl`** creates genuinely resting conditional TPSL orders:
+
+```json
+POST /api/v1/trade/order-tpsl
+{"instId":"BTC-USDT","marginMode":"isolated","side":"buy","size":"1",
+ "reduceOnly":"true","slTriggerPrice":"66000","slOrderPrice":"-1"}
+
+Response: {"code":"0","msg":"Order placed","data":{"tpslId":"10001962930"}}
+```
+
+The order rests at `$66,000` — position remains open until price reaches trigger.
+
+#### Field Mapping
+
+Blofin's `order-tpsl` endpoint is **position-aware**. No XOR swap is needed:
+- `sl_price → slTriggerPrice` (fires on adverse move, regardless of side)
+- `tp_price → tpTriggerPrice` (fires on favorable move, regardless of side)
+
+#### Changes Applied
+
+**`list_trigger_orders`** — changed endpoint and ID field:
+- Before: `GET /api/v1/trade/algo-orders-pending` (returns code 152404 "not supported" on Demo)
+- After: `GET /api/v1/trade/orders-tpsl-pending`
+- ID field: `algoOrderId` → `tpslId`
+
+**`cancel_order`** — changed to `cancel-tpsl` with array body format:
+- Before: `POST /api/v1/trade/cancel-algo-order` (unsupported) then fallback to `cancel-order` (fails for TPSL IDs)
+- After: `POST /api/v1/trade/cancel-tpsl` body=`[{"instId":"...","tpslId":"..."}]` (code 0 "Batch orders canceled")
+- Fallback to `cancel-order` retained for regular orders
+
+**`place_trigger_orders`** — changed endpoint, removed `orderType`, removed XOR logic:
+- Before: `POST /api/v1/trade/order` with `orderType: "market"` → immediate fill
+- After: `POST /api/v1/trade/order-tpsl` → resting conditional order
+- Response ID: `orderId` → `tpslId`
+
+order-executor rebuilt `--no-cache` ✅.
+
+---
+
+### Mandatory Live Demo Verification (4 cases)
+
+All tests via `BlofinAdapter.place_trigger_orders()` on Blofin Demo account `acc_blofin_demo_default`.
+BTC price at test time ≈ $63,800.
+
+#### Test 1 — Short position, SL above entry (trigger_side=buy, sl_price=$66,988)
+
+```
+place_trigger_orders('BTC-USDT', 'buy', 0.001, sl_price=66988.1)
+→ {"success": true, "placed": [{"tpsl": "sl", "oid": "10001963423", "status": "placed"}]}
+
+list_trigger_orders('BTC-USDT')
+→ [{"oid": "10001963423", "tpsl": "sl", "triggerPx": "66988.100000000000000000", "sz": "1"}]
+
+Position still open: True ✅
+```
+
+**RESTS** — SL at 5% above entry, position not closed. ✅
+
+#### Test 2 — Long position, SL below entry (trigger_side=sell, sl_price=$60,593)
+
+```
+place_trigger_orders('BTC-USDT', 'sell', 0.001, sl_price=60593.3)
+→ {"success": true, "placed": [{"tpsl": "sl", "oid": "10001963461", "status": "placed"}]}
+
+list_trigger_orders('BTC-USDT')
+→ [{"oid": "10001963461", "tpsl": "sl", "triggerPx": "60593.300000000000000000", "sz": "1"}]
+
+Position still open: True ✅
+```
+
+**RESTS** — SL at 5% below entry, position not closed. ✅
+
+#### Test 3 — Short position, TP below entry (trigger_side=buy, tp_price=$60,608)
+
+```
+place_trigger_orders('BTC-USDT', 'buy', 0.001, tp_price=60608.3)
+→ {"success": true, "placed": [{"tpsl": "tp", "oid": "10001963424", "status": "placed"}]}
+
+list_trigger_orders('BTC-USDT')
+→ [{"oid": "10001963424", "tpsl": "tp", "triggerPx": "60608.300000000000000000", "sz": "1"}]
+
+Position still open: True ✅
+```
+
+**RESTS** — TP at 5% below entry, position not closed. ✅
+
+#### Test 4 — Long position, TP above entry (trigger_side=sell, tp_price=$66,971)
+
+```
+place_trigger_orders('BTC-USDT', 'sell', 0.001, tp_price=66971.5)
+→ {"success": true, "placed": [{"tpsl": "tp", "oid": "10001963462", "status": "placed"}]}
+
+list_trigger_orders('BTC-USDT')
+→ [{"oid": "10001963462", "tpsl": "tp", "triggerPx": "66971.500000000000000000", "sz": "1"}]
+
+Position still open: True ✅
+```
+
+**RESTS** — TP at 5% above entry, position not closed. ✅
+
+---
+
+### Cancel Verification
+
+`cancel-tpsl` with array body format confirmed working:
+
+```
+cancel_order('BTC-USDT', '10001963424') → {"success": True, "oid": "10001963424"}
+cancel_order('BTC-USDT', '10001963423') → {"success": True, "oid": "10001963423"}
+cancel_order('BTC-USDT', '10001963462') → {"success": True, "oid": "10001963462"}
+cancel_order('BTC-USDT', '10001963461') → {"success": True, "oid": "10001963461"}
+```
+
+All test positions closed after cancellation.
+
+---
+
+### Summary
+
+| Check | Result |
+|---|---|
+| Strategy-form defaults: 100/5/50 instead of 0/0/0 | ✅ |
+| Submit guard blocks zero-margin strategies | ✅ |
+| handleEdit fallbacks updated | ✅ |
+| Root cause identified: market order on wrong endpoint | ✅ |
+| place_trigger_orders → order-tpsl endpoint (resting) | ✅ |
+| sl→slTriggerPrice, tp→tpTriggerPrice (no swap) | ✅ |
+| list_trigger_orders → orders-tpsl-pending + tpslId | ✅ |
+| cancel_order → cancel-tpsl array format | ✅ |
+| Test 1: Short SL above entry RESTS (tpslId=10001963423) | ✅ |
+| Test 2: Long SL below entry RESTS (tpslId=10001963461) | ✅ |
+| Test 3: Short TP below entry RESTS (tpslId=10001963424) | ✅ |
+| Test 4: Long TP above entry RESTS (tpslId=10001963462) | ✅ |
+| order-executor rebuilt --no-cache | ✅ |
+

@@ -561,11 +561,11 @@ class BlofinAdapter(ExchangeAdapter):
 
     async def list_trigger_orders(self, symbol: str) -> list[dict]:
         """
-        Return pending TP/SL algo orders for a symbol.
+        Return pending TP/SL orders for a symbol.
         Each entry: {oid, tpsl, triggerPx, sz}
         """
         try:
-            path = f"/api/v1/trade/algo-orders-pending?instId={symbol}"
+            path = f"/api/v1/trade/orders-tpsl-pending?instId={symbol}"
             headers = self._headers("GET", path, "")
             async with httpx.AsyncClient(base_url=self.base_url, timeout=10) as client:
                 resp = await client.get(path, headers=headers)
@@ -575,7 +575,7 @@ class BlofinAdapter(ExchangeAdapter):
             for o in entries:
                 tp_px = o.get("tpTriggerPrice") or o.get("tpTriggerPx")
                 sl_px = o.get("slTriggerPrice") or o.get("slTriggerPx")
-                order_id = o.get("algoOrderId") or o.get("orderId")
+                order_id = o.get("tpslId")
                 if tp_px:
                     result.append({"oid": order_id, "tpsl": "tp", "triggerPx": tp_px, "sz": o.get("size")})
                 if sl_px:
@@ -586,10 +586,11 @@ class BlofinAdapter(ExchangeAdapter):
             return []
 
     async def cancel_order(self, symbol: str, order_id: str) -> dict:
-        """Cancel a pending TP/SL algo order by its order_id."""
+        """Cancel a pending TP/SL or regular order by its order_id."""
         try:
-            path = "/api/v1/trade/cancel-algo-order"
-            body_data = {"instId": symbol, "algoOrderId": str(order_id)}
+            # Try cancel-tpsl first (for TPSL orders placed via order-tpsl endpoint)
+            path = "/api/v1/trade/cancel-tpsl"
+            body_data = [{"instId": symbol, "tpslId": str(order_id)}]
             body_str = json.dumps(body_data, separators=(",", ":"))
             headers = self._headers("POST", path, body_str)
             async with httpx.AsyncClient(base_url=self.base_url, timeout=10) as client:
@@ -598,7 +599,7 @@ class BlofinAdapter(ExchangeAdapter):
             code = str(data.get("code", "0"))
             if code in ("0", "200"):
                 return {"success": True, "oid": order_id}
-            # Fall back to cancel-order endpoint
+            # Fall back to cancel-order for regular orders
             path2 = "/api/v1/trade/cancel-order"
             body_data2 = {"instId": symbol, "orderId": str(order_id)}
             body_str2 = json.dumps(body_data2, separators=(",", ":"))
@@ -622,7 +623,7 @@ class BlofinAdapter(ExchangeAdapter):
         tp_price: Optional[float] = None,
         sl_price: Optional[float] = None,
     ) -> dict:
-        """Place standalone TP/SL algo orders for an existing position."""
+        """Place standalone TP/SL orders for an existing position via order-tpsl endpoint."""
         try:
             contract_size = await self._to_contracts(symbol, Decimal(str(size)))
             placed = []
@@ -634,18 +635,20 @@ class BlofinAdapter(ExchangeAdapter):
                     "instId":     symbol,
                     "marginMode": "isolated",
                     "side":       trigger_side,
-                    "orderType":  "market",
                     "size":       str(contract_size),
                     "reduceOnly": "true",
                 }
-                if tpsl_type == "tp":
-                    body_data["tpTriggerPrice"] = str(price)
-                    body_data["tpOrderPrice"]   = "-1"
-                else:
+                # Blofin's order-tpsl endpoint is position-aware:
+                # sl_price → slTriggerPrice fires on adverse move for either side
+                # tp_price → tpTriggerPrice fires on favorable move for either side
+                if tpsl_type == "sl":
                     body_data["slTriggerPrice"] = str(price)
                     body_data["slOrderPrice"]   = "-1"
+                else:
+                    body_data["tpTriggerPrice"] = str(price)
+                    body_data["tpOrderPrice"]   = "-1"
 
-                path = "/api/v1/trade/order"
+                path = "/api/v1/trade/order-tpsl"
                 body_str = json.dumps(body_data, separators=(",", ":"))
                 headers  = self._headers("POST", path, body_str)
                 async with httpx.AsyncClient(base_url=self.base_url, timeout=10) as client:
@@ -653,11 +656,12 @@ class BlofinAdapter(ExchangeAdapter):
                 data = resp.json()
                 code = str(data.get("code", "0"))
                 if code in ("0", "200"):
-                    order_info = (data.get("data") or [{}])
+                    order_info = data.get("data") or {}
                     if isinstance(order_info, list):
                         order_info = order_info[0] if order_info else {}
-                    placed.append({"tpsl": tpsl_type, "oid": order_info.get("orderId"), "status": "placed"})
-                    logger.info(f"Blofin trigger ({tpsl_type}) placed at {price} for {symbol}")
+                    tpsl_id = order_info.get("tpslId")
+                    placed.append({"tpsl": tpsl_type, "oid": tpsl_id, "status": "placed"})
+                    logger.info(f"Blofin trigger ({tpsl_type}) placed at {price} for {symbol}, tpslId={tpsl_id}")
                 else:
                     placed.append({"tpsl": tpsl_type, "error": data.get("msg")})
                     logger.warning(f"Blofin trigger ({tpsl_type}) failed: {data.get('msg')}")

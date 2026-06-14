@@ -591,7 +591,7 @@ const TV_FORM_DEFAULTS = {
   default_leverage: '1',
   max_position_size: '1.0', max_leverage: '10',
   max_daily_signals: '500',
-  capital_allocation: '0', margin_per_trade: '0', max_drawdown_pct: '0',
+  capital_allocation: '100', margin_per_trade: '5', max_drawdown_pct: '50',
   allow_quote_variants: false, allow_cross_charting: false,
 };
 
@@ -766,9 +766,9 @@ export default function Strategies() {
       max_leverage:               String(strategy.max_leverage ?? 10),
       max_position_size:          String(strategy.max_position_size ?? 1),
       max_daily_signals:          String(strategy.max_daily_signals ?? 500),
-      capital_allocation:         String(strategy.capital_allocation ?? 0),
-      margin_per_trade:           String(strategy.margin_per_trade ?? 0),
-      max_drawdown_pct:           String(strategy.max_drawdown_pct ?? 0),
+      capital_allocation:         String(strategy.capital_allocation ?? 100),
+      margin_per_trade:           String(strategy.margin_per_trade ?? 5),
+      max_drawdown_pct:           String(strategy.max_drawdown_pct ?? 50),
       allow_quote_variants:       strategy.allow_quote_variants ?? false,
       allow_cross_charting:       strategy.allow_cross_charting ?? false,
     });
@@ -819,6 +819,12 @@ export default function Strategies() {
 
   const handleEditSubmit = async () => {
     if (!editTarget) return;
+    if (editTarget.strategy_source !== 'ai_engine') {
+      if (parseFloat(editForm.capital_allocation ?? '0') <= 0 || parseFloat(editForm.margin_per_trade ?? '0') <= 0) {
+        setEditError('Capital allocation and margin per trade must be greater than 0');
+        return;
+      }
+    }
     setEditLoading(true);
     setEditError(null);
     try {
@@ -937,6 +943,12 @@ export default function Strategies() {
 
   const handleAddStrategy = async () => {
     setAddError(null);
+    if (addType === 'tradingview') {
+      if (parseFloat(addForm.capital_allocation) <= 0 || parseFloat(addForm.margin_per_trade) <= 0) {
+        setAddError('Capital allocation and margin per trade must be greater than 0');
+        return;
+      }
+    }
     setAddLoading(true);
     try {
       if (addType === 'tradingview') {
