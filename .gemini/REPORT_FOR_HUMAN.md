@@ -1030,3 +1030,87 @@ All test positions closed after cancellation.
 | Test 4: Long TP above entry RESTS (tpslId=10001963462) | ✅ |
 | order-executor rebuilt --no-cache | ✅ |
 
+---
+
+## Task: Drop dead `emergency_exit_pct` (migration 020)
+
+**Date:** 2026-06-14  
+**Branch:** main
+
+### Touch-points removed
+
+| File | Change |
+|---|---|
+| `dashboard-api/src/routes/ai.ts` | Removed from `ALLOWED_CONFIG_FIELDS` array; removed `Number(row.emergency_exit_pct)` line from `formatConfig()` |
+| `strategy-tester/app/api/migrate.py` | Removed from column list + value list in both cross-schema INSERT statements (public→tester at line ~170, tester→public at line ~360); `$23` placeholder removed; `$24 custom_instructions` renumbered to `$23` |
+| `db/migrations/020_drop_emergency_exit_pct.sql` | New migration: `DROP COLUMN IF EXISTS emergency_exit_pct` on both `public.ai_strategy_config` and `tester.ai_strategy_config`, plus self-verifying `DO $$` block |
+| `db/init.sql` | No change needed — column was absent |
+
+### Grep sweep (clean)
+
+```
+grep -rn "emergency_exit_pct" . \
+  --include="*.ts" --include="*.py" --include="*.sql" --include="*.json" |
+  grep -v "node_modules|006_ai_signal_generator|011_tester_schema|020_drop_emergency_exit_pct|REPORT_FOR_HUMAN"
+
+(no output) ✅
+```
+
+### Migration 020 output
+
+```
+ALTER TABLE
+ALTER TABLE
+psql:NOTICE:  Migration 020 verified OK — emergency_exit_pct gone from both schemas
+```
+
+### \d public.ai_strategy_config (after)
+
+Column `emergency_exit_pct` absent. Relevant tail of table:
+```
+ volume_spike_threshold    | numeric(6,1) | not null | 300.0
+ funding_spike_threshold   | numeric(6,4) | not null | 0.0500
+ dry_run                   | boolean      | not null | true
+ updated_at                | timestamptz  | not null | now()
+ updated_by                | varchar(100) |          |
+ llm_provider              | varchar(20)  | not null | 'google'
+ llm_model                 | varchar(50)  | not null | 'gemini-2.0-flash'
+```
+
+`emergency_exit_pct` absent from `tester.ai_strategy_config` ✅
+
+### AI config GET (live)
+
+```
+GET /ai/strategies/e2e-ai-test-btc-f376/config
+
+{
+  "strategy_id": "e2e-ai-test-btc-f376",
+  "interval_no_position": "4h",
+  "interval_position_open": "15m",
+  "interval_at_risk": "1m",
+  "at_risk_threshold_pct": 1.5,
+  "use_technical": true,
+  "use_fear_greed": true,
+  ...
+  "dry_run": false,
+  "llm_provider": "google",
+  "llm_model": "gemini-2.5-flash",
+  "template_name": "Scalper"
+}
+```
+
+No `emergency_exit_pct` field in response ✅
+
+### Summary
+
+| Check | Result |
+|---|---|
+| Grep sweep clean (excl. original migrations 006/011 + new 020) | ✅ |
+| `emergency_exit_pct` gone from `public.ai_strategy_config` | ✅ |
+| `emergency_exit_pct` gone from `tester.ai_strategy_config` | ✅ |
+| `db/init.sql` already clean (no change needed) | ✅ |
+| dashboard-api rebuilt `--no-cache`, healthy | ✅ |
+| strategy-tester rebuilt `--no-cache`, healthy | ✅ |
+| AI config GET loads without `emergency_exit_pct` | ✅ |
+

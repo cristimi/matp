@@ -17,7 +17,7 @@ const ALLOWED_CONFIG_FIELDS = [
   'cooldown_entry_minutes', 'cooldown_increase_minutes', 'cooldown_stop_adj_minutes',
   'template_id', 'custom_instructions', 'trigger_news_high', 'trigger_volume_spike',
   'trigger_funding_spike', 'trigger_key_level', 'trigger_liquidation',
-  'volume_spike_threshold', 'funding_spike_threshold', 'dry_run', 'emergency_exit_pct',
+  'volume_spike_threshold', 'funding_spike_threshold', 'dry_run',
   'llm_provider', 'llm_model',
 ];
 
@@ -40,7 +40,6 @@ function formatConfig(row: any): any {
     confidence_threshold:    Number(row.confidence_threshold),
     volume_spike_threshold:  Number(row.volume_spike_threshold),
     funding_spike_threshold: Number(row.funding_spike_threshold),
-    emergency_exit_pct:      Number(row.emergency_exit_pct),
   };
 }
 

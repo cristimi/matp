@@ -167,7 +167,7 @@ async def from_matp(body: FromMaTPRequest):
                         confidence_threshold, cooldown_entry_minutes,
                         cooldown_increase_minutes, cooldown_stop_adj_minutes,
                         interval_no_position, interval_position_open, interval_at_risk,
-                        at_risk_threshold_pct, dry_run, emergency_exit_pct,
+                        at_risk_threshold_pct, dry_run,
                         custom_instructions
                     ) VALUES (
                         $1,$2,$3,$4,
@@ -177,8 +177,8 @@ async def from_matp(body: FromMaTPRequest):
                         $14,$15,
                         $16,$17,
                         $18,$19,$20,
-                        $21,$22,$23,
-                        $24
+                        $21,$22,
+                        $23
                     )
                     """,
                     new_id,
@@ -203,7 +203,6 @@ async def from_matp(body: FromMaTPRequest):
                     pub_aic['interval_at_risk'] or '15m',
                     float(pub_aic['at_risk_threshold_pct'] or 3.0),
                     bool(pub_aic['dry_run']),
-                    float(pub_aic['emergency_exit_pct'] or 5.0),
                     pub_aic['custom_instructions'],
                 )
             else:
@@ -357,7 +356,7 @@ async def to_matp(strategy_id: str, body: ToMaTPRequest):
                         confidence_threshold, cooldown_entry_minutes,
                         cooldown_increase_minutes, cooldown_stop_adj_minutes,
                         interval_no_position, interval_position_open, interval_at_risk,
-                        at_risk_threshold_pct, dry_run, emergency_exit_pct,
+                        at_risk_threshold_pct, dry_run,
                         custom_instructions
                     ) VALUES (
                         $1,$2,$3,$4,
@@ -367,8 +366,8 @@ async def to_matp(strategy_id: str, body: ToMaTPRequest):
                         $14,$15,
                         $16,$17,
                         $18,$19,$20,
-                        $21,$22,$23,
-                        $24
+                        $21,$22,
+                        $23
                     )
                     """,
                     new_public_id,
@@ -393,7 +392,6 @@ async def to_matp(strategy_id: str, body: ToMaTPRequest):
                     tst_aic['interval_at_risk'] or '15m',
                     float(tst_aic['at_risk_threshold_pct'] or 3.0),
                     bool(tst_aic['dry_run']),
-                    float(tst_aic['emergency_exit_pct'] or 5.0),
                     tst_aic['custom_instructions'],
                 )
             else:
