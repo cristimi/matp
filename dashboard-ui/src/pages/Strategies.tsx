@@ -159,7 +159,7 @@ function StrategyCard({
   const closedShort = strategy.closed_short_count ?? 0;
   const closedCount = strategy.closed_positions_count ?? 0;
   const winRate     = strategy.win_rate    ?? 0;
-  const allocated   = strategy.allocated   ?? 0;
+  const allocated   = Number(strategy.capital_allocation ?? 0);
   const realizedPnl = Number(strategy.realized_pnl ?? 0);
   const pnlFees     = strategy.pnl_fees    ?? 0;
   const totalReturn = strategy.total_return ?? 0;

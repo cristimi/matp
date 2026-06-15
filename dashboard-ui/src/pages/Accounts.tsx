@@ -344,7 +344,7 @@ export default function Accounts() {
                 {(() => {
                   const allocated = strategies
                     .filter(s => s.account_id === acc.id)
-                    .reduce((sum, s) => sum + (s.capital_allocation || 0), 0);
+                    .reduce((sum, s) => sum + (Number(s.capital_allocation) || 0), 0);
                   const equity = bal?.total_balance || 0;
                   const free   = equity - allocated;
                   const cur    = bal?.currency || 'USDT';
@@ -402,9 +402,9 @@ export default function Accounts() {
                             padding:'2px 6px',
                           }}>
                             {s.name}
-                            {s.capital_allocation > 0 && (
+                            {Number(s.capital_allocation) > 0 && (
                               <span style={{ color:'var(--dim)', marginLeft:'4px' }}>
-                                ${s.capital_allocation.toFixed(0)}
+                                ${Number(s.capital_allocation).toFixed(0)}
                               </span>
                             )}
                           </span>
