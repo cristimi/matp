@@ -16,6 +16,7 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException, Request, Header
 from fastapi.responses import JSONResponse
 
+from app.config import MMR, MIN_SAFETY_SL_DIST
 from app.database import get_pool
 from app.models import WebhookPayload, OrderResponse, OrderResult
 from app.redis_client import publish, cache_get, cache_set, cache_delete
@@ -23,9 +24,6 @@ from app.symbol_validator import resolve_symbol, SymbolMismatchError
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
-
-# Stop triggers at 80% of the way to liquidation — robust at all leverages
-LIQ_BUFFER_FRAC = 0.20
 
 
 def _infer_price_decimals(price: float) -> int:
@@ -54,8 +52,7 @@ def compute_guaranteed_sl(
     Returns (sl_final, sl_source) where sl_source is 'strategy' or 'liquidation_safe'.
     side must be 'long' or 'short'.
     """
-    liq_distance = 1.0 / effective_leverage
-    sl_distance  = liq_distance * (1 - LIQ_BUFFER_FRAC)
+    sl_distance = max((1.0 / effective_leverage) - MMR, MIN_SAFETY_SL_DIST)
     sl_liq = (
         entry_ref * (1 - sl_distance) if side == "long"
         else entry_ref * (1 + sl_distance)
@@ -603,18 +600,6 @@ async def receive_webhook(
             )
             await _finalize_signal_log(pool, signal_log_id, 429, "drawdown_stop", _detail, start_ms)
             raise HTTPException(status_code=429, detail=_detail)
-
-    # Guard 2: Max position size
-    incoming_size = float(payload.size)
-    max_size      = float(strategy.get("max_position_size", 1.0) or 1.0)
-    if incoming_size > max_size:
-        detail = (
-            f"Order size {incoming_size} exceeds strategy maximum "
-            f"of {max_size} for strategy {strategy_id}."
-        )
-        logger.warning(f"Strategy {strategy_id} order size {incoming_size} exceeds max {max_size}")
-        await _finalize_signal_log(pool, signal_log_id, 422, "guard_rejected", detail, start_ms)
-        raise HTTPException(status_code=422, detail=detail)
 
     # Guard 3: Max leverage
     max_lev = int(strategy.get("max_leverage", 10) or 10)

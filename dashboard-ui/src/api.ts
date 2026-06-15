@@ -97,7 +97,6 @@ export interface Strategy {
   tags: string[];
   default_leverage: number;
   margin_mode: 'isolated' | 'cross';
-  max_position_size: number;
   max_leverage: number;
   allow_quote_variants: boolean;
   allow_cross_charting: boolean;

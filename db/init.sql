@@ -77,7 +77,6 @@ CREATE TABLE IF NOT EXISTS strategies (
     description                TEXT,
     platform_override          VARCHAR(20),
     max_daily_signals          INTEGER               DEFAULT 500,
-    max_position_size          NUMERIC               DEFAULT 1.0,
     max_leverage               INTEGER               DEFAULT 10,
     signals_today              INTEGER               DEFAULT 0,
     pnl_today                  NUMERIC               DEFAULT 0,

@@ -19,7 +19,6 @@ interface Strategy {
   open_positions_count?:  number;
   closed_positions_count?: number;
   realized_pnl?:          number;
-  max_position_size?:          number;
   max_daily_signals?:          number;
   signals_today:        number;
   pnl_total:            string;
@@ -562,7 +561,6 @@ interface AiFormState {
   template_id:            string;
   custom_instructions:    string;
   dry_run:                boolean;
-  max_position_size_pct:  string;
 }
 
 const AI_FORM_DEFAULTS: AiFormState = {
@@ -583,13 +581,12 @@ const AI_FORM_DEFAULTS: AiFormState = {
   template_id:            '',
   custom_instructions:    '',
   dry_run:                true,
-  max_position_size_pct:  '5.0',
 };
 
 const TV_FORM_DEFAULTS = {
   name: '', symbol: '', account_id: '', interval: '1h',
   default_leverage: '1',
-  max_position_size: '1.0', max_leverage: '10',
+  max_leverage: '10',
   max_daily_signals: '500',
   capital_allocation: '100', margin_per_trade: '5', max_drawdown_pct: '50',
   allow_quote_variants: false, allow_cross_charting: false,
@@ -764,7 +761,6 @@ export default function Strategies() {
       margin_mode:                strategy.margin_mode ?? 'isolated',
       default_leverage:           String(strategy.default_leverage ?? 1),
       max_leverage:               String(strategy.max_leverage ?? 10),
-      max_position_size:          String(strategy.max_position_size ?? 1),
       max_daily_signals:          String(strategy.max_daily_signals ?? 500),
       capital_allocation:         String(strategy.capital_allocation ?? 100),
       margin_per_trade:           String(strategy.margin_per_trade ?? 5),
@@ -775,12 +771,8 @@ export default function Strategies() {
 
     if (strategy.strategy_source === 'ai_engine') {
       try {
-        const [configRes, riskRes] = await Promise.all([
-          fetch(`/api/ai/strategies/${strategy.id}/config`),
-          fetch(`/api/ai/strategies/${strategy.id}/risk-config`),
-        ]);
+        const configRes = await fetch(`/api/ai/strategies/${strategy.id}/config`);
         const config = await configRes.json();
-        const risk   = await riskRes.json();
         setAiEditForm({
           interval_no_position:   config.interval_no_position   ?? '4h',
           interval_position_open: config.interval_position_open ?? '15m',
@@ -799,7 +791,6 @@ export default function Strategies() {
           template_id:            String(config.template_id     ?? ''),
           custom_instructions:    config.custom_instructions    ?? '',
           dry_run:                config.dry_run                ?? true,
-          max_position_size_pct:  String(risk.max_position_size_pct ?? '5.0'),
         });
         fetchEditAiModels(config.llm_provider ?? 'google');
         if (aiTemplates.length === 0) fetchAITemplates();
@@ -866,14 +857,6 @@ export default function Strategies() {
         });
         if (!s2.ok) { setEditError((await s2.json()).error || 'Failed to update AI config'); return; }
 
-        const s3 = await fetch(`/api/ai/strategies/${editTarget.id}/risk-config`, {
-          method: 'PUT', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            max_position_size_pct: parseFloat(aiEditForm.max_position_size_pct),
-          }),
-        });
-        if (!s3.ok) { setEditError((await s3.json()).error || 'Failed to update risk config'); return; }
-
         setEditTarget(null);
         setWebhookInfo(null);
         fetchStrategies();
@@ -885,7 +868,6 @@ export default function Strategies() {
             ...editForm,
             default_leverage:   parseInt(editForm.default_leverage),
             max_leverage:       parseInt(editForm.max_leverage),
-            max_position_size:  parseFloat(editForm.max_position_size),
             max_daily_signals:  parseInt(editForm.max_daily_signals),
             capital_allocation: parseFloat(editForm.capital_allocation),
             margin_per_trade:   parseFloat(editForm.margin_per_trade),
@@ -959,7 +941,6 @@ export default function Strategies() {
             ...addForm,
             strategy_source:    'tradingview',
             default_leverage:   parseInt(addForm.default_leverage),
-            max_position_size:  parseFloat(addForm.max_position_size),
             max_leverage:       parseInt(addForm.max_leverage),
             max_daily_signals:  parseInt(addForm.max_daily_signals),
             capital_allocation: parseFloat(addForm.capital_allocation),
@@ -1026,19 +1007,6 @@ export default function Strategies() {
         const configData = await configRes.json();
         if (!configRes.ok) {
           setAddError(configData.error || 'Failed to save AI config');
-          return;
-        }
-
-        const riskRes = await fetch(`/api/ai/strategies/${stratId}/risk-config`, {
-          method:  'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body:    JSON.stringify({
-            max_position_size_pct: parseFloat(aiForm.max_position_size_pct),
-          }),
-        });
-        const riskData = await riskRes.json();
-        if (!riskRes.ok) {
-          setAddError(riskData.error || 'Failed to save risk config');
           return;
         }
 
@@ -1343,7 +1311,6 @@ export default function Strategies() {
                   marginBottom:'14px',
                 }}>
                   {[
-                    { key:'max_position_size',          label:'Max Size',      placeholder:'1.0' },
                     { key:'max_leverage',               label:'Max Leverage',  placeholder:'10' },
                     { key:'max_daily_signals',          label:'Daily Signals', placeholder:'500' },
                   ].map(field => (
@@ -1601,40 +1568,28 @@ export default function Strategies() {
 
                 {/* Section 5: Risk Config */}
                 <SectionDivider label="Risk Config" />
-                <div style={{
-                  display:'grid', gridTemplateColumns:'1fr 1fr', gap:'10px',
-                  marginBottom:'14px',
-                }}>
-                  <div>
-                    <label style={labelStyle}>Max Position Size %</label>
-                    <input type="number" step="0.1"
-                      value={aiForm.max_position_size_pct}
-                      onChange={e => setAiForm(f => ({ ...f, max_position_size_pct: e.target.value }))}
-                      style={inputStyle} />
-                  </div>
-                  <div>
-                    <label style={labelStyle}>Dry Run Mode</label>
-                    <div style={{
-                      display:'flex', gap:'12px', padding:'9px 12px',
-                      border:'1px solid var(--border)', borderRadius:'8px',
-                      background:'var(--bg3)',
-                    }}>
-                      {([true, false] as const).map(v => (
-                        <label key={String(v)} style={{
-                          display:'flex', alignItems:'center', gap:'5px', cursor:'pointer',
+                <div style={{ marginBottom:'14px' }}>
+                  <label style={labelStyle}>Dry Run Mode</label>
+                  <div style={{
+                    display:'flex', gap:'12px', padding:'9px 12px',
+                    border:'1px solid var(--border)', borderRadius:'8px',
+                    background:'var(--bg3)',
+                  }}>
+                    {([true, false] as const).map(v => (
+                      <label key={String(v)} style={{
+                        display:'flex', alignItems:'center', gap:'5px', cursor:'pointer',
+                      }}>
+                        <input type="radio"
+                          checked={aiForm.dry_run === v}
+                          onChange={() => setAiForm(f => ({ ...f, dry_run: v }))} />
+                        <span style={{
+                          fontSize:'11px', fontWeight:600,
+                          color: v ? 'var(--failed-color)' : 'var(--green)',
                         }}>
-                          <input type="radio"
-                            checked={aiForm.dry_run === v}
-                            onChange={() => setAiForm(f => ({ ...f, dry_run: v }))} />
-                          <span style={{
-                            fontSize:'11px', fontWeight:600,
-                            color: v ? 'var(--failed-color)' : 'var(--green)',
-                          }}>
-                            {v ? 'ON' : 'OFF'}
-                          </span>
-                        </label>
-                      ))}
-                    </div>
+                          {v ? 'ON' : 'OFF'}
+                        </span>
+                      </label>
+                    ))}
                   </div>
                 </div>
               </>
@@ -1887,43 +1842,34 @@ export default function Strategies() {
 
                 {/* Section 5: Risk Configuration */}
                 <SectionDivider label="Risk Configuration" />
-                <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'10px', marginBottom:'14px' }}>
-                  <div>
-                    <label style={labelStyle}>Max Position Size %</label>
-                    <input type="number" step="0.1"
-                      value={aiEditForm.max_position_size_pct}
-                      onChange={e => setAiEditForm(f => ({ ...f, max_position_size_pct: e.target.value }))}
-                      style={inputStyle} />
-                  </div>
-                  <div>
-                    <label style={labelStyle}>Dry Run Mode</label>
-                    <div style={{
-                      display:'flex', gap:'12px', padding:'9px 12px',
-                      border:'1px solid var(--border)', borderRadius:'8px',
-                      background:'var(--bg3)',
-                    }}>
-                      {([true, false] as const).map(v => {
-                        const lockedOn = v === true && !aiEditForm.dry_run && (editTarget.open_positions_count ?? 0) > 0;
-                        return (
-                          <label key={String(v)} style={{
-                            display:'flex', alignItems:'center', gap:'5px',
-                            cursor: lockedOn ? 'not-allowed' : 'pointer',
-                            opacity: lockedOn ? 0.4 : 1,
+                <div style={{ marginBottom:'14px' }}>
+                  <label style={labelStyle}>Dry Run Mode</label>
+                  <div style={{
+                    display:'flex', gap:'12px', padding:'9px 12px',
+                    border:'1px solid var(--border)', borderRadius:'8px',
+                    background:'var(--bg3)',
+                  }}>
+                    {([true, false] as const).map(v => {
+                      const lockedOn = v === true && !aiEditForm.dry_run && (editTarget.open_positions_count ?? 0) > 0;
+                      return (
+                        <label key={String(v)} style={{
+                          display:'flex', alignItems:'center', gap:'5px',
+                          cursor: lockedOn ? 'not-allowed' : 'pointer',
+                          opacity: lockedOn ? 0.4 : 1,
+                        }}>
+                          <input type="radio"
+                            checked={aiEditForm.dry_run === v}
+                            disabled={lockedOn}
+                            onChange={() => setAiEditForm(f => ({ ...f, dry_run: v }))} />
+                          <span style={{
+                            fontSize:'11px', fontWeight:600,
+                            color: v ? 'var(--failed-color)' : 'var(--green)',
                           }}>
-                            <input type="radio"
-                              checked={aiEditForm.dry_run === v}
-                              disabled={lockedOn}
-                              onChange={() => setAiEditForm(f => ({ ...f, dry_run: v }))} />
-                            <span style={{
-                              fontSize:'11px', fontWeight:600,
-                              color: v ? 'var(--failed-color)' : 'var(--green)',
-                            }}>
-                              {v ? 'ON' : 'OFF'}
-                            </span>
-                          </label>
-                        );
-                      })}
-                    </div>
+                            {v ? 'ON' : 'OFF'}
+                          </span>
+                        </label>
+                      );
+                    })}
                   </div>
                 </div>
               </>
@@ -1978,20 +1924,12 @@ export default function Strategies() {
                   </FieldRow>
                 </div>
 
-                <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr',
-                              gap:'10px', marginBottom:'14px' }}>
-                  {[
-                    { key:'max_position_size',          label:'Max Size' },
-                    { key:'max_daily_signals',          label:'Daily Signals' },
-                  ].map(field => (
-                    <div key={field.key}>
-                      <label style={labelStyle}>{field.label}</label>
-                      <input type="number"
-                        value={editForm[field.key]}
-                        onChange={e => setEditForm((f:any) => ({ ...f, [field.key]: e.target.value }))}
-                        style={inputStyle} />
-                    </div>
-                  ))}
+                <div style={{ marginBottom:'14px' }}>
+                  <label style={labelStyle}>Daily Signals</label>
+                  <input type="number"
+                    value={editForm.max_daily_signals}
+                    onChange={e => setEditForm((f:any) => ({ ...f, max_daily_signals: e.target.value }))}
+                    style={inputStyle} />
                 </div>
 
                 <SectionDivider label="Capital & Risk" />

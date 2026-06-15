@@ -1114,3 +1114,129 @@ No `emergency_exit_pct` field in response ✅
 | strategy-tester rebuilt `--no-cache`, healthy | ✅ |
 | AI config GET loads without `emergency_exit_pct` | ✅ |
 
+---
+
+# Task: Liquidation-Based Safety SL + Remove Guard 2 / max_position_size (migrations 021)
+
+**Date:** 2026-06-15  
+**Branch:** main  
+**Scope:** Live path only. `strategy-tester/` and tester schema intentionally untouched.
+
+---
+
+## PART 1 — Safety SL Formula (liquidation-based)
+
+### Formula change
+
+`order-listener/app/config.py` — added two constants:
+```python
+MMR = 0.01
+MIN_SAFETY_SL_DIST = 0.005
+```
+
+`order-listener/app/webhook_handler.py` — `compute_guaranteed_sl()`:
+```python
+# REMOVED:
+LIQ_BUFFER_FRAC = 0.20
+liq_distance = 1.0 / effective_leverage
+sl_distance  = liq_distance * (1 - LIQ_BUFFER_FRAC)
+
+# NEW:
+sl_distance = max((1.0 / effective_leverage) - MMR, MIN_SAFETY_SL_DIST)
+```
+
+`LIQ_BUFFER_FRAC` deleted from webhook_handler.py. `grep -rn "LIQ_BUFFER_FRAC" order-listener/` → **(no output)** ✅
+
+### SL distance verification
+
+| Leverage | Formula                              | Result   |
+|----------|--------------------------------------|----------|
+| 10×      | 1/10 − 0.01 = 0.10 − 0.01           | **9%**   |
+| 20×      | 1/20 − 0.01 = 0.05 − 0.01           | **4%**   |
+| 50×      | 1/50 − 0.01 = 0.02 − 0.01 = 0.01 > floor | **1%** |
+| 200×     | 1/200 − 0.01 = 0.005 − 0.01 → floor | **0.5%** |
+
+---
+
+## PART 2 — Guard 2 Removed + max_position_size/_pct Deleted
+
+### Guard 2 gone
+
+The raw-size reject block (`Guard 2: Max position size`) is deleted from `webhook_handler.py`. An order with raw size above the old `max_position_size` limit is no longer rejected with 422. The margin clamp remains as the sole sizing mechanism.
+
+### Live-path source grep — CLEAN
+
+```
+grep -rn "max_position_size\|LIQ_BUFFER_FRAC" \
+  order-listener/ ai-signal-generator/ \
+  dashboard-api/src/ dashboard-ui/src/ db/init.sql
+```
+
+**(no output)** — only reference remaining is `db/migrations/021_drop_max_position_size.sql` (the migration itself) and `tester.strategies` (intentionally untouched).
+
+### Files modified
+
+| Service | File | Change |
+|---------|------|--------|
+| order-listener | `app/config.py` | Added `MMR=0.01`, `MIN_SAFETY_SL_DIST=0.005` |
+| order-listener | `app/webhook_handler.py` | New SL formula; deleted Guard 2 block; deleted `LIQ_BUFFER_FRAC` |
+| order-listener | `tests/test_webhook_handler.py` | Removed `max_position_size` from `SAFE_STRATEGY`; removed `test_oversized_order_returns_422` |
+| ai-signal-generator | `app/main.py` | Removed `max_position_size_pct` from fallback risk dict |
+| ai-signal-generator | `app/scheduler.py` | Removed `max_position_size_pct` from SQL query + `risk_config` dict |
+| ai-signal-generator | `app/prompt/builder.py` | Removed "Max Position Size %" line from portfolio context |
+| dashboard-api | `src/routes/strategies.ts` | Removed `max_position_size` from POST INSERT + PUT UPDATE; renumbered placeholders |
+| dashboard-api | `src/routes/ai.ts` | Removed `max_position_size_pct` from `RISK_FIELDS`, `RISK_DEFAULTS`, validation, `formatRiskConfig`, GET default, baseline diff, preview `mockState` |
+| dashboard-ui | `src/api.ts` | Removed `max_position_size` from `Strategy` interface |
+| dashboard-ui | `src/pages/Strategies.tsx` | Removed from all form states, defaults, inputs, submit bodies (TV + AI) |
+| dashboard-ui | `src/pages/StrategyDetail.tsx` | Removed "Max Size" row from Risk Limits section |
+| db | `migrations/021_drop_max_position_size.sql` | DROP COLUMN + self-verify RAISE EXCEPTION/NOTICE |
+| db | `init.sql` | Removed `max_position_size NUMERIC DEFAULT 1.0` from strategies table |
+
+---
+
+## pytest — order-listener (36 passed)
+
+```
+....................................                                     [100%]
+=============================== warnings summary ===============================
+2 warnings (PendingDeprecationWarning, PydanticDeprecatedSince20)
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+36 passed, 2 warnings in 9.50s
+```
+
+(Was 37 before; `test_oversized_order_returns_422` deleted as specified.)
+
+---
+
+## Migration 021 — Applied (public schema only)
+
+```
+ALTER TABLE
+ALTER TABLE
+NOTICE: Migration 021 verified OK — max_position_size gone from strategies, max_position_size_pct gone from ai_risk_config
+```
+
+**`\d public.strategies`** — `max_position_size` column: **absent** ✅  
+**`\d public.ai_risk_config`** — `max_position_size_pct` column: **absent**; only `max_concurrent_trades` remains ✅  
+**`\d tester.strategies`** — `max_position_size` column: **still present** (tester schema untouched) ✅
+
+---
+
+## Summary
+
+| Check | Result |
+|---|---|
+| SL formula: 10x → 9%, 20x → 4% | ✅ |
+| `LIQ_BUFFER_FRAC` grep clean | ✅ |
+| Guard 2 deleted, 422-on-oversize gone | ✅ |
+| Live-path source grep clean (tester excluded) | ✅ |
+| pytest 36 passed | ✅ |
+| Migration 021 applied (public only, self-verified) | ✅ |
+| `public.strategies.max_position_size` gone | ✅ |
+| `public.ai_risk_config.max_position_size_pct` gone | ✅ |
+| `tester.strategies.max_position_size` untouched | ✅ |
+| `strategy-tester/` untouched | ✅ |
+
+**Note:** Changes are uncommitted working-tree edits. Most recent commit on `main`: `65f2bc5 cleanup(schema): drop dead emergency_exit_pct column (migration 020)`. Commit when ready.
+

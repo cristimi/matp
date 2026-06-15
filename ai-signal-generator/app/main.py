@@ -212,7 +212,6 @@ async def internal_trigger(body: TriggerRequest):
 
     # ── Build risk_config dict ────────────────────────────────────────────
     rc = _row_to_dict(risk_row) if risk_row else {
-        'max_position_size_pct': 5.0,
         'max_concurrent_trades': 1,
     }
 

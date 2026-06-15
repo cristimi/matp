@@ -43,7 +43,6 @@ SAFE_STRATEGY = {
     "allow_cross_charting":      False,
     "max_daily_signals":         500,
     "signals_today":             0,
-    "max_position_size":         1.0,
     "max_leverage":              20,
     "pnl_today":                 0.0,
 }
@@ -181,24 +180,6 @@ async def test_daily_signal_cap_returns_429():
             )
         assert resp.status_code == 429
         assert "daily signal limit" in resp.json().get("detail", "").lower()
-
-
-# ── Risk Guard 2: Max position size ──────────────────────────────────
-
-@pytest.mark.asyncio
-async def test_oversized_order_returns_422():
-    from app.main import app
-    pool, _ = make_mock_db()
-    with patch("app.webhook_handler.get_pool", return_value=pool):
-        async with AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            payload = {**BASE_PAYLOAD, "size": "9999.0"}
-            resp = await client.post(
-                f"/webhook/{STRATEGY_ID}", json=payload
-            )
-        assert resp.status_code == 422
-        assert "exceeds" in resp.json().get("detail", "").lower()
 
 
 # ── Risk Guard 3: Max leverage ────────────────────────────────────────

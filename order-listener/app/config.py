@@ -21,3 +21,9 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+# Maintenance-margin rate for the safety-SL formula.
+# Conservative default — real exchange MMRs are usually lower, so the stop lands before liquidation.
+MMR = 0.01
+# Floor: prevents zero/negative distance at extreme leverage
+MIN_SAFETY_SL_DIST = 0.005

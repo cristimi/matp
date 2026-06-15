@@ -22,11 +22,10 @@ const ALLOWED_CONFIG_FIELDS = [
 ];
 
 const RISK_FIELDS = [
-  'max_position_size_pct', 'max_concurrent_trades',
+  'max_concurrent_trades',
 ];
 
 const RISK_DEFAULTS: Record<string, number> = {
-  max_position_size_pct: 5.00,
   max_concurrent_trades: 1,
 };
 
@@ -45,10 +44,7 @@ function formatConfig(row: any): any {
 
 function formatRiskConfig(row: any): any {
   if (!row) return null;
-  return {
-    ...row,
-    max_position_size_pct: Number(row.max_position_size_pct),
-  };
+  return { ...row };
 }
 
 function formatSignal(row: any): any {
@@ -134,9 +130,7 @@ router.get('/strategies/:id/config/preview-prompt', async (req: Request, res: Re
         indicators:          aiConfig.indicators,
         lookback_days:       aiConfig.lookback_days,
       },
-      risk_config: {
-        max_position_size_pct: riskConfig ? Number(riskConfig.max_position_size_pct) : 5.0,
-      },
+      risk_config: {},
       position_open:               false,
       position_side:               null,
       position_entry_price:        null,
@@ -404,7 +398,6 @@ router.get('/strategies/:id/risk-config', async (req: Request, res: Response) =>
     if (!rowCount) {
       return res.json({
         strategy_id:           req.params.id,
-        max_position_size_pct: 5.00,
         max_concurrent_trades: 1,
         updated_at:            null,
         updated_by:            null,
@@ -424,12 +417,6 @@ router.put('/strategies/:id/risk-config', async (req: Request, res: Response) =>
   const changedBy = (req.ip ?? 'dashboard').replace('::ffff:', '');
 
   // Floor enforcement
-  if (body.max_position_size_pct !== undefined) {
-    const v = Number(body.max_position_size_pct);
-    if (isNaN(v) || v <= 0 || v > 20.0) {
-      return res.status(400).json({ error: 'max_position_size_pct must be > 0 and <= 20.0' });
-    }
-  }
   if (body.max_concurrent_trades !== undefined) {
     const v = Number(body.max_concurrent_trades);
     if (isNaN(v) || v < 1 || v > 5) {
@@ -455,7 +442,6 @@ router.put('/strategies/:id/risk-config', async (req: Request, res: Response) =>
 
     // Baseline values for diff comparison
     const baseline: Record<string, number> = currentRow ? {
-      max_position_size_pct: Number(currentRow.max_position_size_pct),
       max_concurrent_trades: Number(currentRow.max_concurrent_trades),
     } : { ...RISK_DEFAULTS };
 

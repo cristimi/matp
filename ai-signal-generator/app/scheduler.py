@@ -131,8 +131,7 @@ class AdaptiveScheduler:
         async with self.db_pool.acquire() as conn:
             strategy = await conn.fetchrow(
                 """
-                SELECT s.*, a.*, r.max_position_size_pct,
-                       r.max_concurrent_trades
+                SELECT s.*, a.*, r.max_concurrent_trades
                 FROM strategies s
                 JOIN ai_strategy_config a ON a.strategy_id = s.id
                 LEFT JOIN ai_risk_config r ON r.strategy_id = s.id
@@ -186,9 +185,7 @@ class AdaptiveScheduler:
         return {
             'strategy_id':    self.strategy_id,
             'strategy_config': sc,
-            'risk_config': {
-                'max_position_size_pct': float(sc.get('max_position_size_pct') or 5.0),
-            },
+            'risk_config': {},
             'trigger_reason':  trigger_reason,
             'cycle_interval':  interval_label,
             'triggered_at':    datetime.now(timezone.utc),
