@@ -157,6 +157,22 @@ class BlofinAdapter(ExchangeAdapter):
             logger.warning(f"BlofinAdapter.get_max_leverage({symbol}) failed: {e}")
             return 0
 
+    async def get_mark_price(self, symbol: str) -> float | None:
+        """Return the current mark price for `symbol`. Returns None on error."""
+        try:
+            path = f"/api/v1/market/mark-price?instId={symbol}"
+            async with httpx.AsyncClient(base_url=self.base_url, timeout=10) as client:
+                resp = await client.get(path)
+                resp.raise_for_status()
+            data = resp.json().get("data") or []
+            if not data:
+                return None
+            mark_px = float(data[0].get("markPrice") or 0)
+            return mark_px if mark_px > 0 else None
+        except Exception as e:
+            logger.warning(f"BlofinAdapter.get_mark_price({symbol}) failed: {e}")
+            return None
+
     async def _set_leverage(self, inst_id: str, leverage: int, margin_mode: str) -> None:
         """Set leverage for an instrument before placing an order."""
         path = "/api/v1/account/set-leverage"

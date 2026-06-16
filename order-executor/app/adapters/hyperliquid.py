@@ -183,6 +183,26 @@ class HyperliquidAdapter(ExchangeAdapter):
             logger.warning(f"HyperliquidAdapter.get_max_leverage({symbol}) failed: {e}")
             return 0
 
+    async def get_mark_price(self, symbol: str) -> float | None:
+        """Return the current mark price for `symbol` via metaAndAssetCtxs. Returns None on error."""
+        try:
+            asset_index = await self._get_asset_index(symbol)
+            async with httpx.AsyncClient(timeout=10) as client:
+                resp = await client.post(
+                    f"{self.base_url}/info",
+                    json={"type": "metaAndAssetCtxs"},
+                )
+                resp.raise_for_status()
+                meta_and_ctx = resp.json()
+            asset_ctxs = meta_and_ctx[1]
+            if asset_index >= len(asset_ctxs):
+                return None
+            mark_px = float(asset_ctxs[asset_index].get("markPx") or 0)
+            return mark_px if mark_px > 0 else None
+        except Exception as e:
+            logger.warning(f"HyperliquidAdapter.get_mark_price({symbol}) failed: {e}")
+            return None
+
     # ── Private helpers ──────────────────────────────────────────────
 
     def _round_price(self, price: float) -> float:

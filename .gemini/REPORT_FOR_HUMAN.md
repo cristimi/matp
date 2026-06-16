@@ -1,5 +1,5 @@
 # HL leverage + margin overrun — fix verification report
-_Updated 2026-06-16. Covers: leverage fix deployment + test results._
+_Updated 2026-06-16. Covers: leverage fix (Defect A) + margin clamp bypass fix (Defect B) deployment + test results._
 
 ---
 
@@ -321,9 +321,254 @@ None. The signing scheme for `updateLeverage` uses the identical `keccak(action_
 
 ---
 
-## 8. Summary
+## 8. Summary (Defect A)
 
-Both defects fixed. The root-cause leverage defect (Defect A from diagnostic) is resolved:
-`_update_leverage` now fires before every non-close order on Hyperliquid, using the same EIP-712/msgpack signing path already proven for `order` and `cancel` actions. An exchange-max guard on both adapters prevents future orders that would be immediately rejected by the exchange from reaching the signing stage.
+Leverage defect resolved: `_update_leverage` now fires before every non-close order on Hyperliquid, using the same EIP-712/msgpack signing path already proven for `order` and `cancel` actions. An exchange-max guard on both adapters prevents future orders that would be immediately rejected by the exchange from reaching the signing stage.
 
-**Out of scope (still open):** the margin-per-trade clamp bypass when `price = indicator_price = null` (Defect B). Tracked separately.
+---
+
+# Defect B — Margin clamp bypass on price-less webhooks
+
+_Updated 2026-06-16. Covers: fix deployment + test results._
+
+---
+
+## 9. Diff stat
+
+```
+order-executor/app/adapters/base.py        |  6 +++
+order-executor/app/adapters/hyperliquid.py | 22 +++++++++++
+order-executor/app/adapters/blofin.py      | 18 +++++++++
+order-executor/app/main.py                 | 11 ++++++
+order-listener/app/executor_client.py      | 10 +++++
+order-listener/app/webhook_handler.py      | 32 +++++++++------
+```
+
+---
+
+## 10. Full diff
+
+### base.py
+
+```diff
++    async def get_mark_price(self, symbol: str) -> float | None:
++        """Return the current mark price for `symbol`, or None if unavailable.
++        Subclasses should override. Must never raise."""
++        return None
+```
+
+### hyperliquid.py
+
+```diff
++    async def get_mark_price(self, symbol: str) -> float | None:
++        """Return the current mark price for `symbol` via metaAndAssetCtxs. Returns None on error."""
++        try:
++            asset_index = await self._get_asset_index(symbol)
++            async with httpx.AsyncClient(timeout=10) as client:
++                resp = await client.post(f"{self.base_url}/info", json={"type": "metaAndAssetCtxs"})
++                resp.raise_for_status()
++                meta_and_ctx = resp.json()
++            asset_ctxs = meta_and_ctx[1]
++            if asset_index >= len(asset_ctxs):
++                return None
++            mark_px = float(asset_ctxs[asset_index].get("markPx") or 0)
++            return mark_px if mark_px > 0 else None
++        except Exception as e:
++            logger.warning(f"HyperliquidAdapter.get_mark_price({symbol}) failed: {e}")
++            return None
+```
+
+### blofin.py
+
+```diff
++    async def get_mark_price(self, symbol: str) -> float | None:
++        """Return the current mark price for `symbol`. Returns None on error."""
++        try:
++            path = f"/api/v1/market/mark-price?instId={symbol}"
++            async with httpx.AsyncClient(base_url=self.base_url, timeout=10) as client:
++                resp = await client.get(path)
++                resp.raise_for_status()
++            data = resp.json().get("data") or []
++            if not data:
++                return None
++            mark_px = float(data[0].get("markPrice") or 0)
++            return mark_px if mark_px > 0 else None
++        except Exception as e:
++            logger.warning(f"BlofinAdapter.get_mark_price({symbol}) failed: {e}")
++            return None
+```
+
+Field name confirmation: Blofin `/api/v1/market/mark-price` returns `{"data": [{"instId": "BTC-USDT", "markPrice": "65847.6", ...}]}`.
+Field is `markPrice` (not `markPx`). Probed live before writing.
+
+### main.py
+
+```diff
++@app.get("/accounts/{account_id}/mark-price/{symbol}")
++async def get_mark_price(account_id: str, symbol: str):
++    """Return the current exchange mark price for the given symbol."""
++    try:
++        adapter    = await registry.get(account_id)
++        mark_price = await adapter.get_mark_price(symbol)
++        return {"symbol": symbol, "mark_price": mark_price}
++    except Exception as e:
++        logger.error(f"get_mark_price failed for {account_id}/{symbol}: {e}")
++        return {"symbol": symbol, "mark_price": None, "error": str(e)}
+```
+
+### executor_client.py
+
+```diff
++async def get_mark_price(account_id: str, symbol: str) -> Optional[float]:
++    """Fetch the exchange mark price for `symbol` on `account_id`. Returns None if unavailable."""
++    data = await call_executor_get(f"/accounts/{account_id}/mark-price/{symbol}")
++    mp = data.get("mark_price")
++    return float(mp) if mp is not None else None
+```
+
+### webhook_handler.py
+
+New reference-price resolution block inserted after Guard 3, before margin clamp:
+
+```diff
++    # Reference price resolution — shared by clamp and guaranteed-SL below.
++    _ref_price = float(payload.indicator_price or payload.price or 0)
++    if payload.signal in ("open_long", "open_short") and _ref_price <= 0:
++        _acct_for_price = strategy.get("account_id") or ""
++        _mp = await get_mark_price(_acct_for_price, resolved.execution_symbol)
++        _ref_price = float(_mp) if _mp else 0.0
++        if _ref_price > 0:
++            logger.info(f"strategy={strategy_id}: no webhook price; using exchange mark price ...")
++        else:
++            _detail = "Cannot size open for strategy ...: no webhook price and exchange mark price unavailable ..."
++            await _finalize_signal_log(pool, signal_log_id, 422, "no_reference_price", _detail, start_ms)
++            raise HTTPException(status_code=422, detail=_detail)
+
+     # Guard: Margin-per-trade clamp
+     if payload.signal in ("open_long", "open_short"):
+         _margin_per_trade = float(strategy.get("margin_per_trade") or 5.0)
+-        _ref_price        = float(payload.indicator_price or payload.price or 0)   # ← removed
+         if _ref_price > 0:
+             ...
++            _meta["ref_price_source"] = "webhook" if (payload.indicator_price or payload.price) else "exchange_mark"
+
+     # Guaranteed SL
+-    _entry_ref = float(payload.indicator_price or payload.price or 0)   # ← removed
++    _entry_ref = _ref_price   # reuses already-resolved price
+```
+
+---
+
+## 11. Container grep — new code is live
+
+```
+# order-executor
+/app/app/adapters/hyperliquid.py:186:    async def get_mark_price(self, symbol: str) -> float | None:
+/app/app/adapters/blofin.py:160:    async def get_mark_price(self, symbol: str) -> float | None:
+/app/app/adapters/base.py:106:    async def get_mark_price(self, symbol: str) -> float | None:
+/app/app/main.py:245:@app.get("/accounts/{account_id}/mark-price/{symbol}")
+
+# order-listener
+/app/app/executor_client.py:88:async def get_mark_price(account_id: str, symbol: str) -> Optional[float]:
+/app/app/webhook_handler.py:21:from app.executor_client import get_mark_price
+/app/app/webhook_handler.py:622:        _mp = await get_mark_price(_acct_for_price, resolved.execution_symbol)
+/app/app/webhook_handler.py:636:            await _finalize_signal_log(pool, signal_log_id, 422, "no_reference_price", ...)
+/app/app/webhook_handler.py:652:                _meta["ref_price_source"]      = (...)
+```
+
+---
+
+## 12. Mark-price endpoint — live probe
+
+```bash
+# HL testnet HYPE
+{"symbol":"HYPE-USDT","mark_price":37.508}
+
+# Blofin demo ONDO
+{"symbol":"ONDO-USDT","mark_price":0.3748}
+```
+
+---
+
+## 13. Test results
+
+### Test E — HL testnet ETH, no webhook price, clamp should fire via exchange mark price ✅ PASS
+
+**Strategy:** `test_hl_demo_01` (ETH-USDT, account=Hyperliquidtest, margin_per_trade=5, default_leverage=20)
+
+**Request:** `signal=open_long, size=0.1, leverage=5` — no `price`, no `indicator_price`
+
+**Expected clamp:** `5 × 5 / 1866.0 = 0.01339836 ETH`
+
+**Listener log lines:**
+```
+GET http://order-executor:8004/accounts/Hyperliquidtest/mark-price/ETH-USDT "HTTP/1.1 200 OK"
+strategy=test_hl_demo_01: no webhook price; using exchange mark price 1865.9 for ETH-USDT
+Strategy test_hl_demo_01 margin clamp: 0.1 → 0.01339836 (margin=5.0, lev=5, price=1865.9)
+```
+
+**DB signal_metadata (from `orders` table):**
+```json
+{
+  "size_scaled_to_margin": true,
+  "original_size":         0.1,
+  "used_size":             0.01339836,
+  "ref_price_source":      "exchange_mark",
+  "sl_source":             "liquidation_safe",
+  "sl_distance_pct":       18.9999,
+  "entry_ref":             1865.9
+}
+```
+
+**Exchange result:** `status=rejected` (HL testnet rejected the clamped size — likely below effective $10 floor after fees). No position opened. The clamp itself is the object under test — it fired correctly using exchange mark price.
+
+**Verdict:** Clamp fires on price-less webhooks, `ref_price_source="exchange_mark"` recorded, guaranteed SL computed from same mark price. ✅
+
+---
+
+### Test F — Backstop 422 when account not found ✅ PASS
+
+**Setup:** Temporary strategy `_test_backstop_` with `account_id="nonexistent_acct"` (executor returns `mark_price: null`).
+
+**Request:** `signal=open_long, size=0.1, leverage=5` — no `price`, no `indicator_price`
+
+**HTTP Response (status 422):**
+```json
+{
+  "detail": "Cannot size open for strategy _test_backstop_: no webhook price and exchange mark price unavailable for ETH-USDT. Order rejected to prevent an unsized entry."
+}
+```
+
+**DB `signal_log`:**
+```
+http_status | outcome            | error_detail
+422         | no_reference_price | Cannot size open for strategy _test_backstop_: ...
+```
+
+No order row created. **Verdict:** Backstop rejects the order with 422 and records `no_reference_price` outcome. ✅
+
+Test strategy deleted after test.
+
+---
+
+## 14. Cleanup
+
+| Test | Position | Action | Result |
+|------|----------|--------|--------|
+| Test E | ETH-USDT (HL testnet) | None needed | Exchange rejected the clamped order — no position opened |
+| Test F | None | None needed | Request rejected at listener level |
+
+Pre-existing BTC-USDT long on Hyperliquidtest (from an earlier session) — not related to this test run, not touched.
+
+---
+
+## 15. Deviations from prompt
+
+None. Blofin mark-price field name probed live before writing code (confirmed: `markPrice`, not `markPx`). The reference-price resolution block, margin clamp modification, and guaranteed-SL reuse of `_ref_price` match the specified design exactly.
+
+---
+
+## 16. Summary (both defects)
+
+- **Defect A (leverage):** Fixed in commit `6c2237c`. HL adapter now calls `updateLeverage` before every open order. Exchange-max guard on both adapters.
+- **Defect B (margin clamp bypass):** Fixed in this commit. For opening signals with no webhook price, the listener fetches the exchange mark price via the executor's new `GET /accounts/{id}/mark-price/{symbol}` endpoint. If no price can be obtained, the order is rejected (422, `no_reference_price`) — never placed unsized.

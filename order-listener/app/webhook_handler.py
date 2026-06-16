@@ -18,6 +18,7 @@ from fastapi.responses import JSONResponse
 
 from app.config import MMR, MIN_SAFETY_SL_DIST
 from app.database import get_pool
+from app.executor_client import get_mark_price
 from app.models import WebhookPayload, OrderResponse, OrderResult
 from app.redis_client import publish, cache_get, cache_set, cache_delete
 from app.symbol_validator import resolve_symbol, SymbolMismatchError
@@ -612,11 +613,33 @@ async def receive_webhook(
         await _finalize_signal_log(pool, signal_log_id, 422, "guard_rejected", detail, start_ms)
         raise HTTPException(status_code=422, detail=detail)
 
+    # Reference price resolution — shared by clamp and guaranteed-SL below.
+    # For opening signals without a webhook price, fetch the exchange mark price.
+    # Backstop: reject if still no price — never place an unsized open.
+    _ref_price = float(payload.indicator_price or payload.price or 0)
+    if payload.signal in ("open_long", "open_short") and _ref_price <= 0:
+        _acct_for_price = strategy.get("account_id") or ""
+        _mp = await get_mark_price(_acct_for_price, resolved.execution_symbol)
+        _ref_price = float(_mp) if _mp else 0.0
+        if _ref_price > 0:
+            logger.info(
+                f"strategy={strategy_id}: no webhook price; using exchange mark "
+                f"price {_ref_price} for {resolved.execution_symbol}"
+            )
+        else:
+            _detail = (
+                f"Cannot size open for strategy {strategy_id}: no webhook price and "
+                f"exchange mark price unavailable for {resolved.execution_symbol}. "
+                f"Order rejected to prevent an unsized entry."
+            )
+            logger.error(_detail)
+            await _finalize_signal_log(pool, signal_log_id, 422, "no_reference_price", _detail, start_ms)
+            raise HTTPException(status_code=422, detail=_detail)
+
     # Guard: Margin-per-trade clamp (opening signals only)
     # Scale down TV-supplied size so notional never exceeds margin × leverage.
     if payload.signal in ("open_long", "open_short"):
         _margin_per_trade = float(strategy.get("margin_per_trade") or 5.0)
-        _ref_price        = float(payload.indicator_price or payload.price or 0)
         if _ref_price > 0:
             _margin_qty = round((_margin_per_trade * effective_leverage) / _ref_price, 8)
             if float(payload.size) > _margin_qty:
@@ -626,6 +649,9 @@ async def receive_webhook(
                 _meta["size_scaled_to_margin"] = True
                 _meta["original_size"]         = _original_size
                 _meta["used_size"]             = _margin_qty
+                _meta["ref_price_source"]      = (
+                    "webhook" if (payload.indicator_price or payload.price) else "exchange_mark"
+                )
                 payload.signal_metadata        = _meta
                 logger.info(
                     f"Strategy {strategy_id} margin clamp: "
@@ -637,7 +663,7 @@ async def receive_webhook(
 
     # ── Guaranteed SL injection (opening signals, not price-stripped) ─────────
     if payload.signal in ("open_long", "open_short") and not resolved.price_stripped:
-        _entry_ref = float(payload.indicator_price or payload.price or 0)
+        _entry_ref = _ref_price
         if _entry_ref <= 0:
             logger.warning(
                 f"strategy={strategy_id}: no reference price for guaranteed SL "

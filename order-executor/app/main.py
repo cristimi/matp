@@ -242,6 +242,18 @@ async def get_min_order_size(account_id: str, symbol: str):
         return {"symbol": symbol, "min_base_size": 0.0, "error": str(e)}
 
 
+@app.get("/accounts/{account_id}/mark-price/{symbol}")
+async def get_mark_price(account_id: str, symbol: str):
+    """Return the current exchange mark price for the given symbol."""
+    try:
+        adapter    = await registry.get(account_id)
+        mark_price = await adapter.get_mark_price(symbol)
+        return {"symbol": symbol, "mark_price": mark_price}
+    except Exception as e:
+        logger.error(f"get_mark_price failed for {account_id}/{symbol}: {e}")
+        return {"symbol": symbol, "mark_price": None, "error": str(e)}
+
+
 @app.get("/accounts/{account_id}/meta")
 async def get_account_meta(account_id: str):
     """Return safe public metadata for a specific account."""

@@ -102,3 +102,8 @@ class ExchangeAdapter(ABC):
         """Return the exchange's maximum allowed leverage for `symbol`.
         Returns 0 if unknown. Subclasses should override. Must never raise."""
         return 0
+
+    async def get_mark_price(self, symbol: str) -> float | None:
+        """Return the current mark price for `symbol`, or None if unavailable.
+        Subclasses should override. Must never raise."""
+        return None

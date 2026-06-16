@@ -85,6 +85,16 @@ async def call_executor_get(path: str) -> dict:
         return {}
 
 
+async def get_mark_price(account_id: str, symbol: str) -> Optional[float]:
+    """
+    Fetch the exchange mark price for `symbol` on `account_id`.
+    Returns None if unavailable (network error, no data). Never raises.
+    """
+    data = await call_executor_get(f"/accounts/{account_id}/mark-price/{symbol}")
+    mp = data.get("mark_price")
+    return float(mp) if mp is not None else None
+
+
 async def get_account_positions(account_id: str) -> Optional[list]:
     """
     Fetch live open positions for an account from the executor.
