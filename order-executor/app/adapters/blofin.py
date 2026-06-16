@@ -146,6 +146,17 @@ class BlofinAdapter(ExchangeAdapter):
         except Exception:
             return None
 
+    async def get_max_leverage(self, symbol: str) -> int:
+        """Exchange max leverage for the instrument. Returns 0 if unknown."""
+        try:
+            inst = await self._get_instrument(symbol)
+            if not inst:
+                return 0
+            return int(float(inst.get("maxLeverage") or 0))
+        except Exception as e:
+            logger.warning(f"BlofinAdapter.get_max_leverage({symbol}) failed: {e}")
+            return 0
+
     async def _set_leverage(self, inst_id: str, leverage: int, margin_mode: str) -> None:
         """Set leverage for an instrument before placing an order."""
         path = "/api/v1/account/set-leverage"
@@ -177,6 +188,14 @@ class BlofinAdapter(ExchangeAdapter):
             order_size   = await self._to_contracts(order.symbol, order.size)
             margin_mode  = order.margin_mode or "isolated"
             leverage     = order.leverage or 10
+
+            max_lev = await self.get_max_leverage(order.symbol)
+            if max_lev and leverage > max_lev:
+                # DECISION: reject (do not clamp)
+                msg = (f"Requested leverage {leverage}x exceeds Blofin "
+                       f"max {max_lev}x for {order.symbol}")
+                logger.warning(f"BlofinAdapter: {msg}")
+                return OrderResult(success=False, status="rejected", error_msg=msg)
 
             # Blofin ignores the lever field in order placement; must set it explicitly first
             await self._set_leverage(order.symbol, leverage, margin_mode)

@@ -69,6 +69,7 @@ class HyperliquidAdapter(ExchangeAdapter):
         )
         self._asset_cache: Optional[dict] = None
         self._sz_decimals_cache: Optional[dict] = None  # coin → sz_decimals int
+        self._max_lev_cache: Optional[dict] = None      # coin → exchange max leverage (int)
         logger.info(
             f"HyperliquidAdapter initialised "
             f"(wallet={self.wallet_address[:8]}..., "
@@ -81,15 +82,24 @@ class HyperliquidAdapter(ExchangeAdapter):
         try:
             asset_index = await self._get_asset_index(order.symbol)
             is_close = order.signal in ("close_long", "close_short")
+
+            if not is_close:
+                req_lev = int(order.leverage or 1)
+                max_lev = await self.get_max_leverage(order.symbol)
+                if max_lev and req_lev > max_lev:
+                    # DECISION: reject (do not clamp)
+                    msg = (f"Requested leverage {req_lev}x exceeds Hyperliquid "
+                           f"max {max_lev}x for {order.symbol}")
+                    logger.warning(f"HyperliquidAdapter: {msg}")
+                    return OrderResult(success=False, status="rejected", error_msg=msg)
+                # Push leverage to HL (persistent per-coin setting). Abort on failure.
+                await self._update_leverage(asset_index, req_lev, order.margin_mode or "isolated")
+
             result = await self._place_order(order, asset_index, reduce_only=is_close)
             return result
         except Exception as e:
             logger.error(f"HyperliquidAdapter.submit_order failed: {e}")
-            return OrderResult(
-                success=False,
-                status="route_failed",
-                error_msg=str(e),
-            )
+            return OrderResult(success=False, status="route_failed", error_msg=str(e))
 
     async def close_position(self, symbol: str, side: str, size=None, margin_mode: str = "isolated") -> OrderResult:
         try:
@@ -163,6 +173,16 @@ class HyperliquidAdapter(ExchangeAdapter):
             logger.error(f"HyperliquidAdapter.get_open_positions failed: {e}")
             raise ExchangeUnavailableError(f"hyperliquid positions fetch failed: {e}") from e
 
+    async def get_max_leverage(self, symbol: str) -> int:
+        """Exchange max leverage for the coin. Returns 0 if unknown."""
+        try:
+            await self._get_asset_index(symbol)  # ensures caches populated
+            coin = symbol.replace("-USDT", "").replace("-USD", "").upper()
+            return int((self._max_lev_cache or {}).get(coin, 0) or 0)
+        except Exception as e:
+            logger.warning(f"HyperliquidAdapter.get_max_leverage({symbol}) failed: {e}")
+            return 0
+
     # ── Private helpers ──────────────────────────────────────────────
 
     def _round_price(self, price: float) -> float:
@@ -207,6 +227,10 @@ class HyperliquidAdapter(ExchangeAdapter):
                 asset["name"]: int(asset.get("szDecimals", 4))
                 for asset in universe
             }
+            self._max_lev_cache = {
+                asset["name"]: int(asset.get("maxLeverage", 0) or 0)
+                for asset in universe
+            }
             logger.info(
                 f"Loaded {len(self._asset_cache)} assets from Hyperliquid"
             )
@@ -215,6 +239,7 @@ class HyperliquidAdapter(ExchangeAdapter):
             # Refresh cache once in case asset was recently added
             self._asset_cache = None
             self._sz_decimals_cache = None
+            self._max_lev_cache = None
             raise ValueError(
                 f"Asset '{coin}' not found in Hyperliquid universe. "
                 f"Check symbol format (expected e.g. 'BTC', not 'BTC-USDT')."
@@ -457,6 +482,50 @@ class HyperliquidAdapter(ExchangeAdapter):
         except Exception as e:
             logger.warning(f"HyperliquidAdapter._get_fill_pnl failed for oid {oid}: {e}")
             return None
+
+    async def _update_leverage(self, asset_index: int, leverage: int, margin_mode: str) -> None:
+        """Send an updateLeverage action to Hyperliquid before opening a position.
+        Raises on failure so the caller can abort the order (fail-safe)."""
+        import msgpack
+        from eth_hash.auto import keccak
+
+        is_cross = (margin_mode or "isolated").lower() != "isolated"
+        nonce = int(time.time() * 1000)
+        action = {
+            "type":     "updateLeverage",
+            "asset":    asset_index,
+            "isCross":  is_cross,
+            "leverage": int(leverage),
+        }
+        action_bytes  = msgpack.packb(action, use_bin_type=True)
+        nonce_bytes   = nonce.to_bytes(8, "big")
+        connection_id = keccak(action_bytes + nonce_bytes + b'\x00')
+
+        source = "b" if self.base_url.endswith("testnet.xyz") else "a"
+        message = {"source": source, "connectionId": connection_id}
+        signed = self._account.sign_typed_data(
+            domain_data=_HL_DOMAIN,
+            message_types=_HL_TYPES,
+            message_data=message,
+        )
+        payload = {
+            "action":    action,
+            "nonce":     nonce,
+            "signature": {"r": hex(signed.r), "s": hex(signed.s), "v": signed.v},
+            "vaultAddress": None,
+        }
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.post(f"{self.base_url}/exchange", json=payload)
+            resp.raise_for_status()
+            data = resp.json()
+
+        status = data.get("status")
+        if status != "ok":
+            raise ValueError(f"Hyperliquid updateLeverage failed: {data}")
+        logger.info(
+            f"HyperliquidAdapter: leverage set to {leverage}x "
+            f"(asset={asset_index}, {'cross' if is_cross else 'isolated'})"
+        )
 
     async def list_instruments(self) -> list[str]:
         """Return all perpetual instrument symbols in BASE-USDT format."""

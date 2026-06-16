@@ -97,3 +97,8 @@ class ExchangeAdapter(ABC):
         Must never raise.
         """
         pass
+
+    async def get_max_leverage(self, symbol: str) -> int:
+        """Return the exchange's maximum allowed leverage for `symbol`.
+        Returns 0 if unknown. Subclasses should override. Must never raise."""
+        return 0
