@@ -1,170 +1,126 @@
-# Unify TV & AI Strategy Config Layouts
+# Streamline Builds — Task Report
 
-**Date:** 2026-06-16  
-**Branch:** main  
-**File changed:** `dashboard-ui/src/pages/Strategies.tsx` only. No backend changes, no migrations.
-
----
-
-## Files changed
-
-| File | Change |
-|------|--------|
-| `dashboard-ui/src/pages/Strategies.tsx` | Added `StrategyCommonFields` component; refactored Add + Edit modals for both TV and AI; fixed AI submit payloads; extended capital validation to AI |
+**Date:** 2026-06-16
+**Branch:** main
+**Files changed:** `docker-compose.yml`, `scripts/redeploy.sh` (new), `CLAUDE.md`
 
 ---
 
-## New `StrategyCommonFields` component
+## Summary
 
-**Signature:**
-```tsx
-function StrategyCommonFields({
-  form, setForm, accounts, lockSymbolAccount = false, originalCapitalAllocation,
-}: {
-  form: any;
-  setForm: (updater: (f: any) => any) => void;
-  accounts: { id: string; label: string; exchange: string; mode: string }[];
-  lockSymbolAccount?: boolean;
-  originalCapitalAllocation?: number;  // when set, shows drawdown-anchor warning on change
-})
-```
-
-Renders: `SectionDivider "Identity"` → Name / Symbol / Account → `SectionDivider "Capital & Risk"` → Default Leverage / Max Leverage grid → Margin Mode (only when `'margin_mode' in form`) → Capital / Margin / Drawdown grid → size hint → Quote Variants + Cross-Charting checkboxes.
-
-Used at:
-- **Add modal** (line 1387): single call outside the `addType` branches — shared by both TV and AI
-- **AI Edit modal** (line 1644): `lockSymbolAccount` + `originalCapitalAllocation` set
-- **TV Edit modal** (line 1811): same props
+All three changes applied and verified end-to-end:
+1. `docker-compose.yml` — shadowing bind-mount removed from `dashboard-ui`
+2. `scripts/redeploy.sh` — deploy script created and made executable
+3. `CLAUDE.md` — replaced with full project context doc
 
 ---
 
-## AI submit payload diffs
-
-### Add — AI POST `/api/dashboard/strategies`
+## Step 1 — `docker-compose.yml` diff
 
 ```diff
-  body: JSON.stringify({
-    name:                 addForm.name,
-    symbol:               addForm.symbol,
-    account_id:           addForm.account_id,
-    default_leverage:     parseInt(addForm.default_leverage),
-+   max_leverage:         parseInt(addForm.max_leverage),
-    strategy_source:      'ai_engine',
-+   capital_allocation:   parseFloat(addForm.capital_allocation),
-+   margin_per_trade:     parseFloat(addForm.margin_per_trade),
-+   max_drawdown_pct:     parseFloat(addForm.max_drawdown_pct),
-+   allow_quote_variants: addForm.allow_quote_variants,
-+   allow_cross_charting: addForm.allow_cross_charting,
-  }),
+   dashboard-ui:
+     build: ./dashboard-ui
+     environment:
+       VITE_API_BASE: /api/dashboard
+       VITE_WS_URL: /ws/orders
+-    volumes:
+-      - ./dashboard-ui/dist:/usr/share/nginx/html
+     depends_on:
+       dashboard-api:
+         condition: service_healthy
+     networks: [matp_net]
+     restart: unless-stopped
 ```
 
-### Edit — AI s1 PUT `/api/dashboard/strategies/:id`
-
-```diff
-  body: JSON.stringify({
-    name:                 editForm.name,
-    symbol:               editForm.symbol,
-    account_id:           editForm.account_id,
-    margin_mode:          editForm.margin_mode,
-    default_leverage:     parseInt(editForm.default_leverage),
-    max_leverage:         parseInt(editForm.max_leverage),
-+   capital_allocation:   parseFloat(editForm.capital_allocation),
-+   margin_per_trade:     parseFloat(editForm.margin_per_trade),
-+   max_drawdown_pct:     parseFloat(editForm.max_drawdown_pct),
-+   allow_quote_variants: editForm.allow_quote_variants,
-+   allow_cross_charting: editForm.allow_cross_charting,
-  }),
+**Validation:**
 ```
+docker compose config >/dev/null && echo "compose OK"
+→ compose OK
 
-### Capital validation guard (now applies to both types)
-
-```diff
-- if (editTarget.strategy_source !== 'ai_engine') {
--   if (parseFloat(editForm.capital_allocation ?? '0') <= 0 || ...) { ... }
-- }
-+ if (parseFloat(editForm.capital_allocation ?? '0') <= 0 || ...) { ... }
-```
-
-Same change applied to `handleAddStrategy` (removed `addType === 'tradingview'` wrapper).
-
-### `handleEdit` — interval added to editForm
-
-```diff
-+ interval:                   String(strategy.interval ?? '1h'),
-  max_daily_signals:          String(strategy.max_daily_signals ?? 500),
+grep -c ':/usr/share/nginx/html' docker-compose.yml
+→ 0
 ```
 
 ---
 
-## §5 Verification — raw output
+## Step 2 — `scripts/redeploy.sh`
 
-### Build
+- Created at `scripts/redeploy.sh`
+- Executable bit set: `-rwxrwxr-x`
 
+---
+
+## Step 3 — `CLAUDE.md`
+
+Replaced the old 7-line stub with the full project context document covering:
+- Golden rules
+- Deploy workflow (use `./scripts/redeploy.sh`)
+- UI image-as-source-of-truth explanation (with explicit warning against re-adding the mount)
+- nginx config reload procedure
+- Deploy verification commands
+- "Old UI still showing" browser cache explanation
+
+---
+
+## Step 4 — Verification output (raw)
+
+### `./scripts/redeploy.sh dashboard-ui --clean`
 ```
-> matp-dashboard-ui@1.0.0 build
-> tsc && vite build
-
-vite v5.4.21 building for production...
-✓ 860 modules transformed.
-dist/index.html                   0.81 kB │ gzip:   0.40 kB
-dist/assets/index-BQKF-5_P.css   22.88 kB │ gzip:   4.66 kB
-dist/assets/index-DvGiQb5U.js   686.58 kB │ gzip: 184.91 kB
-✓ built in 1m 3s
-```
-
-`tsc --noEmit` exit code: **0** (no TypeScript errors).
-
-### Source grep
-
-```
-grep -n "StrategyCommonFields" dashboard-ui/src/pages/Strategies.tsx
-529:function StrategyCommonFields({
-1387:            <StrategyCommonFields form={addForm} setForm={setAddForm} accounts={accounts} />
-1644:                <StrategyCommonFields
-1811:                <StrategyCommonFields
-
-grep -nc 'SectionDivider label="Capital & Risk"' dashboard-ui/src/pages/Strategies.tsx
-1
-
-grep -n 'SectionDivider label="Signal Source"' dashboard-ui/src/pages/Strategies.tsx
-1392:                <SectionDivider label="Signal Source" />
-1819:                <SectionDivider label="Signal Source" />
-
-grep -n 'SectionDivider label="Dry-Run"' dashboard-ui/src/pages/Strategies.tsx
-1546:                <SectionDivider label="Dry-Run" />
-1777:                <SectionDivider label="Dry-Run" />
-```
-
-### Built bundle grep
-
-```
-grep -rl 'Capital & Risk' dashboard-ui/dist/
-dashboard-ui/dist/assets/index-DvGiQb5U.js
-
-grep -rl 'Signal Source' dashboard-ui/dist/
-dashboard-ui/dist/assets/index-DvGiQb5U.js
+▶ Building dashboard-ui (no cache) …
+...
+#11 [builder 4/6] RUN npm ci
+#11 added 175 packages, and audited 176 packages in 52s
+...
+#13 [builder 6/6] RUN npm run build
+#13 vite v5.4.21 building for production...
+#13 ✓ 860 modules transformed.
+#13 dist/index.html                   0.81 kB │ gzip:   0.40 kB
+#13 dist/assets/index-BQKF-5_P.css   22.88 kB │ gzip:   4.66 kB
+#13 dist/assets/index-DvGiQb5U.js   686.58 kB │ gzip: 185.39 kB
+#13 ✓ built in 43.16s
+...
+ Container matp-dashboard-ui-1 Recreated
+ Container matp-dashboard-ui-1 Started
+▶ Verifying …
+NAME                  IMAGE               COMMAND   SERVICE        CREATED         STATUS         PORTS
+matp-dashboard-ui-1   matp-dashboard-ui   ...       dashboard-ui   8 seconds ago   Up 3 seconds   80/tcp, 3000/tcp
+   live dashboard-ui asset: index-DvGiQb5U.js
+✓ dashboard-ui redeployed.
 ```
 
-### AI capital field end-to-end
-
+### 1) Container state
 ```
-POST /api/dashboard/strategies (capital_allocation=250)
-→ {"id":"verify-ai-cap-373b","name":"verify-ai-cap",...}
-
-curl -s http://localhost/api/dashboard/strategies | python3 -c "..."
-→ verify-ai-cap 250   ✅
-
-DELETE verify-ai-cap-373b (after stop)
-→ {"deleted":"verify-ai-cap-373b"}   ✅
+NAME                  IMAGE               COMMAND                  SERVICE        CREATED          STATUS         PORTS
+matp-dashboard-ui-1   matp-dashboard-ui   "/docker-entrypoint.…"   dashboard-ui   14 seconds ago   Up 9 seconds   80/tcp, 3000/tcp
 ```
 
-### Visual checklist
+### 2) Known string present in image-baked bundle
+```
+$ docker compose exec -T dashboard-ui grep -rl 'Signal Source' /usr/share/nginx/html
+/usr/share/nginx/html/assets/index-DvGiQb5U.js
+```
+String found under `/usr/share/nginx/html/assets/` — bundle is served from the image.
 
-Cannot open a browser in this environment. Visual checks were not run. The following are confirmed by source inspection only:
+### 3) Live asset hash via reverse proxy
+```
+$ curl -s http://localhost/ | grep -oE 'index-[A-Za-z0-9_-]+\.js'
+index-DvGiQb5U.js
+```
+Matches the hash produced by the Docker build (`dist/assets/index-DvGiQb5U.js`).
 
-- [x] `StrategyCommonFields` renders Identity + Capital & Risk identically for all four modal paths (single shared component, zero per-branch drift possible)
-- [x] AI Add/Edit now shows Capital Allocation / Margin Per Trade / Max Drawdown % / routing checkboxes (previously absent — now in common block)
-- [x] TV-only Interval + Max Daily Signals appear under `Signal Source` divider in both add and edit tails
-- [x] AI-only sections (Operational Parameters → LLM → Strategy Prompt → Dry-Run) appear in the tail
-- [ ] Visual confirmation of modal render — not run (no browser access)
-- [ ] Editing an AI strategy's Capital Allocation and re-opening modal — not run
+### 4) Container mounts — dist bind-mount is gone
+```
+$ docker inspect "$(docker compose ps -q dashboard-ui)" \
+    --format '{{range .Mounts}}{{.Source}} -> {{.Destination}}{{"\n"}}{{end}}'
+(no output)
+```
+**Zero mounts** on the container. The `./dashboard-ui/dist:/usr/share/nginx/html` bind-mount
+is confirmed absent. The image is the sole source of truth for what nginx serves.
+
+---
+
+## Result
+
+Fix verified end-to-end. `./scripts/redeploy.sh dashboard-ui` will now reliably replace what
+nginx serves on every run. The split-brain condition (host `dist/` shadowing the image) is
+eliminated.

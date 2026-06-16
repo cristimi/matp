@@ -145,8 +145,6 @@ services:
     environment:
       VITE_API_BASE: /api/dashboard
       VITE_WS_URL: /ws/orders
-    volumes:
-      - ./dashboard-ui/dist:/usr/share/nginx/html
     depends_on:
       dashboard-api:
         condition: service_healthy
