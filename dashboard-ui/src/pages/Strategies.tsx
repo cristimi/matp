@@ -526,6 +526,137 @@ function SectionDivider({ label }: { label: string }) {
   );
 }
 
+function StrategyCommonFields({
+  form, setForm, accounts, lockSymbolAccount = false, originalCapitalAllocation,
+}: {
+  form: any;
+  setForm: (updater: (f: any) => any) => void;
+  accounts: { id: string; label: string; exchange: string; mode: string }[];
+  lockSymbolAccount?: boolean;
+  originalCapitalAllocation?: number;
+}) {
+  const lockStyle: React.CSSProperties = lockSymbolAccount
+    ? { ...inputStyle, opacity: 0.5 }
+    : inputStyle;
+  return (
+    <>
+      <SectionDivider label="Identity" />
+      <FieldRow label="Name">
+        <input value={form.name}
+          onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
+          placeholder="e.g. BTC Trend"
+          style={inputStyle} />
+      </FieldRow>
+      <FieldRow label="Symbol">
+        <input value={form.symbol}
+          onChange={e => setForm(f => ({ ...f, symbol: e.target.value }))}
+          placeholder="e.g. BTC-USDT"
+          disabled={lockSymbolAccount}
+          style={{ ...lockStyle, fontFamily:'JetBrains Mono, monospace' }} />
+        <p style={{ fontSize:'11px', color:'var(--dim)', marginTop:'4px' }}>
+          Use dash format: BTC-USDT
+        </p>
+      </FieldRow>
+      <FieldRow label="Account">
+        <select value={form.account_id}
+          onChange={e => setForm(f => ({ ...f, account_id: e.target.value }))}
+          disabled={lockSymbolAccount}
+          style={lockStyle}>
+          <option value="">— Select account —</option>
+          {accounts.map(a => (
+            <option key={a.id} value={a.id}>{a.label} ({a.exchange} / {a.mode})</option>
+          ))}
+        </select>
+      </FieldRow>
+
+      <SectionDivider label="Capital & Risk" />
+      <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'10px', marginBottom:'14px' }}>
+        <FieldRow label="Default Leverage">
+          <input type="number" value={form.default_leverage}
+            onChange={e => setForm(f => ({ ...f, default_leverage: e.target.value }))}
+            style={inputStyle} />
+        </FieldRow>
+        <FieldRow label="Max Leverage">
+          <input type="number" value={form.max_leverage}
+            onChange={e => setForm(f => ({ ...f, max_leverage: e.target.value }))}
+            style={inputStyle} />
+        </FieldRow>
+      </div>
+      {'margin_mode' in form && (
+        <FieldRow label="Margin Mode">
+          <select value={form.margin_mode}
+            onChange={e => setForm(f => ({ ...f, margin_mode: e.target.value }))}
+            style={inputStyle}>
+            <option value="isolated">Isolated</option>
+            <option value="cross">Cross</option>
+          </select>
+        </FieldRow>
+      )}
+      <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:'10px', marginBottom:'14px' }}>
+        <div>
+          <label style={labelStyle}>Capital ($)</label>
+          <input type="number" step="0.01" min="0"
+            value={form.capital_allocation}
+            onChange={e => setForm(f => ({ ...f, capital_allocation: e.target.value }))}
+            style={inputStyle} />
+          {originalCapitalAllocation !== undefined &&
+           parseFloat(form.capital_allocation ?? '0') !== originalCapitalAllocation && (
+            <p style={{ fontSize:'10px', color:'#d97706', marginTop:'4px' }}>
+              Changing capital allocation will reset the drawdown anchor.
+            </p>
+          )}
+        </div>
+        <div>
+          <label style={labelStyle}>Margin / Trade ($)</label>
+          <input type="number" step="0.01" min="0"
+            value={form.margin_per_trade}
+            onChange={e => setForm(f => ({ ...f, margin_per_trade: e.target.value }))}
+            style={inputStyle} />
+        </div>
+        <div>
+          <label style={labelStyle}>Max Drawdown %</label>
+          <input type="number" step="0.1" min="0"
+            value={form.max_drawdown_pct}
+            onChange={e => setForm(f => ({ ...f, max_drawdown_pct: e.target.value }))}
+            style={inputStyle} />
+        </div>
+      </div>
+      {parseFloat(form.margin_per_trade) > 0 && parseFloat(form.default_leverage) > 0 && (
+        <p style={{ fontSize:'11px', color:'var(--dim)', marginBottom:'14px' }}>
+          Max order size: <strong style={{ color:'var(--text)', fontFamily:'JetBrains Mono, monospace' }}>
+            ${(parseFloat(form.margin_per_trade) * parseFloat(form.default_leverage)).toFixed(2)}
+          </strong> (margin × leverage)
+        </p>
+      )}
+      <div style={{
+        display:'flex', gap:'20px', marginBottom:'20px',
+        padding:'12px 14px',
+        background:'var(--bg3)', borderRadius:'8px',
+        border:'1px solid var(--border)',
+      }}>
+        <label style={{ display:'flex', alignItems:'center', gap:'7px', cursor:'pointer', userSelect:'none' }}>
+          <input type="checkbox" checked={form.allow_quote_variants}
+            onChange={e => setForm(f => ({ ...f, allow_quote_variants: e.target.checked }))} />
+          <span style={{ fontSize:'11px', fontWeight:600, letterSpacing:'.06em',
+                          textTransform:'uppercase', color:'var(--dim)' }}>
+            Quote Variants
+          </span>
+        </label>
+        <label style={{ display:'flex', alignItems:'center', gap:'7px', cursor:'pointer', userSelect:'none' }}>
+          <input type="checkbox" checked={form.allow_cross_charting}
+            onChange={e => setForm(f => ({ ...f, allow_cross_charting: e.target.checked }))} />
+          <span style={{
+            fontSize:'11px', fontWeight:600, letterSpacing:'.06em', textTransform:'uppercase',
+            color: form.allow_cross_charting ? 'var(--failed-color)' : 'var(--dim)',
+          }}>
+            Cross-Charting {form.allow_cross_charting ? '⚠' : ''}
+          </span>
+        </label>
+      </div>
+    </>
+  );
+}
+
 interface AiModel { id: string; display_name: string; verified?: boolean; }
 
 const PROVIDERS = [
@@ -761,6 +892,7 @@ export default function Strategies() {
       margin_mode:                strategy.margin_mode ?? 'isolated',
       default_leverage:           String(strategy.default_leverage ?? 1),
       max_leverage:               String(strategy.max_leverage ?? 10),
+      interval:                   String(strategy.interval ?? '1h'),
       max_daily_signals:          String(strategy.max_daily_signals ?? 500),
       capital_allocation:         String(strategy.capital_allocation ?? 100),
       margin_per_trade:           String(strategy.margin_per_trade ?? 5),
@@ -810,11 +942,9 @@ export default function Strategies() {
 
   const handleEditSubmit = async () => {
     if (!editTarget) return;
-    if (editTarget.strategy_source !== 'ai_engine') {
-      if (parseFloat(editForm.capital_allocation ?? '0') <= 0 || parseFloat(editForm.margin_per_trade ?? '0') <= 0) {
-        setEditError('Capital allocation and margin per trade must be greater than 0');
-        return;
-      }
+    if (parseFloat(editForm.capital_allocation ?? '0') <= 0 || parseFloat(editForm.margin_per_trade ?? '0') <= 0) {
+      setEditError('Capital allocation and margin per trade must be greater than 0');
+      return;
     }
     setEditLoading(true);
     setEditError(null);
@@ -823,12 +953,17 @@ export default function Strategies() {
         const s1 = await fetch(`/api/dashboard/strategies/${editTarget.id}`, {
           method: 'PUT', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            name:             editForm.name,
-            symbol:           editForm.symbol,
-            account_id:       editForm.account_id,
-            margin_mode:      editForm.margin_mode,
-            default_leverage: parseInt(editForm.default_leverage),
-            max_leverage:     parseInt(editForm.max_leverage),
+            name:                 editForm.name,
+            symbol:               editForm.symbol,
+            account_id:           editForm.account_id,
+            margin_mode:          editForm.margin_mode,
+            default_leverage:     parseInt(editForm.default_leverage),
+            max_leverage:         parseInt(editForm.max_leverage),
+            capital_allocation:   parseFloat(editForm.capital_allocation),
+            margin_per_trade:     parseFloat(editForm.margin_per_trade),
+            max_drawdown_pct:     parseFloat(editForm.max_drawdown_pct),
+            allow_quote_variants: editForm.allow_quote_variants,
+            allow_cross_charting: editForm.allow_cross_charting,
           }),
         });
         if (!s1.ok) { setEditError((await s1.json()).error || 'Failed to update strategy'); return; }
@@ -925,11 +1060,9 @@ export default function Strategies() {
 
   const handleAddStrategy = async () => {
     setAddError(null);
-    if (addType === 'tradingview') {
-      if (parseFloat(addForm.capital_allocation) <= 0 || parseFloat(addForm.margin_per_trade) <= 0) {
-        setAddError('Capital allocation and margin per trade must be greater than 0');
-        return;
-      }
+    if (parseFloat(addForm.capital_allocation) <= 0 || parseFloat(addForm.margin_per_trade) <= 0) {
+      setAddError('Capital allocation and margin per trade must be greater than 0');
+      return;
     }
     setAddLoading(true);
     try {
@@ -967,11 +1100,17 @@ export default function Strategies() {
           method:  'POST',
           headers: { 'Content-Type': 'application/json' },
           body:    JSON.stringify({
-            name:             addForm.name,
-            symbol:           addForm.symbol,
-            account_id:       addForm.account_id,
-            default_leverage: parseInt(addForm.default_leverage),
-            strategy_source:  'ai_engine',
+            name:                 addForm.name,
+            symbol:               addForm.symbol,
+            account_id:           addForm.account_id,
+            default_leverage:     parseInt(addForm.default_leverage),
+            max_leverage:         parseInt(addForm.max_leverage),
+            strategy_source:      'ai_engine',
+            capital_allocation:   parseFloat(addForm.capital_allocation),
+            margin_per_trade:     parseFloat(addForm.margin_per_trade),
+            max_drawdown_pct:     parseFloat(addForm.max_drawdown_pct),
+            allow_quote_variants: addForm.allow_quote_variants,
+            allow_cross_charting: addForm.allow_cross_charting,
           }),
         });
         const stratData = await stratRes.json();
@@ -1244,197 +1383,34 @@ export default function Strategies() {
               </p>
             )}
 
-            {/* ── TradingView form ── */}
+            {/* ── Common fields (Identity + Capital & Risk) ── */}
+            <StrategyCommonFields form={addForm} setForm={setAddForm} accounts={accounts} />
+
+            {/* ── TradingView tail ── */}
             {addType === 'tradingview' && (
               <>
-                <div style={{ marginBottom:'14px' }}>
-                  <label style={labelStyle}>Strategy Name *</label>
-                  <input
-                    value={addForm.name}
-                    onChange={e => setAddForm(f => ({ ...f, name: e.target.value }))}
-                    placeholder="e.g. BTC RSI 5m"
-                    style={inputStyle}
-                  />
-                </div>
-
-                <div style={{ marginBottom:'14px' }}>
-                  <label style={labelStyle}>Execution Symbol *</label>
-                  <input
-                    value={addForm.symbol}
-                    onChange={e => setAddForm(f => ({ ...f, symbol: e.target.value }))}
-                    placeholder="e.g. BTC-USDT"
-                    style={{ ...inputStyle, fontFamily:'JetBrains Mono, monospace' }}
-                  />
-                  <p style={{ fontSize:'11px', color:'var(--dim)', marginTop:'4px' }}>
-                    Use dash format: BTC-USDT
-                  </p>
-                </div>
-
-                <div style={{ marginBottom:'14px' }}>
-                  <label style={labelStyle}>Exchange Account *</label>
-                  <select
-                    value={addForm.account_id}
-                    onChange={e => setAddForm(f => ({ ...f, account_id: e.target.value }))}
-                    style={inputStyle}>
-                    <option value="">— Select account —</option>
-                    {accounts.map(a => (
-                      <option key={a.id} value={a.id}>
-                        {a.label} ({a.exchange} / {a.mode})
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <div style={{ marginBottom:'14px' }}>
-                  <label style={labelStyle}>Interval</label>
-                  <select
-                    value={addForm.interval}
+                <SectionDivider label="Signal Source" />
+                <FieldRow label="Interval">
+                  <select value={addForm.interval}
                     onChange={e => setAddForm(f => ({ ...f, interval: e.target.value }))}
                     style={inputStyle}>
                     {['1m','3m','5m','15m','30m','1h','2h','4h','6h','12h','1d'].map(i => (
                       <option key={i} value={i}>{i}</option>
                     ))}
                   </select>
-                </div>
-
-                <div style={{ marginBottom:'14px' }}>
-                  <label style={labelStyle}>Default Leverage</label>
+                </FieldRow>
+                <FieldRow label="Max Daily Signals">
                   <input type="number"
-                    value={addForm.default_leverage}
-                    onChange={e => setAddForm(f => ({ ...f, default_leverage: e.target.value }))}
-                    style={inputStyle}
-                  />
-                </div>
-
-                <div style={{
-                  display:'grid', gridTemplateColumns:'1fr 1fr', gap:'10px',
-                  marginBottom:'14px',
-                }}>
-                  {[
-                    { key:'max_leverage',               label:'Max Leverage',  placeholder:'10' },
-                    { key:'max_daily_signals',          label:'Daily Signals', placeholder:'500' },
-                  ].map(field => (
-                    <div key={field.key}>
-                      <label style={{ ...labelStyle, fontSize:'10px' }}>{field.label}</label>
-                      <input type="number"
-                        value={(addForm as any)[field.key]}
-                        onChange={e => setAddForm(f => ({ ...f, [field.key]: e.target.value }))}
-                        placeholder={field.placeholder}
-                        style={{ ...inputStyle, fontFamily:'JetBrains Mono, monospace', fontSize:'12px' }}
-                      />
-                    </div>
-                  ))}
-                </div>
-
-                <SectionDivider label="Capital & Risk" />
-                <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:'10px', marginBottom:'14px' }}>
-                  <div>
-                    <label style={labelStyle}>Capital ($)</label>
-                    <input type="number" step="0.01" min="0"
-                      value={addForm.capital_allocation}
-                      onChange={e => setAddForm(f => ({ ...f, capital_allocation: e.target.value }))}
-                      style={inputStyle} />
-                  </div>
-                  <div>
-                    <label style={labelStyle}>Margin / Trade ($)</label>
-                    <input type="number" step="0.01" min="0"
-                      value={addForm.margin_per_trade}
-                      onChange={e => setAddForm(f => ({ ...f, margin_per_trade: e.target.value }))}
-                      style={inputStyle} />
-                  </div>
-                  <div>
-                    <label style={labelStyle}>Max Drawdown %</label>
-                    <input type="number" step="0.1" min="0"
-                      value={addForm.max_drawdown_pct}
-                      onChange={e => setAddForm(f => ({ ...f, max_drawdown_pct: e.target.value }))}
-                      style={inputStyle} />
-                  </div>
-                </div>
-                {parseFloat(addForm.margin_per_trade) > 0 && parseFloat(addForm.default_leverage) > 0 && (
-                  <p style={{ fontSize:'11px', color:'var(--dim)', marginBottom:'14px' }}>
-                    Max order size: <strong style={{ color:'var(--text)', fontFamily:'JetBrains Mono, monospace' }}>
-                      ${(parseFloat(addForm.margin_per_trade) * parseFloat(addForm.default_leverage)).toFixed(2)}
-                    </strong> (margin × leverage)
-                  </p>
-                )}
-
-                <div style={{
-                  display:'flex', gap:'20px', marginBottom:'20px',
-                  padding:'12px 14px',
-                  background:'var(--bg3)', borderRadius:'8px',
-                  border:'1px solid var(--border)',
-                }}>
-                  <label style={{ display:'flex', alignItems:'center', gap:'7px', cursor:'pointer', userSelect:'none' }}>
-                    <input type="checkbox" checked={addForm.allow_quote_variants}
-                      onChange={e => setAddForm(f => ({ ...f, allow_quote_variants: e.target.checked }))} />
-                    <span style={{ fontSize:'11px', fontWeight:600, letterSpacing:'.06em',
-                                    textTransform:'uppercase', color:'var(--dim)' }}>
-                      Quote Variants
-                    </span>
-                  </label>
-                  <label style={{ display:'flex', alignItems:'center', gap:'7px', cursor:'pointer', userSelect:'none' }}>
-                    <input type="checkbox" checked={addForm.allow_cross_charting}
-                      onChange={e => setAddForm(f => ({ ...f, allow_cross_charting: e.target.checked }))} />
-                    <span style={{
-                      fontSize:'11px', fontWeight:600, letterSpacing:'.06em', textTransform:'uppercase',
-                      color: addForm.allow_cross_charting ? 'var(--failed-color)' : 'var(--dim)',
-                    }}>
-                      Cross-Charting {addForm.allow_cross_charting ? '⚠' : ''}
-                    </span>
-                  </label>
-                </div>
+                    value={addForm.max_daily_signals}
+                    onChange={e => setAddForm(f => ({ ...f, max_daily_signals: e.target.value }))}
+                    style={inputStyle} />
+                </FieldRow>
               </>
             )}
 
-            {/* ── AI Autonomous form ── */}
+            {/* ── AI Autonomous tail ── */}
             {addType === 'ai' && (
               <>
-                {/* Section 1: Identity */}
-                <SectionDivider label="Identity" />
-                <div style={{ marginBottom:'14px' }}>
-                  <label style={labelStyle}>Strategy Name *</label>
-                  <input value={addForm.name}
-                    onChange={e => setAddForm(f => ({ ...f, name: e.target.value }))}
-                    placeholder="e.g. BTC AI Trend"
-                    style={inputStyle} />
-                </div>
-                <div style={{ marginBottom:'14px' }}>
-                  <label style={labelStyle}>Symbol *</label>
-                  <input value={addForm.symbol}
-                    onChange={e => setAddForm(f => ({ ...f, symbol: e.target.value }))}
-                    placeholder="e.g. BTC-USDT"
-                    style={{ ...inputStyle, fontFamily:'JetBrains Mono, monospace' }} />
-                </div>
-                <div style={{ marginBottom:'14px' }}>
-                  <label style={labelStyle}>Exchange Account *</label>
-                  <select value={addForm.account_id}
-                    onChange={e => setAddForm(f => ({ ...f, account_id: e.target.value }))}
-                    style={inputStyle}>
-                    <option value="">— Select account —</option>
-                    {accounts.map(a => (
-                      <option key={a.id} value={a.id}>{a.label} ({a.exchange} / {a.mode})</option>
-                    ))}
-                  </select>
-                </div>
-                <div style={{
-                  display:'grid', gridTemplateColumns:'1fr 1fr', gap:'10px',
-                  marginBottom:'14px',
-                }}>
-                  <div>
-                    <label style={labelStyle}>Default Leverage</label>
-                    <input type="number" value={addForm.default_leverage}
-                      onChange={e => setAddForm(f => ({ ...f, default_leverage: e.target.value }))}
-                      style={inputStyle} />
-                  </div>
-                  <div>
-                    <label style={labelStyle}>Margin Mode</label>
-                    <select style={inputStyle}>
-                      <option value="isolated">Isolated</option>
-                      <option value="cross">Cross</option>
-                    </select>
-                  </div>
-                </div>
-
                 {/* Section 2: Operational Parameters */}
                 <SectionDivider label="Operational Parameters" />
                 <p style={{ fontSize:'10px', fontWeight:600, textTransform:'uppercase',
@@ -1566,8 +1542,8 @@ export default function Strategies() {
                   />
                 </div>
 
-                {/* Section 5: Risk Config */}
-                <SectionDivider label="Risk Config" />
+                {/* Section 5: Dry-Run */}
+                <SectionDivider label="Dry-Run" />
                 <div style={{ marginBottom:'14px' }}>
                   <label style={labelStyle}>Dry Run Mode</label>
                   <div style={{
@@ -1665,56 +1641,13 @@ export default function Strategies() {
 
             {editTarget.strategy_source === 'ai_engine' ? (
               <>
-                {/* Section 1: Identity */}
-                <SectionDivider label="Identity" />
-                <div style={{ marginBottom:'14px' }}>
-                  <label style={labelStyle}>Strategy Name</label>
-                  <input value={editForm.name}
-                    onChange={e => setEditForm((f:any) => ({ ...f, name: e.target.value }))}
-                    style={inputStyle} />
-                </div>
-                <div style={{ marginBottom:'14px' }}>
-                  <label style={labelStyle}>Symbol</label>
-                  <input value={editForm.symbol}
-                    onChange={e => setEditForm((f:any) => ({ ...f, symbol: e.target.value }))}
-                    disabled={(editTarget.open_positions_count ?? 0) > 0}
-                    style={{ ...inputStyle, fontFamily:'JetBrains Mono, monospace',
-                      opacity:(editTarget.open_positions_count ?? 0) > 0 ? 0.5 : 1 }} />
-                </div>
-                <div style={{ marginBottom:'14px' }}>
-                  <label style={labelStyle}>Exchange Account</label>
-                  <select value={editForm.account_id}
-                    onChange={e => setEditForm((f:any) => ({ ...f, account_id: e.target.value }))}
-                    disabled={(editTarget.open_positions_count ?? 0) > 0}
-                    style={{ ...inputStyle, opacity:(editTarget.open_positions_count ?? 0) > 0 ? 0.5 : 1 }}>
-                    {accounts.map(a => (
-                      <option key={a.id} value={a.id}>{a.label} ({a.exchange} / {a.mode})</option>
-                    ))}
-                  </select>
-                </div>
-                <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:'10px', marginBottom:'14px' }}>
-                  <div>
-                    <label style={labelStyle}>Default Leverage</label>
-                    <input type="number" value={editForm.default_leverage}
-                      onChange={e => setEditForm((f:any) => ({ ...f, default_leverage: e.target.value }))}
-                      style={inputStyle} />
-                  </div>
-                  <div>
-                    <label style={labelStyle}>Max Leverage</label>
-                    <input type="number" value={editForm.max_leverage}
-                      onChange={e => setEditForm((f:any) => ({ ...f, max_leverage: e.target.value }))}
-                      style={inputStyle} />
-                  </div>
-                  <div>
-                    <label style={labelStyle}>Margin Mode</label>
-                    <select value={editForm.margin_mode}
-                      onChange={e => setEditForm((f:any) => ({ ...f, margin_mode: e.target.value }))}
-                      style={inputStyle}>
-                      <option value="isolated">Isolated</option>
-                      <option value="cross">Cross</option>
-                    </select>
-                  </div>
-                </div>
+                <StrategyCommonFields
+                  form={editForm}
+                  setForm={setEditForm}
+                  accounts={accounts}
+                  lockSymbolAccount={(editTarget.open_positions_count ?? 0) > 0}
+                  originalCapitalAllocation={Number(editTarget.capital_allocation ?? 0)}
+                />
 
                 {/* Section 2: Operational Parameters */}
                 <SectionDivider label="Operational Parameters" />
@@ -1840,8 +1773,8 @@ export default function Strategies() {
                   />
                 </div>
 
-                {/* Section 5: Risk Configuration */}
-                <SectionDivider label="Risk Configuration" />
+                {/* Section 5: Dry-Run */}
+                <SectionDivider label="Dry-Run" />
                 <div style={{ marginBottom:'14px' }}>
                   <label style={labelStyle}>Dry Run Mode</label>
                   <div style={{
@@ -1875,124 +1808,30 @@ export default function Strategies() {
               </>
             ) : (
               <>
-                <FieldRow label="Name">
-                  <input value={editForm.name}
-                    onChange={e => setEditForm((f:any) => ({ ...f, name: e.target.value }))}
-                    style={inputStyle} />
-                </FieldRow>
+                <StrategyCommonFields
+                  form={editForm}
+                  setForm={setEditForm}
+                  accounts={accounts}
+                  lockSymbolAccount={(editTarget.open_positions_count ?? 0) > 0}
+                  originalCapitalAllocation={Number(editTarget.capital_allocation ?? 0)}
+                />
 
-                <FieldRow label="Symbol">
-                  <input value={editForm.symbol}
-                    onChange={e => setEditForm((f:any) => ({ ...f, symbol: e.target.value }))}
-                    disabled={(editTarget.open_positions_count ?? 0) > 0}
-                    style={{ ...inputStyle, fontFamily:'JetBrains Mono, monospace',
-                      opacity:(editTarget.open_positions_count ?? 0) > 0 ? 0.5 : 1 }} />
-                </FieldRow>
-
-                <FieldRow label="Account">
-                  <select value={editForm.account_id}
-                    onChange={e => setEditForm((f:any) => ({ ...f, account_id: e.target.value }))}
-                    disabled={(editTarget.open_positions_count ?? 0) > 0}
-                    style={{ ...inputStyle, opacity:(editTarget.open_positions_count ?? 0) > 0 ? 0.5 : 1 }}>
-                    {accounts.map(a => (
-                      <option key={a.id} value={a.id}>
-                        {a.label} ({a.exchange} / {a.mode})
-                      </option>
+                <SectionDivider label="Signal Source" />
+                <FieldRow label="Interval">
+                  <select value={editForm.interval}
+                    onChange={e => setEditForm((f:any) => ({ ...f, interval: e.target.value }))}
+                    style={inputStyle}>
+                    {['1m','3m','5m','15m','30m','1h','2h','4h','6h','12h','1d'].map(i => (
+                      <option key={i} value={i}>{i}</option>
                     ))}
                   </select>
                 </FieldRow>
-
-                <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr',
-                              gap:'10px', marginBottom:'14px' }}>
-                  <FieldRow label="Default Leverage">
-                    <input type="number" value={editForm.default_leverage}
-                      onChange={e => setEditForm((f:any) => ({ ...f, default_leverage: e.target.value }))}
-                      style={inputStyle} />
-                  </FieldRow>
-                  <FieldRow label="Max Leverage">
-                    <input type="number" value={editForm.max_leverage}
-                      onChange={e => setEditForm((f:any) => ({ ...f, max_leverage: e.target.value }))}
-                      style={inputStyle} />
-                  </FieldRow>
-                  <FieldRow label="Margin Mode">
-                    <select value={editForm.margin_mode}
-                      onChange={e => setEditForm((f:any) => ({ ...f, margin_mode: e.target.value }))}
-                      style={inputStyle}>
-                      <option value="isolated">Isolated</option>
-                      <option value="cross">Cross</option>
-                    </select>
-                  </FieldRow>
-                </div>
-
-                <div style={{ marginBottom:'14px' }}>
-                  <label style={labelStyle}>Daily Signals</label>
+                <FieldRow label="Daily Signals">
                   <input type="number"
                     value={editForm.max_daily_signals}
                     onChange={e => setEditForm((f:any) => ({ ...f, max_daily_signals: e.target.value }))}
                     style={inputStyle} />
-                </div>
-
-                <SectionDivider label="Capital & Risk" />
-                <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:'10px', marginBottom:'14px' }}>
-                  <div>
-                    <label style={labelStyle}>Capital ($)</label>
-                    <input type="number" step="0.01" min="0"
-                      value={editForm.capital_allocation ?? '0'}
-                      onChange={e => setEditForm((f:any) => ({ ...f, capital_allocation: e.target.value }))}
-                      style={inputStyle} />
-                    {editTarget && parseFloat(editForm.capital_allocation ?? '0') !== (editTarget.capital_allocation ?? 0) && (
-                      <p style={{ fontSize:'10px', color:'#d97706', marginTop:'4px' }}>
-                        Changing capital allocation will reset the drawdown anchor.
-                      </p>
-                    )}
-                  </div>
-                  <div>
-                    <label style={labelStyle}>Margin / Trade ($)</label>
-                    <input type="number" step="0.01" min="0"
-                      value={editForm.margin_per_trade ?? '0'}
-                      onChange={e => setEditForm((f:any) => ({ ...f, margin_per_trade: e.target.value }))}
-                      style={inputStyle} />
-                  </div>
-                  <div>
-                    <label style={labelStyle}>Max Drawdown %</label>
-                    <input type="number" step="0.1" min="0"
-                      value={editForm.max_drawdown_pct ?? '0'}
-                      onChange={e => setEditForm((f:any) => ({ ...f, max_drawdown_pct: e.target.value }))}
-                      style={inputStyle} />
-                  </div>
-                </div>
-                {parseFloat(editForm.margin_per_trade ?? '0') > 0 && parseFloat(editForm.default_leverage ?? '0') > 0 && (
-                  <p style={{ fontSize:'11px', color:'var(--dim)', marginBottom:'14px' }}>
-                    Max order size: <strong style={{ color:'var(--text)', fontFamily:'JetBrains Mono, monospace' }}>
-                      ${(parseFloat(editForm.margin_per_trade) * parseFloat(editForm.default_leverage)).toFixed(2)}
-                    </strong> (margin × leverage)
-                  </p>
-                )}
-
-                <div style={{
-                  display:'flex', gap:'20px', marginBottom:'20px',
-                  padding:'10px 14px', background:'var(--bg3)',
-                  borderRadius:'8px', border:'1px solid var(--border)',
-                }}>
-                  <label style={{ display:'flex', alignItems:'center', gap:'7px', cursor:'pointer' }}>
-                    <input type="checkbox" checked={editForm.allow_quote_variants}
-                      onChange={e => setEditForm((f:any) => ({ ...f, allow_quote_variants: e.target.checked }))} />
-                    <span style={{ fontSize:'11px', fontWeight:600,
-                                    textTransform:'uppercase', letterSpacing:'.06em',
-                                    color:'var(--dim)' }}>Quote Variants</span>
-                  </label>
-                  <label style={{ display:'flex', alignItems:'center', gap:'7px', cursor:'pointer' }}>
-                    <input type="checkbox" checked={editForm.allow_cross_charting}
-                      onChange={e => setEditForm((f:any) => ({ ...f, allow_cross_charting: e.target.checked }))} />
-                    <span style={{
-                      fontSize:'11px', fontWeight:600,
-                      textTransform:'uppercase', letterSpacing:'.06em',
-                      color: editForm.allow_cross_charting ? 'var(--failed-color)' : 'var(--dim)',
-                    }}>
-                      Cross-Charting {editForm.allow_cross_charting ? '⚠' : ''}
-                    </span>
-                  </label>
-                </div>
+                </FieldRow>
 
                 {webhookInfo && (
                   <div style={{
