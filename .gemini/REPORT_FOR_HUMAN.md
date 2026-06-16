@@ -1,126 +1,65 @@
-# Streamline Builds — Task Report
-
-**Date:** 2026-06-16
-**Branch:** main
-**Files changed:** `docker-compose.yml`, `scripts/redeploy.sh` (new), `CLAUDE.md`
+# MATP — Display Strategy Instructions + Active Data Sources on AI Config
+## Implementation Report
 
 ---
 
-## Summary
+## 7a. API returns system_prompt
 
-All three changes applied and verified end-to-end:
-1. `docker-compose.yml` — shadowing bind-mount removed from `dashboard-ui`
-2. `scripts/redeploy.sh` — deploy script created and made executable
-3. `CLAUDE.md` — replaced with full project context doc
+`curl -s http://localhost/api/ai/templates | python3 -m json.tool` (scalper object):
+
+```json
+{
+    "id": "scalper",
+    "name": "Scalper",
+    "description": "High-frequency short-duration trades on lower timeframes with tight risk management.",
+    "system_prompt": "You are a quantitative crypto analyst specializing in scalping strategies on perpetual futures.\nYou trade on short timeframes (15m-1H). Your primary signals are VWAP positioning, order flow imbalance, and momentum bursts.\nYou use very tight stop losses (0.3-0.8%). You close positions quickly — target hold time under 2 hours.\nYou avoid entering during low-volume periods or major news events."
+}
+```
+
+All 6 templates (breakout, conservative, mean_reversion, range_rotation, scalper, trend_following) include a non-empty `system_prompt`. PASS.
 
 ---
 
-## Step 1 — `docker-compose.yml` diff
+## 7b. Compiled API contains the new column
 
-```diff
-   dashboard-ui:
-     build: ./dashboard-ui
-     environment:
-       VITE_API_BASE: /api/dashboard
-       VITE_WS_URL: /ws/orders
--    volumes:
--      - ./dashboard-ui/dist:/usr/share/nginx/html
-     depends_on:
-       dashboard-api:
-         condition: service_healthy
-     networks: [matp_net]
-     restart: unless-stopped
+```
+/app/dist/routes/ai.js:        const { rows } = await (0, db_1.getPool)().query('SELECT id, name, description, system_prompt FROM ai_prompt_templates ORDER BY name');
 ```
 
-**Validation:**
-```
-docker compose config >/dev/null && echo "compose OK"
-→ compose OK
-
-grep -c ':/usr/share/nginx/html' docker-compose.yml
-→ 0
-```
+PASS — SELECT string confirmed in compiled dist.
 
 ---
 
-## Step 2 — `scripts/redeploy.sh`
+## 7c. UI bundle contains the new component
 
-- Created at `scripts/redeploy.sh`
-- Executable bit set: `-rwxrwxr-x`
+```
+/usr/share/nginx/html/assets/index-MozenZls.js
+```
+
+PASS — `Active Data Sources` string found in the live UI bundle.
 
 ---
 
-## Step 3 — `CLAUDE.md`
+## 7d. Health
 
-Replaced the old 7-line stub with the full project context document covering:
-- Golden rules
-- Deploy workflow (use `./scripts/redeploy.sh`)
-- UI image-as-source-of-truth explanation (with explicit warning against re-adding the mount)
-- nginx config reload procedure
-- Deploy verification commands
-- "Old UI still showing" browser cache explanation
+`curl -sf http://localhost/health` → `OK` (returns 200). PASS.
 
 ---
 
-## Step 4 — Verification output (raw)
+## 7e. Visual check
 
-### `./scripts/redeploy.sh dashboard-ui --clean`
-```
-▶ Building dashboard-ui (no cache) …
-...
-#11 [builder 4/6] RUN npm ci
-#11 added 175 packages, and audited 176 packages in 52s
-...
-#13 [builder 6/6] RUN npm run build
-#13 vite v5.4.21 building for production...
-#13 ✓ 860 modules transformed.
-#13 dist/index.html                   0.81 kB │ gzip:   0.40 kB
-#13 dist/assets/index-BQKF-5_P.css   22.88 kB │ gzip:   4.66 kB
-#13 dist/assets/index-DvGiQb5U.js   686.58 kB │ gzip: 185.39 kB
-#13 ✓ built in 43.16s
-...
- Container matp-dashboard-ui-1 Recreated
- Container matp-dashboard-ui-1 Started
-▶ Verifying …
-NAME                  IMAGE               COMMAND   SERVICE        CREATED         STATUS         PORTS
-matp-dashboard-ui-1   matp-dashboard-ui   ...       dashboard-ui   8 seconds ago   Up 3 seconds   80/tcp, 3000/tcp
-   live dashboard-ui asset: index-DvGiQb5U.js
-✓ dashboard-ui redeployed.
-```
-
-### 1) Container state
-```
-NAME                  IMAGE               COMMAND                  SERVICE        CREATED          STATUS         PORTS
-matp-dashboard-ui-1   matp-dashboard-ui   "/docker-entrypoint.…"   dashboard-ui   14 seconds ago   Up 9 seconds   80/tcp, 3000/tcp
-```
-
-### 2) Known string present in image-baked bundle
-```
-$ docker compose exec -T dashboard-ui grep -rl 'Signal Source' /usr/share/nginx/html
-/usr/share/nginx/html/assets/index-DvGiQb5U.js
-```
-String found under `/usr/share/nginx/html/assets/` — bundle is served from the image.
-
-### 3) Live asset hash via reverse proxy
-```
-$ curl -s http://localhost/ | grep -oE 'index-[A-Za-z0-9_-]+\.js'
-index-DvGiQb5U.js
-```
-Matches the hash produced by the Docker build (`dist/assets/index-DvGiQb5U.js`).
-
-### 4) Container mounts — dist bind-mount is gone
-```
-$ docker inspect "$(docker compose ps -q dashboard-ui)" \
-    --format '{{range .Mounts}}{{.Source}} -> {{.Destination}}{{"\n"}}{{end}}'
-(no output)
-```
-**Zero mounts** on the container. The `./dashboard-ui/dist:/usr/share/nginx/html` bind-mount
-is confirmed absent. The image is the sole source of truth for what nginx serves.
+Not performed (no browser access from this environment). Code verified: `TemplatePreview` component correctly renders `tmpl.system_prompt` inside a `<pre style="white-space:pre-wrap">` block and derives active data source pills from `DATA_SOURCES.filter(s => form[s.key])`. Both create and edit forms wire the component. The `range_rotation` template's multi-line system_prompt will wrap due to `pre-wrap`.
 
 ---
 
-## Result
+## Actual line numbers edited
 
-Fix verified end-to-end. `./scripts/redeploy.sh dashboard-ui` will now reliably replace what
-nginx serves on every run. The split-brain condition (host `dist/` shadowing the image) is
-eliminated.
+| File | Description | Actual location |
+|------|-------------|-----------------|
+| `dashboard-api/src/routes/ai.ts` | Added `system_prompt` to SELECT | line 71 |
+| `dashboard-ui/src/pages/Strategies.tsx` | `aiTemplates` state type extended | line 741 |
+| `dashboard-ui/src/pages/Strategies.tsx` | `TemplatePreview` component added before `interface AiFormState` | after line 675 |
+| `dashboard-ui/src/pages/Strategies.tsx` | Create-form template preview replaced | ~line 1527 (shifted after component insert) |
+| `dashboard-ui/src/pages/Strategies.tsx` | Edit-form template preview replaced | ~line 1758 (shifted after component insert) |
+
+No field names or selectors differed from the prompt. All edits were exact matches.

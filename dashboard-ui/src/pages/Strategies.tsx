@@ -674,6 +674,66 @@ const DATA_SOURCES: { key: keyof AiFormState; label: string }[] = [
   { key:'use_macro',        label:'Macro (DXY, US10Y)' },
 ];
 
+function TemplatePreview({
+  tmpl,
+  form,
+}: {
+  tmpl: { description: string; system_prompt: string } | undefined;
+  form: AiFormState;
+}) {
+  if (!tmpl) return null;
+
+  const activeSources = DATA_SOURCES.filter(s => form[s.key]).map(s => s.label);
+
+  return (
+    <div style={{ marginTop: '8px' }}>
+      <p style={{ fontSize: '11px', color: 'var(--dim)', marginBottom: '8px' }}>
+        {tmpl.description}
+      </p>
+
+      <p style={{
+        fontSize: '10px', fontWeight: 700, textTransform: 'uppercase',
+        letterSpacing: '.1em', color: 'var(--dim)', marginBottom: '4px',
+      }}>
+        Strategy Instructions
+      </p>
+      <pre style={{
+        padding: '10px 12px', background: 'var(--bg2)',
+        border: '1px solid var(--border)', borderRadius: '6px',
+        fontSize: '10px', fontFamily: 'JetBrains Mono, monospace',
+        color: 'var(--text)', overflowX: 'auto', margin: 0,
+        whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: '220px',
+        overflowY: 'auto',
+      }}>
+        {tmpl.system_prompt}
+      </pre>
+
+      <p style={{
+        fontSize: '10px', fontWeight: 700, textTransform: 'uppercase',
+        letterSpacing: '.1em', color: 'var(--dim)', margin: '10px 0 4px',
+      }}>
+        Active Data Sources
+      </p>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
+        {activeSources.length === 0 ? (
+          <span style={{ fontSize: '11px', color: 'var(--dim)' }}>None</span>
+        ) : (
+          activeSources.map(label => (
+            <span key={label} style={{
+              fontFamily: 'JetBrains Mono, monospace', fontSize: '10px',
+              fontWeight: 600, color: 'var(--blue)',
+              background: 'var(--blue-a)', border: '1px solid var(--blue-b)',
+              borderRadius: '6px', padding: '2px 6px',
+            }}>
+              {label}
+            </span>
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
 interface AiFormState {
   interval_no_position:   string;
   interval_position_open: string;
@@ -738,7 +798,7 @@ export default function Strategies() {
   const [addType, setAddType] = useState<'tradingview' | 'ai'>('tradingview');
   const [addForm, setAddForm] = useState({ ...TV_FORM_DEFAULTS });
   const [aiForm,  setAiForm]  = useState<AiFormState>({ ...AI_FORM_DEFAULTS });
-  const [aiTemplates, setAiTemplates] = useState<{id:string; name:string; description:string}[]>([]);
+  const [aiTemplates, setAiTemplates] = useState<{id:string; name:string; description:string; system_prompt:string}[]>([]);
   const [aiModels,    setAiModels]    = useState<AiModel[]>([]);
 
   const [accounts,  setAccounts]  = useState<{id:string; label:string; exchange:string; mode:string}[]>([]);
@@ -1524,12 +1584,12 @@ export default function Strategies() {
                       <option key={t.id} value={t.id}>{t.name}</option>
                     ))}
                   </select>
-                  {aiForm.template_id && (() => {
-                    const tmpl = aiTemplates.find(t => t.id === aiForm.template_id);
-                    return tmpl
-                      ? <p style={{ fontSize:'11px', color:'var(--dim)', marginTop:'4px' }}>{tmpl.description}</p>
-                      : null;
-                  })()}
+                  {aiForm.template_id && (
+                    <TemplatePreview
+                      tmpl={aiTemplates.find(t => t.id === aiForm.template_id)}
+                      form={aiForm}
+                    />
+                  )}
                 </div>
                 <div style={{ marginBottom:'14px' }}>
                   <label style={labelStyle}>Custom Instructions (optional)</label>
@@ -1755,12 +1815,12 @@ export default function Strategies() {
                       <option key={t.id} value={t.id}>{t.name}</option>
                     ))}
                   </select>
-                  {aiEditForm.template_id && (() => {
-                    const tmpl = aiTemplates.find(t => t.id === aiEditForm.template_id);
-                    return tmpl
-                      ? <p style={{ fontSize:'11px', color:'var(--dim)', marginTop:'4px' }}>{tmpl.description}</p>
-                      : null;
-                  })()}
+                  {aiEditForm.template_id && (
+                    <TemplatePreview
+                      tmpl={aiTemplates.find(t => t.id === aiEditForm.template_id)}
+                      form={aiEditForm}
+                    />
+                  )}
                 </div>
                 <div style={{ marginBottom:'14px' }}>
                   <label style={labelStyle}>Custom Instructions (optional)</label>

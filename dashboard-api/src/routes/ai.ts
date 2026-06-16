@@ -68,7 +68,7 @@ function notifyConfigReload(strategyId: string): void {
 router.get('/templates', async (_req: Request, res: Response) => {
   try {
     const { rows } = await getPool().query(
-      'SELECT id, name, description FROM ai_prompt_templates ORDER BY name'
+      'SELECT id, name, description, system_prompt FROM ai_prompt_templates ORDER BY name'
     );
     res.json(rows);
   } catch (e: any) {
