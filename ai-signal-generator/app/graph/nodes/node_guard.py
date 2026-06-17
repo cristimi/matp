@@ -102,8 +102,8 @@ async def node_guard(state: AgentState) -> AgentState:
                 return _reject(state, 'size_resolution_failed')
 
             base_qty = round((margin * leverage) / current_price, 4)
-            sl_pct   = float(signal['stop_loss_pct'])
-            tp_pct   = float(signal['take_profit_pct'])
+            sl_pct   = abs(float(signal['stop_loss_pct']))
+            tp_pct   = abs(float(signal['take_profit_pct']))
 
             if action == 'open_long':
                 sl_price = round(current_price * (1 - sl_pct / 100.0), 4)
