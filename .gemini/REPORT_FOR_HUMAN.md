@@ -572,3 +572,108 @@ None. Blofin mark-price field name probed live before writing code (confirmed: `
 
 - **Defect A (leverage):** Fixed in commit `6c2237c`. HL adapter now calls `updateLeverage` before every open order. Exchange-max guard on both adapters.
 - **Defect B (margin clamp bypass):** Fixed in this commit. For opening signals with no webhook price, the listener fetches the exchange mark price via the executor's new `GET /accounts/{id}/mark-price/{symbol}` endpoint. If no price can be obtained, the order is rejected (422, `no_reference_price`) — never placed unsized.
+
+---
+
+# Defect B follow-up — HL minimum order and size-precision bug
+
+_Updated 2026-06-17. Mode: read-only investigation + live testnet probes. No code changes._
+
+---
+
+## §1. Preconditions
+
+| Item | Value |
+|---|---|
+| ETH mark price at start | **$1818** (executor `/mark-price/ETH-USDT`) |
+| Main wallet account value | **$333.80** (main_wallet=`0x79A3E6...`) |
+| Agent wallet account value | $0.00 (positions held under main wallet, not agent) |
+| Pre-existing positions | BTC-USDT long 0.05 (untouched) |
+
+---
+
+## §2. Verbatim rejection — Test E reproduced
+
+**DB `error_msg` for the Test E order (`orders` table):**
+```
+Order has invalid size.
+```
+
+**DB `signal_metadata`:**
+```json
+{
+  "size_scaled_to_margin": true,
+  "original_size": 0.1,
+  "used_size": 0.01339836,
+  "ref_price_source": "exchange_mark",
+  "entry_ref": 1865.9,
+  "sl_source": "liquidation_safe",
+  "sl_distance_pct": 18.9999
+}
+```
+
+**Root cause (one sentence):** The margin clamp computed `round(5×5/1865.9, 8) = 0.01339836`, which has 8 significant decimal places; Hyperliquid's `szDecimals=4` for ETH rejects any size that is not a multiple of 0.0001, so `"0.01339836"` is an invalid wire size.
+
+**Not the SL leg, not the notional floor** — direct executor call with `size=0.0134` (4 dp) filled immediately in Test A, and direct executor call with `size=0.0134` + SL also filled in Test B. The notional ($24.51) cleared HL's $10 minimum. The only difference was the decimal precision of the clamped size.
+
+---
+
+## §3. SL leg analysis — A vs B
+
+| Test | Size | SL | Entry | SL status |
+|---|---|---|---|---|
+| A (bare entry) | 0.0134 | none | ✅ filled @ $1829.4 | — |
+| B (entry + SL) | 0.0134 | $1472.58 | ✅ filled @ $1827.47 | "waitingForTrigger" |
+
+`status[0]=filled, status[1]="waitingForTrigger"` confirms the entry leg filled and the SL trigger was accepted and is live. **The SL leg does not cause rejection at this size.** Test E's rejection was purely the 8-dp size, not the SL.
+
+---
+
+## §4. Notional sweep (bare entry, no SL, ETH at ~$1828)
+
+| Size (ETH) | ≈ Notional | ≈ Margin @5x | HL result | error_msg |
+|---|---|---|---|---|
+| 0.0054 | $9.87 | $1.97 | **rejected** | "Order must have minimum value of $10. asset=4" |
+| 0.0080 | $14.62 | $2.92 | **filled** @ $1827.75 | — |
+| 0.0134 | $24.49 | $4.90 | **filled** @ $1827.60 | — |
+| 0.0270 | $49.38 | $9.88 | **filled** @ $1827.80 | — |
+| 0.0540 | $98.73 | $19.75 | **filled** @ $1828.36 | — |
+
+**Smallest filling size: 0.0080 ETH ≈ $14.62 notional.** The threshold is $10 nominal; 0.0054 ($9.87) is just below, 0.0080 ($14.62) clears it.
+
+**Derived minimum:**
+- HL's effective minimum order value: **$10 notional**
+- Minimum `margin_per_trade` = $10 / leverage
+  - At 5x leverage: **$2.00** (0.0080 ETH @ $1828 = $14.62; actual margin = $2.92 — rounding to szDecimals=4 means $2.00 minimum is tight; **$3 is safer**)
+  - At 10x: $1.00 minimum, $1.50 safer
+  - At 20x: $0.50 minimum, $1.00 safer
+  - Formula: minimum_margin = ceil($10 / leverage / szDecimals_step) × szDecimals_step × price / leverage
+
+**Scaling note:** since `notional = margin_per_trade × leverage` (price cancels), the minimum `margin_per_trade` for HL is purely $10 / leverage — independent of which coin/price. With the default $5 `margin_per_trade` at 5x, notional is $25 and clears the floor with 2.5× headroom.
+
+---
+
+## §5. Cleanup
+
+| Position | Action | Result |
+|---|---|---|
+| ETH-USDT long 0.1292 (Tests A + B + sweep S2–S5) | close-position | ✅ Filled @ $1823.94, pnl=-$0.54 |
+| BTC-USDT long 0.05 (pre-existing) | untouched | Still open |
+
+---
+
+## §6. Bottom line
+
+**Is a $5-margin open viable on Hyperliquid?**
+
+**Yes** — from a notional standpoint: $5 × 5x = $25 clears the $10 floor. The Defect B test failure was **not** a margin floor issue.
+
+**The real bug (unfixed):** `_place_order` in `hyperliquid.py` sends `_float_to_wire(float(order.size))` without first rounding to `szDecimals`. The margin clamp writes 8 dp; `_float_to_wire` preserves all significant digits; HL rejects sizes with more than `szDecimals` decimal places. For ETH (`szDecimals=4`): `0.01339836` → rejected; `0.0134` → filled. This bug affects any size computed by the clamp (or any caller that passes a high-precision Decimal).
+
+**Recommended fix** (not applied here — investigation only): in `_place_order`, round size to `szDecimals` before `_float_to_wire`:
+```python
+sz_dec = (self._sz_decimals_cache or {}).get(coin, 4)
+size_rounded = round(float(order.size), sz_dec)
+size_wire = self._float_to_wire(size_rounded)
+```
+Same pattern should apply to trigger-order sizes (`size_wire` reused for TP/SL legs). No `margin_per_trade` change needed — the $5 default is adequate for HL.
