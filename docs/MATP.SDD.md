@@ -774,7 +774,7 @@ BEGIN
 END $$;
 ```
 
-> **Migration note:** `allow_quote_variants` and `allow_cross_charting` are added to existing deployments via `db/migrations/002_symbol_coupling.sql`. The schema above reflects the complete target state.
+> **Migration note:** `allow_quote_variants` and `allow_cross_charting` are added to existing deployments via `db/migrations/_archive/002_symbol_coupling.sql`. The schema above reflects the complete target state.
 
 ### 5.2 Webhook Payload (Pydantic model)
 
@@ -1136,8 +1136,8 @@ MATP designed for local hosting. Do not expose port 80 to the internet without V
 | `dashboard-ui/src/pages/Strategies.tsx` | Strategy management UI including Symbol Coupling toggles. |
 | `dashboard-ui/src/hooks/useOrderStream.ts` | WebSocket hook with 3-second auto-reconnect. |
 | `db/init.sql` | Full schema including Symbol Coupling columns and all triggers. |
-| `db/migrations/001_exchange_accounts.sql` | Adds `exchange_accounts` and `account_id` columns. |
-| `db/migrations/002_symbol_coupling.sql` | Adds `allow_quote_variants`, `allow_cross_charting` to strategies. |
+| `db/migrations/_archive/001_exchange_accounts.sql` | Adds `exchange_accounts` and `account_id` columns. |
+| `db/migrations/_archive/002_symbol_coupling.sql` | Adds `allow_quote_variants`, `allow_cross_charting` to strategies. |
 | `docs/tradingview.md` | TradingView alert setup. Updated for `base_asset`/`quote_asset` payload format. |
 | `docs/setup.md` | Installation and development environment guide. |
 | `docs/MATP.SDD.md` | This document. |

@@ -32,14 +32,14 @@
 - `order-executor`: AccountRegistry, BlofinAdapter, HyperliquidAdapter stub, retry logic
 - `dashboard-api`: Express, orders/stats/config/strategies/positions/accounts routes, WebSocket feed
 - `dashboard-ui`: React, full nav, Orders/Positions/Strategies/Settings pages
-- `db/migrations/001_exchange_accounts.sql`: applied and verified
+- `db/migrations/_archive/001_exchange_accounts.sql`: applied and verified
 - Sessions 1–3 audit: all modules corrected and verified
 
 **Not yet built:**
 - `symbol_validator.py` in order-listener
 - Webhook payload still uses `symbol` (not `base_asset`/`quote_asset`)
 - Hyperliquid adapter full ECDSA implementation (Session 7)
-- `db/migrations/002_symbol_coupling.sql`
+- `db/migrations/_archive/002_symbol_coupling.sql`
 - Symbol Coupling logic in webhook_handler
 - UI redesign to v0.37 spec
 - Accounts page in UI
@@ -83,7 +83,7 @@ See `MATP-Session-07-Prompt.md` (already delivered).
 > Claude delivers this as `MATP-Session-07b-Prompt.md` after Session 7 report is received.
 
 **What this session does:**
-1. Creates `db/migrations/002_symbol_coupling.sql` adding `allow_quote_variants` and `allow_cross_charting` to strategies table
+1. Creates `db/migrations/_archive/002_symbol_coupling.sql` adding `allow_quote_variants` and `allow_cross_charting` to strategies table
 2. Applies the migration to the running database
 3. Creates `order-listener/app/symbol_validator.py` as a complete implementation (strict + quote_variants + cross_charting modes, price stripping)
 4. Refactors `WebhookPayload` in `order-listener/app/models.py` from `symbol` to `base_asset` + `quote_asset`, removes legacy fields, adds `target_position`

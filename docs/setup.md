@@ -46,9 +46,10 @@ docker compose up -d --build
 
 > **Fresh deploy note:** On the first `docker compose up`, Postgres initialises
 > automatically from `db/init.sql` — the full schema and seed data are applied
-> with no manual migration step. For an existing instance applying new migrations,
-> run the numbered SQL files in `db/migrations/` in sequence
-> (see `db/migrations/MANIFEST.md`).
+> with no manual migration step. Pre-baseline migrations (`001`–`021`) are archived
+> in `db/migrations/_archive/` for reference only; do not replay them against a fresh
+> instance. New post-baseline migrations (`022+`) live in `db/migrations/` and must be
+> applied manually to existing instances (see `db/migrations/README.md`).
 
 Check all containers are running:
 ```bash
