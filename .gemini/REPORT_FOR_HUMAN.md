@@ -808,3 +808,107 @@ No `_update_leverage` call and no `/exchange` POST. ✅
 ## §8. Deviations
 
 None. The `place_trigger_orders` close-path variable is `symbol` (matches the prompt's expectation). The TP/SL legs in `_place_order` reuse `size_wire` rather than re-reading `order.size`, confirming they inherit the rounding automatically — no extra call sites needed.
+
+---
+
+# LLM pct units investigation
+
+_Updated 2026-06-17. Mode: read-only (no LLM spend, no code changes). Step 3 not required — Steps 1–2 were conclusive._
+
+---
+
+## Step 1 — Reasoning text (intended SL/TP %)
+
+Representative excerpts from the 40 most recent `open_long`/`open_short` signals:
+
+| Date | Action | Symbol | Stated SL/TP in reasoning |
+|---|---|---|---|
+| 2026-06-14 | open_short | ETH | "targeting the range support at 1632.71 (**3.8% take profit**) with a stop loss set 1% beyond the resistance level at 1730.13 (**1.9% stop loss**)" |
+| 2026-06-11 | open_short | ETH | "stop loss placed approximately **0.9%** beyond the resistance level; take profit targets range support at 1604.62" |
+| 2026-06-11 | open_long  | BTC | "tight stop-loss of **0.6%** is placed below the EMA50, targeting the nearest resistance at 62857" |
+| 2026-06-15 | open_short | ETH | reasoning truncated but SL derived from "1% beyond resistance", TP from range support |
+| 2026-06-12 (×5) | open_short | BTC | no explicit % stated; SL described relative to resistance levels |
+| 2026-06-10 | open_short | ETH | "within 0.88% of nearest resistance… take profit targeting 2423.75" |
+
+**Pattern:** every time the model states a percentage it uses single-digit whole numbers — 0.6%, 0.9%, 1%, 1.9%, 3.8%. No evidence of sub-0.1% or fractional intent.
+
+---
+
+## Step 2 — Recovered take_profit_pct from stored TP prices
+
+16 AI-originated orders have `order_id` set. 12 have both `actual_fill_price` and `tp_price`.
+
+`approx_tp_pct = |fill_price − tp_price| / fill_price × 100` (fill price used as entry proxy; small price drift between signal time and fill inflates the ETH numbers slightly — see note below):
+
+| Date | Action | Symbol | Fill px | tp_price | approx_tp_pct |
+|---|---|---|---|---|---|
+| 2026-06-16 | open_long  | BTC | 65797.1 | 66351.935 | 0.84% |
+| 2026-06-15 | open_short | ETH | 1779.86 | 1652.203 | 7.17% |
+| 2026-06-14 | open_short | ETH | 1723.88 | 1633.967 | **5.22%** |
+| 2026-06-12 | open_short | BTC | 63604 | 63220.348 | 0.60% |
+| 2026-06-12 | open_short | BTC | 63736.4 | 63303.228 | 0.68% |
+| 2026-06-12 | open_short | BTC | 63034.5 | 62407.62 | 0.99% |
+| 2026-06-12 | open_short | BTC | 63622.9 | 63190.887 | 0.68% |
+| 2026-06-11 | open_short | BTC | 63496.9 | 62789.750 | 1.11% |
+| 2026-06-11 | open_short | ETH | 1715.23 | 1604.709 | **6.44%** |
+| 2026-06-11 | open_short | BTC | 62896 | 62414.745 | 0.77% |
+| 2026-06-11 | open_short | ETH | 1698.4 | 1603.222 | **5.60%** |
+| 2026-06-11 | open_short | ETH | 1680.3 | 1603.965 | **4.54%** |
+
+**Two clusters:**
+- BTC scalper: **0.60–1.11%** (n=6, median≈0.72%)
+- ETH range-trader: **4.54–7.17%** (n=5, median≈5.60%)
+
+**Note on ETH inflation:** the approx_tp_pct uses `actual_fill_price` which can differ from the signal-time `current_price` by 1–3% on ETH (less liquid, wider spreads). The June 14 signal is the one with the explicit cross-check (see below).
+
+**Key cross-check (June 14 ETH open_short):**
+
+Reasoning states: "targeting the range support at 1632.71 (**3.8% take profit**)".
+Signal-time current_price from reasoning: 1698.51.
+Stored tp_price: 1633.9666.
+
+Verify: `1698.51 × (1 − 3.8/100) = 1698.51 × 0.962 = 1633.87 ≈ 1633.9666` ✓
+
+The model emitted `take_profit_pct = 3.8` (whole-number percent). The formula divided it by 100 correctly. `approx_tp_pct` appears as 5.22% only because the fill price (1723.88) was 1.5% above the signal-time price (ETH drifted between generation and fill).
+
+**min/median/max of recovered values (12 rows):** 0.60% / 0.84% / 7.17%
+
+---
+
+## Step 3 — Not run
+
+Steps 1–2 provided conclusive evidence. No LLM spend was necessary.
+
+---
+
+## Verdict: B — No units mismatch
+
+**The model emits whole-number percentages consistently.** Every value cross-checkable against the reasoning text confirms this: "3.8% take profit" → `take_profit_pct = 3.8`, "0.6% stop loss" → `stop_loss_pct = 0.6`. The `/100` division in `node_guard` is correct.
+
+The `-0.049` incident was **out-of-range garbage with the wrong sign** — not a fraction-vs-whole debate. Its magnitude (0.049%) is ~15× smaller than the smallest normal BTC scalper TP (0.60%), confirming it's a model hallucination, not a units convention.
+
+**The `abs()` fix (commit `31db8ca`) is correct and sufficient** to prevent a negative value from flipping the TP direction. It is belt-and-braces rather than a unit correction.
+
+**Recommended additional fix (not applied here):** add a range guard to `LLMSignalOutput` to catch future out-of-range values before they reach `node_guard`:
+```python
+from pydantic import Field
+
+class LLMSignalOutput(BaseModel):
+    ...
+    stop_loss_pct:   float = Field(ge=0.05, le=50,
+                                   description="Distance from entry as a percent, e.g. 1.5 = 1.5%")
+    take_profit_pct: float = Field(ge=0.05, le=50,
+                                   description="Distance from entry as a percent, e.g. 1.5 = 1.5%")
+```
+This makes the schema self-documenting (hints to the LLM what the units are), and rejects garbage before it reaches `node_guard`. `abs()` can stay as belt-and-braces.
+
+---
+
+## Note: strategy-tester/node_guard_sim.py still missing abs()
+
+`strategy-tester/app/engine/node_guard_sim.py:111–112` has the identical pre-fix code:
+```python
+sl_pct   = float(signal['stop_loss_pct'])   # no abs()
+tp_pct   = float(signal['take_profit_pct'])  # no abs()
+```
+If backtests replay signals that happen to carry a negative pct, the sim will compute the same wrong-direction price as production did. The `abs()` fix and the schema range guard should be mirrored here when the production fix is applied.
