@@ -1413,3 +1413,116 @@ removed stray: opened_at
 ## Push confirmation
 
 `main` pushed to `origin/main` (3f3bee9 → bfdcb98). No force-push used.
+
+---
+
+# .env.example + docs/setup.md fix — Branch `docs/env-setup`
+_2026-06-17. Executor: Claude Sonnet 4.6. Commit: `886e6e4`._
+
+---
+
+## §1 Compose-var ↔ `.env.example` reconciliation
+
+| Var | In compose as | `.env.example` | Notes |
+|-----|--------------|----------------|-------|
+| `POSTGRES_PASSWORD` | `${POSTGRES_PASSWORD}` (required) | ✓ present | |
+| `MASTER_KEY` | `${MASTER_KEY}` x2 (required) | ✓ present | order-listener + order-executor |
+| `GEMINI_API_KEY` | `${GEMINI_API_KEY}` x2 (no default) | ✓ present | ai-signal-generator + strategy-tester |
+| `OPENAI_API_KEY` | `${OPENAI_API_KEY:-}` (empty default) | ✓ present | |
+| `ANTHROPIC_API_KEY` | `${ANTHROPIC_API_KEY:-}` (empty default) | ✓ present | |
+| `CRYPTOPANIC_API_KEY` | `${CRYPTOPANIC_API_KEY}` (no default) | ✓ present | ai-signal-generator only |
+| `DATABASE_URL` | `${DATABASE_URL:-...}` (with default) | ✓ commented optional | ai-signal-generator only |
+| `DATA_FEED_EXCHANGE` | `${DATA_FEED_EXCHANGE:-binance}` | ✓ present | |
+| `TESTER_DEFAULT_BALANCE` | `${TESTER_DEFAULT_BALANCE:-1000.0}` | ✓ present | |
+| `TESTER_DEFAULT_FEE_PCT` | `${TESTER_DEFAULT_FEE_PCT:-0.02}` | ✓ present | |
+| `TESTER_DEFAULT_SLIPPAGE_PCT` | `${TESTER_DEFAULT_SLIPPAGE_PCT:-0.05}` | ✓ present | |
+| `TESTER_MAX_CONCURRENT_RUNS` | `${TESTER_MAX_CONCURRENT_RUNS:-1}` | ✓ present | |
+| `TESTER_LLM_FAILURE_THRESHOLD` | `${TESTER_LLM_FAILURE_THRESHOLD:-0.05}` | ✓ present | |
+| `EXECUTOR_URL` | hardcoded in compose (phantom in .env) | removed | was in old .env.example; compose ignores it |
+| `WEBHOOK_SECRET` | not in compose at all | absent | phantom — no service reads it |
+| Exchange credentials | not in compose at all | absent | stored encrypted in DB via Accounts page |
+
+---
+
+## §2 TESTER_* defaults (source: `strategy-tester/app/config.py`)
+
+| Var | Default |
+|-----|---------|
+| `tester_default_balance` | `1000.0` |
+| `tester_default_slippage_pct` | `0.05` |
+| `tester_default_fee_pct` | `0.02` |
+| `tester_max_concurrent_runs` | `1` |
+| `tester_llm_failure_threshold` | `0.05` |
+
+Two additional tester settings exist in config.py but are NOT in docker-compose.yml (no `${...}` reference): `tester_ohlcv_fetch_batch=1000` and `tester_equity_insert_batch=500`. Omitted from `.env.example` as they can't be overridden via compose env.
+
+---
+
+## §3 DATABASE_URL handling
+
+Only `ai-signal-generator` reads `DATABASE_URL` from env (with fallback default `postgresql://matp:matp@postgres:5432/matp`). All other services have it hardcoded in `docker-compose.yml`. Included in `.env.example` as a commented-out optional override.
+
+---
+
+## §4 Full §5 verification output
+
+```
+=== Compose var coverage ===
+ok   ANTHROPIC_API_KEY
+ok   CRYPTOPANIC_API_KEY
+ok   DATABASE_URL
+ok   DATA_FEED_EXCHANGE
+ok   GEMINI_API_KEY
+ok   MASTER_KEY
+ok   OPENAI_API_KEY
+ok   POSTGRES_PASSWORD
+ok   TESTER_DEFAULT_BALANCE
+ok   TESTER_DEFAULT_FEE_PCT
+ok   TESTER_DEFAULT_SLIPPAGE_PCT
+ok   TESTER_LLM_FAILURE_THRESHOLD
+ok   TESTER_MAX_CONCURRENT_RUNS
+
+=== Phantom/credential vars absent ===
+correctly absent: WEBHOOK_SECRET
+correctly absent: BLOFIN_API_KEY
+correctly absent: BLOFIN_API_SECRET
+correctly absent: HYPERLIQUID_PRIVATE_KEY
+
+=== setup.md clean of wrong env instructions ===
+setup.md clean of wrong env instructions
+
+=== No real secrets ===
+no real secrets
+```
+
+---
+
+## §5 nginx exposure — correction to prompt claim
+
+The prompt stated "nginx proxies only `/api/listener/`, `/api/generator/`, `/api/dashboard/`". This is **incorrect** based on the actual `nginx/nginx.conf`:
+
+| nginx route | Upstream | Notes |
+|-------------|----------|-------|
+| `/api/listener/` | `order-listener:8001` | |
+| `/api/generator/` | `order-generator:8002` | |
+| `/api/ai/` | `dashboard-api:8003` (rewrite → `/ai/...`) | ai-signal-generator data flows through dashboard-api |
+| `/api/tester/` | `strategy-tester:8006` | directly proxied |
+| `/tester/` | `tester-ui:3001` | tester UI is proxied |
+| `/api/dashboard/` | `dashboard-api:8003` | |
+| `/ws/` | `dashboard-api:8003` | WebSocket |
+
+The **real** gap: `ai-signal-generator` (8005) has no nginx route — it is only reachable at direct host port 8005 (published via `ports: "8005:8005"` in compose). All other services are reachable through nginx. `order-executor` is internal-only (no nginx route, no published port).
+
+---
+
+## Needs human
+
+1. **`POSTGRES_PASSWORD` ≠ hardcoded `matp` credential mismatch**: Most services in `docker-compose.yml` hardcode `DATABASE_URL: postgresql://matp:matp@postgres:5432/matp`. `POSTGRES_PASSWORD` in `.env` only changes the postgres container's actual password. If the user changes `POSTGRES_PASSWORD` away from `matp`, all those hardcoded URLs break. `docker-compose.yml` needs to be updated to construct DATABASE_URL from `${POSTGRES_PASSWORD}`. Flagged with a warning in `.env.example`.
+
+2. **`PUBLIC_HOST` not wired in docker-compose.yml**: `dashboard-api/src/routes/strategies.ts:369` reads `process.env.PUBLIC_HOST` to build the webhook URL shown in the UI. But `PUBLIC_HOST` is absent from the `dashboard-api` environment block in `docker-compose.yml`, so the env var is never passed to the container. Fix: add `PUBLIC_HOST: ${PUBLIC_HOST:-}` to the `dashboard-api` service environment in `docker-compose.yml`. Noted in `.env.example` comment.
+
+3. **`order-generator` YAML strategy path**: `setup.md` "Adding a Strategy" section has been updated to show the dashboard flow as primary and the YAML/volume path as secondary, with a `<!-- TODO: confirm order-generator strategy path still supported -->` comment.
+
+4. **`TESTER_OHLCV_FETCH_BATCH` and `TESTER_EQUITY_INSERT_BATCH`**: exist in `strategy-tester/app/config.py` but have no `${...}` entry in `docker-compose.yml` — cannot be overridden via compose env. If these need to be tunable, add them to the strategy-tester environment block.
+
+5. **`CRYPTOPANIC_API_KEY` has no compose default**: compose uses `${CRYPTOPANIC_API_KEY}` with no `:-` fallback. Docker Compose will warn if unset. Setting it to empty string in `.env` silences the warning; the app config defaults to `""` regardless.
