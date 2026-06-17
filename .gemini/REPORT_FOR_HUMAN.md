@@ -677,3 +677,134 @@ size_rounded = round(float(order.size), sz_dec)
 size_wire = self._float_to_wire(size_rounded)
 ```
 Same pattern should apply to trigger-order sizes (`size_wire` reused for TP/SL legs). No `margin_per_trade` change needed — the $5 default is adequate for HL.
+
+---
+
+# Defect C — HL order size not rounded to szDecimals
+
+_Updated 2026-06-17. Fix applied and tested._
+
+---
+
+## §1. Diff (`order-executor/app/adapters/hyperliquid.py` only)
+
+```diff
++    def _round_size(self, symbol: str, size: float) -> float:
++        """Quantize order size to the coin's szDecimals. HL rejects sizes with
++        more decimal places than szDecimals ('Order has invalid size.')."""
++        coin = symbol.replace("-USDT", "").replace("-USD", "").upper()
++        sz_dec = (self._sz_decimals_cache or {}).get(coin, 4)
++        return round(float(size), sz_dec)
+
+     # _place_order — entry size line:
+-        price_wire = self._float_to_wire(self._round_price(float(price_str)))
+-        size_wire  = self._float_to_wire(float(order.size))
++        price_wire   = self._float_to_wire(self._round_price(float(price_str)))
++        size_rounded = self._round_size(order.symbol, float(order.size))
++        if size_rounded <= 0:
++            return OrderResult(
++                success=False,
++                status="rejected",
++                error_msg=(
++                    f"Order size {order.size} rounds to 0 at szDecimals precision "
++                    f"for {order.symbol}; increase margin_per_trade or size."
++                ),
++            )
++        size_wire = self._float_to_wire(size_rounded)
+
+     # place_trigger_orders — standalone trigger size line:
+-            size_wire      = self._float_to_wire(size)
++            size_wire      = self._float_to_wire(self._round_size(symbol, float(size)))
+```
+
+TP/SL trigger legs in both `_place_order` and `place_trigger_orders` reuse `size_wire` — they inherit the rounded value automatically. `close_position` calls `_place_order` so it inherits the fix too.
+
+---
+
+## §2. Container grep — new code is live
+
+```
+225:    def _round_size(self, symbol: str, size: float) -> float:
+331:        size_rounded = self._round_size(order.symbol, float(order.size))
+332:        if size_rounded <= 0:
+337:                    f"Order size {order.size} rounds to 0 at szDecimals precision "
+341:        size_wire = self._float_to_wire(size_rounded)
+834:            size_wire      = self._float_to_wire(self._round_size(symbol, float(size)))
+```
+
+---
+
+## §3. Test G — 8-dp size that previously failed now fills ✅ PASS
+
+**Request:** `symbol=ETH-USDT, size=0.01339836, leverage=5`
+
+**Response:**
+```json
+{ "success": true, "status": "filled", "actual_fill_price": "1811.25" }
+```
+
+**HL statuses[0]:** `{"filled": {"totalSz": "0.0134", "avgPx": "1811.25", "oid": 55114457007}}`
+
+`totalSz="0.0134"` — HL received 4-dp wire size. Pre-fix this same call returned `"Order has invalid size."` ✅
+
+---
+
+## §4. Test H — end-to-end clamped webhook fills ✅ PASS
+
+**Strategy:** `test_hl_demo_01` (ETH-USDT, Hyperliquidtest, margin_per_trade=5, lev=5)
+**Webhook:** `open_long, size=0.1, leverage=5` — no price
+
+**Listener log:**
+```
+no webhook price; using exchange mark price 1814.1 for ETH-USDT
+Strategy test_hl_demo_01 margin clamp: 0.1 → 0.01378094 (margin=5.0, lev=5, price=1814.1)
+```
+
+**DB `orders` row:**
+```
+size=0.01378094  status=filled  error_msg=  ref_price_source=exchange_mark
+```
+
+`0.01378094` → `_round_size` → `0.0138` (4 dp) → HL fills. Defects B and C resolved end-to-end. ✅
+
+---
+
+## §5. Test I — zero-size guard fires ✅ PASS
+
+**Coin:** `GMT-USDT` (`szDecimals=0`, `maxLeverage=2`). `round(0.4, 0) = 0`.
+
+**Request:** `size=0.4, leverage=2` (leverage guard passes; zero-size guard in `_place_order` fires before any HL call)
+
+**Response:**
+```json
+{
+  "success": false,
+  "status": "rejected",
+  "error_msg": "Order size 0.4 rounds to 0 at szDecimals precision for GMT-USDT; increase margin_per_trade or size."
+}
+```
+
+No `_update_leverage` call and no `/exchange` POST. ✅
+
+---
+
+## §6. Test J — regression: valid size unchanged ✅ PASS
+
+**Request:** `symbol=ETH-USDT, size=0.02, leverage=5`
+
+**Response:** `success=true, status=filled, fill_price=1816.18` ✅
+
+---
+
+## §7. Cleanup
+
+| Position | Action | Result |
+|---|---|---|
+| ETH-USDT long 0.0472 (Tests G + H + J combined) | close-position | ✅ Filled @ $1814.39, pnl=-$0.00020 |
+| BTC-USDT long 0.05 (pre-existing, not ours) | untouched | Still open |
+
+---
+
+## §8. Deviations
+
+None. The `place_trigger_orders` close-path variable is `symbol` (matches the prompt's expectation). The TP/SL legs in `_place_order` reuse `size_wire` rather than re-reading `order.size`, confirming they inherit the rounding automatically — no extra call sites needed.

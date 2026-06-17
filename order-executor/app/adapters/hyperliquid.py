@@ -222,6 +222,13 @@ class HyperliquidAdapter(ExchangeAdapter):
             return "0"
         return "{:.8f}".format(x).rstrip("0").rstrip(".")
 
+    def _round_size(self, symbol: str, size: float) -> float:
+        """Quantize order size to the coin's szDecimals. HL rejects sizes with
+        more decimal places than szDecimals ('Order has invalid size.')."""
+        coin = symbol.replace("-USDT", "").replace("-USD", "").upper()
+        sz_dec = (self._sz_decimals_cache or {}).get(coin, 4)
+        return round(float(size), sz_dec)
+
     async def _get_asset_index(self, symbol: str) -> int:
         """
         Look up the integer asset index for a symbol.
@@ -320,8 +327,18 @@ class HyperliquidAdapter(ExchangeAdapter):
         # ── Build action dict with SDK-compliant insertion order
         # orders order: a, b, p, s, r, t
         # action order: type, orders, grouping
-        price_wire = self._float_to_wire(self._round_price(float(price_str)))
-        size_wire  = self._float_to_wire(float(order.size))
+        price_wire   = self._float_to_wire(self._round_price(float(price_str)))
+        size_rounded = self._round_size(order.symbol, float(order.size))
+        if size_rounded <= 0:
+            return OrderResult(
+                success=False,
+                status="rejected",
+                error_msg=(
+                    f"Order size {order.size} rounds to 0 at szDecimals precision "
+                    f"for {order.symbol}; increase margin_per_trade or size."
+                ),
+            )
+        size_wire = self._float_to_wire(size_rounded)
 
         entry_order = {
             "a": asset_index,
@@ -814,7 +831,7 @@ class HyperliquidAdapter(ExchangeAdapter):
 
             asset_index    = await self._get_asset_index(symbol)
             is_trigger_buy = (trigger_side == "buy")
-            size_wire      = self._float_to_wire(size)
+            size_wire      = self._float_to_wire(self._round_size(symbol, float(size)))
             nonce          = int(time.time() * 1000)
             orders_list    = []
 
