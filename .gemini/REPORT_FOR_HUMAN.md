@@ -1331,3 +1331,85 @@ All assertions match expected values. Container booted successfully, ran initdb,
 - `db/`, `docker-compose.yml`, service code: untouched.
 - No migration files modified.
 - Branch `deploy/init-sql-baseline` pushed. Do not merge to `main` without review.
+
+---
+
+# Merge to `main` — 2026-06-17
+
+Branch `deploy/init-sql-baseline` (which stacked on top of `cleanup/repo-hygiene`) merged into `main` at commit `bfdcb98`.
+
+---
+
+## §1 Branch content (pre-merge)
+
+`git log --oneline origin/main..origin/deploy/init-sql-baseline`:
+```
+e80326e docs: add init.sql baseline regeneration report to .gemini/REPORT_FOR_HUMAN.md
+aed80e1 deploy: regenerate db/init.sql as complete baseline (tester schema + AI objects + reference seeds)
+6b87e82 docs: add AI prompt template management to backlog; wire ROADMAP pointer in CLAUDE.md
+ef63d35 docs: append repo hygiene cleanup report to .gemini/REPORT_FOR_HUMAN.md
+c415c45 chore: repo hygiene — consolidate docs into docs/ and docs/process/, move test scripts to scripts/, remove stray root duplicates
+```
+
+`git diff --stat origin/main origin/deploy/init-sql-baseline | tail -5`:
+```
+ test_webhook.sh => scripts/test_webhook.sh         |    0
+ .../test_webhook_manual.py                         |    0
+ 36 files changed, 2677 insertions(+), 1653 deletions(-)
+```
+
+Ancestor check: `main is ancestor — clean merge`
+
+---
+
+## §3 Post-merge verification (full output)
+
+### A. Recent log
+```
+bfdcb98 merge: repo-hygiene cleanup + complete db/init.sql baseline
+e80326e docs: add init.sql baseline regeneration report to .gemini/REPORT_FOR_HUMAN.md
+aed80e1 deploy: regenerate db/init.sql as complete baseline (tester schema + AI objects + reference seeds)
+6b87e82 docs: add AI prompt template management to backlog; wire ROADMAP pointer in CLAUDE.md
+```
+
+### B. init.sql content checks
+```
+tester schema:          1        (expect 1)      ✓
+tester tables:          9        (expect 9)      ✓
+ai_ tables:             5        (expect 5)      ✓
+exchange_accounts data: 0        (MUST be 0)     ✓ SECURITY
+config seed:            3        (>=1)           ✓
+ai_prompt seed:         6        (>=1)           ✓
+```
+
+### C. Cleanup checks
+```
+root stray files gone — correct
+moved files in place — correct
+```
+
+### D. Migrations intact
+```
+27    (db/migrations/*.sql count)
+db/migrations/MANIFEST.md   present
+```
+
+---
+
+## Branch deletion
+
+- `deploy/init-sql-baseline` — deleted locally and on remote ✓
+- `cleanup/repo-hygiene` — deleted locally and on remote ✓
+
+## Stray zero-byte files removed from working tree
+
+```
+removed stray: =
+removed stray: Note:
+removed stray: not
+removed stray: opened_at
+```
+
+## Push confirmation
+
+`main` pushed to `origin/main` (3f3bee9 → bfdcb98). No force-push used.
