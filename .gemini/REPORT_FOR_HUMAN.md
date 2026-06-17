@@ -1526,3 +1526,92 @@ The **real** gap: `ai-signal-generator` (8005) has no nginx route — it is only
 4. **`TESTER_OHLCV_FETCH_BATCH` and `TESTER_EQUITY_INSERT_BATCH`**: exist in `strategy-tester/app/config.py` but have no `${...}` entry in `docker-compose.yml` — cannot be overridden via compose env. If these need to be tunable, add them to the strategy-tester environment block.
 
 5. **`CRYPTOPANIC_API_KEY` has no compose default**: compose uses `${CRYPTOPANIC_API_KEY}` with no `:-` fallback. Docker Compose will warn if unset. Setting it to empty string in `.env` silences the warning; the app config defaults to `""` regardless.
+
+---
+
+# PUBLIC_HOST wiring + `docs/env-setup` merge to `main` — 2026-06-17
+_Commit: `6ec712c`. Executor: Claude Sonnet 4.6._
+
+---
+
+## §1 PUBLIC_HOST consumer grep
+
+```
+$ grep -rniE "PUBLIC_HOST" --include=*.ts --include=*.py --include=*.js . | grep -iE "process\.env|getenv|environ"
+dashboard-api/src/routes/strategies.ts:369:    const host = process.env.PUBLIC_HOST
+```
+Single hit — only `dashboard-api`. Safe to wire only to that service.
+
+---
+
+## §2 dashboard-api environment block — before / after
+
+**Before:**
+```yaml
+  dashboard-api:
+    environment:
+      DATABASE_URL: postgresql://matp:matp@postgres:5432/matp
+      REDIS_URL: redis://redis:6379
+      GENERATOR_URL: http://order-generator:8002
+      LISTENER_URL: http://order-listener:8001
+      EXECUTOR_URL: http://order-executor:8004
+      AI_SIGNAL_GENERATOR_URL: http://ai-signal-generator:8005
+```
+
+**After (one line added):**
+```yaml
+  dashboard-api:
+    environment:
+      DATABASE_URL: postgresql://matp:matp@postgres:5432/matp
+      REDIS_URL: redis://redis:6379
+      GENERATOR_URL: http://order-generator:8002
+      LISTENER_URL: http://order-listener:8001
+      EXECUTOR_URL: http://order-executor:8004
+      AI_SIGNAL_GENERATOR_URL: http://ai-signal-generator:8005
+      PUBLIC_HOST: ${PUBLIC_HOST:-}
+```
+
+---
+
+## §3 Post-merge verification (§7 A–D full output)
+
+```
+=== A: recent log ===
+6ec712c merge: deployable .env.example + setup.md + PUBLIC_HOST wiring
+4deccc7 deploy: pass PUBLIC_HOST through to dashboard-api; correct .env.example note
+b471d7d docs: append env/setup fix report to .gemini/REPORT_FOR_HUMAN.md
+
+=== B: PUBLIC_HOST wired and compose valid ===
+compose valid ✓
+      PUBLIC_HOST: ""
+PUBLIC_HOST in dashboard-api ✓
+
+=== C: env/docs vars and sections ===
+ok GEMINI_API_KEY
+ok OPENAI_API_KEY
+ok ANTHROPIC_API_KEY
+ok TESTER_DEFAULT_BALANCE
+ok PUBLIC_HOST
+no phantom/credential vars ✓
+account-connect section present ✓
+
+=== D: no real secrets ===
+no real secrets ✓
+```
+
+---
+
+## §4 Push and branch deletion
+
+- `main` pushed: `40a8dec → 6ec712c` ✓
+- `docs/env-setup` deleted locally (force `-D`: the final compose-wire commit `4deccc7` was committed locally after the branch's last push and reached origin via the merge into main — git correctly noted local tip was ahead of `origin/docs/env-setup`) ✓
+- `docs/env-setup` deleted on remote ✓
+
+---
+
+## Operator note
+
+`PUBLIC_HOST` now reaches the running container only after recreating it:
+```bash
+docker compose up -d dashboard-api   # env-only change — no --build needed
+```
