@@ -912,3 +912,61 @@ sl_pct   = float(signal['stop_loss_pct'])   # no abs()
 tp_pct   = float(signal['take_profit_pct'])  # no abs()
 ```
 If backtests replay signals that happen to carry a negative pct, the sim will compute the same wrong-direction price as production did. The `abs()` fix and the schema range guard should be mirrored here when the production fix is applied.
+
+---
+
+## Fix: SL/TP pct range guard + schema units hint (prod + tester parity)
+_2026-06-17. Fixes: (1) missing abs() in node_guard_sim; (2) no guard against hallucinated/garbage pct values; (3) no schema hint to the LLM about units._
+
+### Changes
+
+**`ai-signal-generator/app/graph/nodes/node_analyze.py`**
+- Import changed to `from pydantic import BaseModel, Field`
+- `stop_loss_pct` / `take_profit_pct` fields now carry `Field(description=...)` hint:
+  `"Distance from entry as a percent, e.g. 1.5 = 1.5%. Use 0 for hold/close actions."`
+- No `ge`/`le` constraints added (hold/close legitimately emit 0.0).
+
+**`ai-signal-generator/app/graph/nodes/node_guard.py`** (lines 10–11, 111–117)
+- Added module-level constants: `_MIN_SL_TP_PCT = 0.05`, `_MAX_SL_TP_PCT = 50.0`
+- Inside `action in ('open_long', 'open_short')` block, after existing `abs()` lines:
+  ```python
+  if not (_MIN_SL_TP_PCT <= sl_pct <= _MAX_SL_TP_PCT) or \
+     not (_MIN_SL_TP_PCT <= tp_pct <= _MAX_SL_TP_PCT):
+      return _reject(state, 'sl_tp_pct_out_of_range')
+  ```
+
+**`strategy-tester/app/engine/node_guard_sim.py`** (lines 19–20, 114–123)
+- Same constants, `abs()`, and range guard added — full parity with prod.
+- Closes the gap noted in the previous section.
+
+**`strategy-tester/app/_vendored/node_analyze.py`** + **`CHECKSUMS`**
+- Vendored mirror updated with same `Field(description=...)` changes.
+- `CHECKSUMS` hash updated to `26df22ec3de26c8df9761123e021ae418e1f8d44c116072e6412219f096893a2`.
+
+### Boundary logic test (all 6 OK)
+
+| Input (raw) | abs() → | Guard result | Expected |
+|---|---|---|---|
+| sl=-0.049 | 0.049 < 0.05 | REJECT | ✓ |
+| tp=-0.049 | 0.049 < 0.05 | REJECT | ✓ |
+| sl=0.3, tp=0.8 (scalp) | 0.3, 0.8 | PASS | ✓ |
+| sl=1.5, tp=3.8 (normal) | 1.5, 3.8 | PASS | ✓ |
+| sl=80 | 80 > 50 | REJECT | ✓ |
+| sl=0, tp=0 (hold zeros) | 0 < 0.05 | REJECT | ✓ |
+
+### Holds/closes unaffected
+
+The range guard is inside `if action in ('open_long', 'open_short'):` in both files.
+`hold` / `adjust_stops` exit before that block; `close_long` / `close_short` fall through
+to the final close block which never reads `sl_pct` / `tp_pct`. Zero-valued pct fields on
+hold/close signals are never evaluated against the range guard.
+
+### Deploy
+
+Both services rebuilt (layer-cached) and force-recreated. Verified live:
+```
+ai-signal-generator: node_guard.py:10 _MIN_SL_TP_PCT, :117 sl_tp_pct_out_of_range
+                     node_analyze.py:25–26 Field(description=...)
+strategy-tester:     node_guard_sim.py:19 _MIN_SL_TP_PCT, :114 abs(float, :123 sl_tp_pct_out_of_range
+                     _vendored/node_analyze.py:30–31 Field(description=...)
+```

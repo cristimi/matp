@@ -16,6 +16,9 @@ from app.graph.state import AgentState
 
 logger = logging.getLogger(__name__)
 
+_MIN_SL_TP_PCT = 0.05   # below this, SL/TP sits ~on entry (degenerate)
+_MAX_SL_TP_PCT = 50.0   # above this is almost certainly hallucinated
+
 _ACTION_COOLDOWN: dict[str, str | None] = {
     'open_long':     'cooldown_entry_minutes',
     'open_short':    'cooldown_entry_minutes',
@@ -108,8 +111,16 @@ async def node_guard_sim(state: AgentState) -> AgentState:
             return _reject(state, 'size_resolution_failed')
 
         base_qty = round(usdt_alloc / current_price, 8)
-        sl_pct   = float(signal['stop_loss_pct'])
-        tp_pct   = float(signal['take_profit_pct'])
+        sl_pct   = abs(float(signal['stop_loss_pct']))
+        tp_pct   = abs(float(signal['take_profit_pct']))
+
+        if not (_MIN_SL_TP_PCT <= sl_pct <= _MAX_SL_TP_PCT) or \
+           not (_MIN_SL_TP_PCT <= tp_pct <= _MAX_SL_TP_PCT):
+            logger.warning(
+                "node_guard_sim reject %s: sl_pct=%s tp_pct=%s outside [%s, %s]",
+                action, sl_pct, tp_pct, _MIN_SL_TP_PCT, _MAX_SL_TP_PCT,
+            )
+            return _reject(state, 'sl_tp_pct_out_of_range')
 
         if action == 'open_long':
             sl_price = round(current_price * (1 - sl_pct / 100.0), 4)

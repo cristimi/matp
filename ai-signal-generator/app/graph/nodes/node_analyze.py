@@ -2,7 +2,7 @@ import asyncio
 import logging
 from typing import Literal, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.config import settings
 from app.database import get_pool
@@ -22,8 +22,8 @@ class LLMSignalOutput(BaseModel):
     ]
     confidence:      float
     size_pct:        float
-    stop_loss_pct:   float
-    take_profit_pct: float
+    stop_loss_pct:   float = Field(description="Distance from entry as a percent, e.g. 1.5 = 1.5%. Use 0 for hold/close actions.")
+    take_profit_pct: float = Field(description="Distance from entry as a percent, e.g. 3.0 = 3.0%. Use 0 for hold/close actions.")
     new_sl_price:    Optional[float] = None
     new_tp_price:    Optional[float] = None
     reasoning:       str
