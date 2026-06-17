@@ -970,3 +970,212 @@ ai-signal-generator: node_guard.py:10 _MIN_SL_TP_PCT, :117 sl_tp_pct_out_of_rang
 strategy-tester:     node_guard_sim.py:19 _MIN_SL_TP_PCT, :114 abs(float, :123 sl_tp_pct_out_of_range
                      _vendored/node_analyze.py:30–31 Field(description=...)
 ```
+
+---
+
+# Repo Hygiene Cleanup — Branch `cleanup/repo-hygiene`
+_2026-06-17. Executor: Claude Sonnet 4.6. Risk: docs/scripts only — no service code, no db/ files (except additive MANIFEST.md)._
+
+---
+
+## 1. Files moved (from → to)
+
+| From (root) | To |
+|---|---|
+| `MATP.SDD.md` | `docs/MATP.SDD.md` |
+| `MATP_STRATEGY_TESTER_SDD_v1.1.md` | `docs/MATP_STRATEGY_TESTER_SDD_v1.1.md` |
+| `MATP_UI_IMPLEMENTATION_PLAN.md` | `docs/MATP_UI_IMPLEMENTATION_PLAN.md` |
+| `TEST_PLAN.md` | `docs/TEST_PLAN.md` |
+| `ACTION_PLAN.md` | `docs/process/ACTION_PLAN.md` |
+| `MATP-Gemini-Plan-v2.md` | `docs/process/MATP-Gemini-Plan-v2.md` |
+| `prompts/` (entire dir) | `docs/process/prompts/` |
+| `reports/` (entire dir) | `docs/process/reports/` |
+| `run_hl_test.sh` | `scripts/run_hl_test.sh` |
+| `run_integration_test.py` | `scripts/run_integration_test.py` |
+| `test_blofin_e2e.py` | `scripts/test_blofin_e2e.py` |
+| `test_payload.json` | `scripts/test_payload.json` |
+| `test_webhook.sh` | `scripts/test_webhook.sh` |
+| `test_webhook_manual.py` | `scripts/test_webhook_manual.py` |
+
+All moves used `git mv` — history preserved, diff fully reviewable.
+
+---
+
+## 2. Files deleted (with evidence)
+
+### `CHECKPOINT.md` (root) — deleted
+
+```
+$ cat CHECKPOINT.md
+status: done
+current_task: accounts page redesignedesign
+```
+56-byte corrupted stub. Canonical copy is `.gemini/CHECKPOINT.md` (real session-21 content, hundreds of bytes). Root copy deleted.
+
+### `REPORT_FOR_HUMAN.md` (root) — deleted
+
+```
+$ wc -c REPORT_FOR_HUMAN.md .gemini/REPORT_FOR_HUMAN.md
+47175 REPORT_FOR_HUMAN.md
+38557 .gemini/REPORT_FOR_HUMAN.md
+85732 total
+```
+
+Root copy (47175 bytes) is the stale "Strategy Tester Implementation Report" from an earlier session. `.gemini/REPORT_FOR_HUMAN.md` (38557 bytes) is the current "HL leverage + margin overrun" report dated 2026-06-16. The root copy is the older diverged version — deleted.
+
+```
+$ diff REPORT_FOR_HUMAN.md .gemini/REPORT_FOR_HUMAN.md | head -5
+1c1,2
+< # Strategy Tester Implementation Report
+---
+> # HL leverage + margin overrun — fix verification report
+> _Updated 2026-06-16. Covers: leverage fix (Defect A) + margin clamp bypass fix (Defect B)..._
+```
+
+### `prompts/session_start.md` (underscore) — deleted
+
+```
+$ diff prompts/session-start.md prompts/session_start.md | head -5
+14,31d13
+< ## Session Log
+<
+< On session start, initialize `prompts/session-log.md` by resetting it...
+```
+`session-start.md` (dash) is the superset — it has an extra "Session Log" section (18 additional lines). The underscore variant is a subset. Dash variant kept, underscore variant deleted.
+
+---
+
+## 3. Other changes
+
+- **`.gitignore`**: Removed duplicate `dist/` entry (appeared under both Python and Node sections; one `dist/` in Python section retained).
+- **`db/migrations/MANIFEST.md`**: New additive file created — lists all 27 migration files with purpose, flags the 5 collision numbers (`001`, `002`, `003`, `004`, `012`), and notes the unnumbered `fix_strategies_insert.sql`.
+- **Internal doc links fixed** in: `README.md`, `docs/MATP.SDD.md`, `docs/TEST_PLAN.md`, `docs/process/MATP-Gemini-Plan-v2.md`, `docs/process/prompts/sync.md`, `docs/process/prompts/resume.md`.
+
+---
+
+## 4. Verification output — §10 A–F (raw command output)
+
+### A. Full picture of what changed (`git status --short`)
+
+```
+M  .gitignore
+D  CHECKPOINT.md
+M  README.md
+D  REPORT_FOR_HUMAN.md
+A  db/migrations/MANIFEST.md
+R  MATP.SDD.md -> docs/MATP.SDD.md
+R  MATP_STRATEGY_TESTER_SDD_v1.1.md -> docs/MATP_STRATEGY_TESTER_SDD_v1.1.md
+R  MATP_UI_IMPLEMENTATION_PLAN.md -> docs/MATP_UI_IMPLEMENTATION_PLAN.md
+R  TEST_PLAN.md -> docs/TEST_PLAN.md
+R  ACTION_PLAN.md -> docs/process/ACTION_PLAN.md
+R  MATP-Gemini-Plan-v2.md -> docs/process/MATP-Gemini-Plan-v2.md
+R  prompts/260519_claude_to_gemini_webhooks_strategies.prompt -> docs/process/prompts/260519_claude_to_gemini_webhooks_strategies.prompt
+R  prompts/matp-session-01.prompt -> docs/process/prompts/matp-session-01.prompt
+R  prompts/matp-session-02.prompt -> docs/process/prompts/matp-session-02.prompt
+R  prompts/matp-session-07.prompt -> docs/process/prompts/matp-session-07.prompt
+R  prompts/resume.md -> docs/process/prompts/resume.md
+R  prompts/session-log.md -> docs/process/prompts/session-log.md
+R  prompts/session-start.md -> docs/process/prompts/session-start.md
+R  prompts/sync.md -> docs/process/prompts/sync.md
+R  reports/part2-reset-report.md -> docs/process/reports/part2-reset-report.md
+R  reports/part2-reset-test-report.md -> docs/process/reports/part2-reset-test-report.md
+R  reports/part3-fix-report.md -> docs/process/reports/part3-fix-report.md
+R  reports/part3-units-check.md -> docs/process/reports/part3-units-check.md
+R  reports/part4-pnl-attribution-report.md -> docs/process/reports/part4-pnl-attribution-report.md
+R  reports/reconciler-tests-report.md -> docs/process/reports/reconciler-tests-report.md
+D  prompts/session_start.md
+R  run_hl_test.sh -> scripts/run_hl_test.sh
+R  run_integration_test.py -> scripts/run_integration_test.py
+R  test_blofin_e2e.py -> scripts/test_blofin_e2e.py
+R  test_payload.json -> scripts/test_payload.json
+R  test_webhook.sh -> scripts/test_webhook.sh
+R  test_webhook_manual.py -> scripts/test_webhook_manual.py
+```
+
+### B. Root remaining files
+
+```
+$ ls -la | grep -vE '^d' | awk '{print $NF}'
+CHANGELOG.md
+CLAUDE.md
+docker-compose.yml
+.env
+.env.example
+.gitignore
+LICENSE
+Makefile
+README.md
+```
+(Plus 4 pre-existing zero-byte untracked stray files: `=`, `Note:`, `not`, `opened_at` — see §5 Skipped.)
+
+### C. New locations populated
+
+```
+$ ls docs/
+MATP_AI_Siganl_Generator_Spec_v1.0.md
+MATP.SDD.md
+MATP_STRATEGY_TESTER_SDD_v1.1.md
+MATP_UI_IMPLEMENTATION_PLAN.md
+process
+README.md
+ROADMAP.md
+session-27-28-verification.md
+setup.md
+TEST_PLAN.md
+tradingview.md
+
+$ ls docs/process/
+ACTION_PLAN.md
+MATP-Gemini-Plan-v2.md
+prompts
+reports
+
+$ ls scripts/
+e2e_test.sh
+redeploy.sh
+run_hl_test.sh
+run_integration_test.py
+test_blofin_e2e.py
+test_payload.json
+test_webhook_manual.py
+test_webhook.sh
+```
+
+### D. No dangling .md links remain
+
+All hits from the grep are now updated paths that resolve to real files. Every referenced path (`docs/MATP.SDD.md`, `docs/process/ACTION_PLAN.md`, `docs/TEST_PLAN.md`, `docs/MATP_UI_IMPLEMENTATION_PLAN.md`) was confirmed present with `ls`.
+
+### E. db/ untouched
+
+```
+?? db/migrations/MANIFEST.md
+```
+Only the new additive MANIFEST.md shows — no existing db/ file was modified, moved, or deleted. Correct.
+
+### F. Service dirs untouched
+
+```
+?? tester-ui/.vite/
+```
+Only pre-existing untracked Vite cache directory — no service source code touched. Correct.
+
+---
+
+## 5. Skipped / Needs human
+
+- **4 stray zero-byte files at root** (`=`, `Note:`, `not`, `opened_at`): These predate this branch (visible in the original git status as `??`). They look like accidental files from a mistyped command. They are untracked and not part of the doc/script cleanup scope. A human should `git rm` them (or simply `rm`) in a follow-up.
+- **Migration archiving/renumbering**: Deliberately deferred as specified — `db/init.sql` is incomplete (missing tester schema and AI tables), so migrations are still load-bearing. MANIFEST.md created to document the collision state.
+- **dashboard-ui ↔ tester-ui shared-component fork**: Out of scope (design decision, not file hygiene).
+- **`order-generator` keep/retire**: Out of scope (architecture decision).
+
+---
+
+## 6. db/ and service dir confirmation
+
+**db/**: Only `db/migrations/MANIFEST.md` added (new file, no existing file modified). Confirmed by check E above.
+
+**Service dirs**: Zero entries in `git status --short` for any of: `order-listener/`, `order-executor/`, `order-generator/`, `ai-signal-generator/`, `dashboard-api/`, `dashboard-ui/`, `tester-ui/`, `strategy-tester/`, `nginx/`. Confirmed by check F above.
+
+---
+
+_Branch `cleanup/repo-hygiene` pushed. Commit: `c415c45`. Do not merge to main without review._
