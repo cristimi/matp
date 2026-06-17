@@ -64,9 +64,9 @@ Build a mental summary of what actually changed before touching any file.
 Do not read every doc file in full. Read only what is relevant to the changes detected in Step 1:
 
 - Always read: `CHANGELOG.md` (last 50 lines only — for version and format reference)
-- If architecture changed: read `MATP.SDD.md` (targeted sections only, not full file)
-- If tasks may be complete: read `ACTION_PLAN.md` (current phase section only)
-- If tests may have run: read `TEST_PLAN.md` (relevant category sections only)
+- If architecture changed: read `docs/MATP.SDD.md` (targeted sections only, not full file)
+- If tasks may be complete: read `docs/process/ACTION_PLAN.md` (current phase section only)
+- If tests may have run: read `docs/TEST_PLAN.md` (relevant category sections only)
 - For any other `.md` files: read only if Step 1 diff touched something they reference
 
 ```bash
@@ -102,7 +102,7 @@ Rules:
 
 ---
 
-## STEP 4 — UPDATE MATP.SDD.md
+## STEP 4 — UPDATE docs/MATP.SDD.md
 
 This is the architecture reference. Only update it when the architecture actually changed.
 
@@ -128,7 +128,7 @@ When updating:
 
 ---
 
-## STEP 5 — UPDATE ACTION_PLAN.md
+## STEP 5 — UPDATE docs/process/ACTION_PLAN.md
 
 Mark tasks complete only when there is clear evidence in the git diff:
 
@@ -147,7 +147,7 @@ Do not mark anything complete without evidence. Do not add new tasks — that re
 
 ---
 
-## STEP 6 — UPDATE TEST_PLAN.md
+## STEP 6 — UPDATE docs/TEST_PLAN.md
 
 Mark tests passed only if evidence exists:
 - Log files showing test output
@@ -199,9 +199,9 @@ Changes detected:
 
 Documents updated:
   CHANGELOG.md     — added v[X.Y.Z] entry ([N] items)
-  MATP.SDD.md      — [what changed] OR "no changes needed"
-  ACTION_PLAN.md   — [N] tasks marked complete OR "no changes needed"
-  TEST_PLAN.md     — [N] tests marked complete, [N] new entries added OR "no changes needed"
+  docs/MATP.SDD.md             — [what changed] OR "no changes needed"
+  docs/process/ACTION_PLAN.md  — [N] tasks marked complete OR "no changes needed"
+  docs/TEST_PLAN.md            — [N] tests marked complete, [N] new entries added OR "no changes needed"
   [other files]    — [what changed] OR "no changes needed"
 
 Nothing to update:

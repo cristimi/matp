@@ -2,7 +2,7 @@
 **Version:** 2.0  **Date:** 2026-05-22
 
 ## How to Use This Document
-This document provides a comprehensive checklist for verifying the functionality of the MATP system. These tests should be run after specific tasks are completed as outlined in `ACTION_PLAN.md`. They are categorized to guide execution based on the required interaction method.
+This document provides a comprehensive checklist for verifying the functionality of the MATP system. These tests should be run after specific tasks are completed as outlined in `docs/process/ACTION_PLAN.md`. They are categorized to guide execution based on the required interaction method.
 
 ## Test Categories
 - **🖥️ Terminal Tests:** These tests require running specific commands in a terminal. They are designed for the project owner to execute with exact copy-paste commands, requiring no coding knowledge.

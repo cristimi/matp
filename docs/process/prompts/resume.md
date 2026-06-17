@@ -36,7 +36,7 @@ If `git diff HEAD` shows uncommitted changes:
 
 1. Read the last entry in `CHANGELOG.md` to understand what was being worked on
 2. Read the changed files in full
-3. Cross-reference with `ACTION_PLAN.md` — find the task most likely in progress
+3. Cross-reference with `docs/process/ACTION_PLAN.md` — find the task most likely in progress
 4. Form a hypothesis: **"It looks like work was in progress on [X], specifically [Y]"**
 
 If there are no uncommitted changes:
