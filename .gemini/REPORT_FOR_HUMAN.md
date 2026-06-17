@@ -1615,3 +1615,86 @@ no real secrets ✓
 ```bash
 docker compose up -d dashboard-api   # env-only change — no --build needed
 ```
+
+---
+
+# Pre-baseline migration archiving — Branch `chore/archive-migrations`
+_2026-06-17. Executor: Claude Sonnet 4.6. Commits: `78966bf` (archive) + `43104e9` (gitignore fix)._
+
+---
+
+## §5 Verification output (A–D)
+
+### A. Live migrations folder
+```
+loose .sql at root: 0   (expect 0)
+archived .sql:      27  (expect 27)
+_archive
+README.md
+```
+
+### B. Renames + init.sql untouched
+```
+28   (rename count: 27 sql + MANIFEST.md)
+init.sql untouched ✓
+```
+
+### C. No stale doc links
+```
+no stale migration links ✓
+```
+
+### D. CI untouched
+```
+CI untouched ✓
+```
+
+---
+
+## §4 Docs repointed
+
+| File | Filename repointed |
+|------|-------------------|
+| `docs/MATP.SDD.md` | `001_exchange_accounts.sql`, `002_symbol_coupling.sql` |
+| `docs/MATP_STRATEGY_TESTER_SDD_v1.1.md` | `011_tester_schema.sql` |
+| `docs/process/MATP-Gemini-Plan-v2.md` | `001_exchange_accounts.sql`, `002_symbol_coupling.sql` |
+| `docs/setup.md` | Directory-level note updated (see below) |
+
+`.gemini/SESSION_LOG.md` also referenced `011_tester_schema.sql` but was left untouched per hard constraint (`.gemini/` is never edited).
+
+`docs/setup.md` migration note changed from:
+> "For an existing instance applying new migrations, run the numbered SQL files in `db/migrations/` in sequence (see `db/migrations/MANIFEST.md`)."
+
+To:
+> "Pre-baseline migrations (`001`–`021`) are archived in `db/migrations/_archive/` for reference only; do not replay them against a fresh instance. New post-baseline migrations (`022+`) live in `db/migrations/` and must be applied manually to existing instances (see `db/migrations/README.md`)."
+
+---
+
+## New `db/migrations/README.md`
+
+```markdown
+# db/migrations
+
+## How schema changes work
+
+**Fresh deploys** get the full schema automatically from `db/init.sql`...
+[new post-baseline migrations start at 022_, apply manually to existing instances,
+then regenerate db/init.sql]
+
+## `_archive/`
+
+Contains all pre-baseline migrations (001–021)... Do not re-run against fresh instance.
+See `_archive/MANIFEST.md` for full list and collision notes.
+```
+
+---
+
+## Flag, not changed
+
+`strategy-tester/app/main.py:97` prints an error hint pointing at `db/migrations/011_tester_schema.sql`. That file is now at `db/migrations/_archive/011_tester_schema.sql`, and `init.sql` already creates the tester schema so this error path is effectively dead on a correct deploy. Left untouched to keep this change out of service code — one-line fix for a later pass.
+
+---
+
+## Incidental fix in same branch
+
+`tester-ui/.vite/` (Vite dev-server cache) was swept in by the `git add -A` used during verification and accidentally committed in `78966bf`. Fixed immediately in `43104e9`: added `.vite/` to `.gitignore` and removed the 17 tracked cache files. No migration or service files affected.

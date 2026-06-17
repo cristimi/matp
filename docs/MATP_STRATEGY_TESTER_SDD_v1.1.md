@@ -1368,7 +1368,7 @@ Assuming ~1,500 input + 300 output tokens per call (median observed in MATP prod
 ### Phase 1 — Database schema and vendored sync setup
 
 **Files to create:**
-- `db/migrations/011_tester_schema.sql`
+- `db/migrations/_archive/011_tester_schema.sql`
 - `Makefile` (in repo root) with `sync-vendored`, `check-vendored`, `build` targets
 - `strategy-tester/app/_vendored/.gitkeep`
 
@@ -1445,7 +1445,7 @@ Implements the full loop from §6.1 including: open/close intent deferral, mark-
 
 ## 14. Database Migration SQL
 
-Full content of `db/migrations/011_tester_schema.sql`:
+Full content of `db/migrations/_archive/011_tester_schema.sql`:
 
 ```sql
 -- ============================================================
