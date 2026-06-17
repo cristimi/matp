@@ -1698,3 +1698,36 @@ See `_archive/MANIFEST.md` for full list and collision notes.
 ## Incidental fix in same branch
 
 `tester-ui/.vite/` (Vite dev-server cache) was swept in by the `git add -A` used during verification and accidentally committed in `78966bf`. Fixed immediately in `43104e9`: added `.vite/` to `.gitignore` and removed the 17 tracked cache files. No migration or service files affected.
+
+---
+
+# Merge `chore/archive-migrations` → `main` — 2026-06-17
+_Merge commit: `e3ad180`._
+
+## §2 Post-merge verification
+
+```
+=== log ===
+e3ad180 merge: archive pre-baseline migrations to _archive/
+0af899d docs: append migration archive report to .gemini/REPORT_FOR_HUMAN.md
+43104e9 chore: add .vite/ to .gitignore; remove accidentally committed tester-ui Vite cache
+
+=== migration folder ===
+loose .sql at root: 0   (expect 0)
+archived .sql:      27  (expect 27)
+_archive
+README.md
+MANIFEST archived ✓
+
+=== init.sql + CI unchanged by this merge ===
+init.sql + CI untouched ✓
+
+=== no stale migration links in living docs ===
+no stale migration links in living docs ✓
+(only .gemini/ historical log has old paths — intentionally untouched per hard constraint)
+```
+
+## Push and branch deletion
+
+- `main` pushed: `5dcca91 → e3ad180` ✓
+- `chore/archive-migrations` deleted locally and remotely ✓
