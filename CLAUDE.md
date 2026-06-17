@@ -7,6 +7,7 @@ Services: `nginx` (reverse proxy), `postgres`, `redis`, `order-listener`, `order
 ## Golden rules
 
 - Always use `docker compose` (never `docker-compose`).
+- Deferred work and design decisions live in `docs/ROADMAP.md` (see its "Deferred Backlog" and "Open Design Questions"). Check there before starting new feature work.
 - DB: PostgreSQL, user=`matp`, database=`matp`. Inspect with
   `docker compose exec postgres psql -U matp -d matp -c "..."`.
 - Never print private keys, credentials, or secrets.

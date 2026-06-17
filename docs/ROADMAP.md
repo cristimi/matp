@@ -55,3 +55,8 @@ Changes required: DB migration, one line in `node_ingest.py`, `ai.ts` GET/PUT, U
 
 ## Deferred Backlog
 - **Minimum order value guard**: before sending to exchange, check notional value (qty × price) against known exchange minimums. Reject with `size_too_small` before hitting the exchange API.
+- **AI prompt template management page**: no runtime CRUD exists for `ai_prompt_templates` — templates are seed-only (migrations 006/010, `ON CONFLICT DO NOTHING`). `GET /api/ai/templates` is read-only; there is no POST/PUT/DELETE anywhere. Build a create/edit page.
+  - **Safety model — clone-to-edit, not edit-in-place.** Templates are shared: every `ai_strategy_config.template_id` points at one. Editing a base template in place silently changes behavior for all strategies referencing it (incl. live ones) and breaks backtest/live parity. Seed templates must stay immutable; user clones one into a custom template and edits that.
+  - Needs `is_system` (or `created_by`) flag to distinguish/protect seeded rows; CRUD endpoints; a "N strategies use this" warning before destructive actions.
+  - `ai_prompt_templates` is a single canonical table in `public` — tester reads it, has no duplicate — so no schema-sync needed.
+  - Display side is **already done** (committed): the config modal shows `system_prompt` + active data sources read-only via the `TemplatePreview` component in `Strategies.tsx`.

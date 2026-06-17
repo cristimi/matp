@@ -45,11 +45,11 @@ MATP is a locally-hosted, Docker-based system designed for automated cryptocurre
 
 ## Project Status & Roadmap
 
-MATP is under active development. Current focus includes platform stability, refining the strategy performance tracking engine, and adding new exchange adapters. Refer to `ACTION_PLAN.md` for the current development roadmap and `MATP.SDD.md` for detailed architectural information.
+MATP is under active development. Current focus includes platform stability, refining the strategy performance tracking engine, and adding new exchange adapters. Refer to `docs/process/ACTION_PLAN.md` for the current development roadmap and `docs/MATP.SDD.md` for detailed architectural information.
 
 ## Documentation
 
-- [`MATP.SDD.md`](MATP.SDD.md) - Comprehensive Software Design Document.
+- [`docs/MATP.SDD.md`](docs/MATP.SDD.md) - Comprehensive Software Design Document.
 - [`docs/setup.md`](docs/setup.md) - Detailed setup and installation instructions.
 - [`docs/tradingview.md`](docs/tradingview.md) - Guide for setting up TradingView alerts.
 - [`docs/sync.md`](docs/sync.md) - Documentation maintenance guide.

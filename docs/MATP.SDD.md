@@ -1,5 +1,5 @@
 > **Note:** Testing plan, action items, and development roadmap have been
-> moved to ACTION_PLAN.md and TEST_PLAN.md. This document covers architecture only.
+> moved to docs/process/ACTION_PLAN.md and docs/TEST_PLAN.md. This document covers architecture only.
 
 # MATP — Software Design Document
 **Version:** 4.0  **Date:** 2026-05-31  **Status:** Active Development
@@ -1140,8 +1140,8 @@ MATP designed for local hosting. Do not expose port 80 to the internet without V
 | `db/migrations/002_symbol_coupling.sql` | Adds `allow_quote_variants`, `allow_cross_charting` to strategies. |
 | `docs/tradingview.md` | TradingView alert setup. Updated for `base_asset`/`quote_asset` payload format. |
 | `docs/setup.md` | Installation and development environment guide. |
-| `MATP.SDD.md` | This document. |
-| `ACTION_PLAN.md` | Prioritised task list and development roadmap. |
-| `TEST_PLAN.md` | Test cases and verification checklist. |
+| `docs/MATP.SDD.md` | This document. |
+| `docs/process/ACTION_PLAN.md` | Prioritised task list and development roadmap. |
+| `docs/TEST_PLAN.md` | Test cases and verification checklist. |
 | `README.md` | High-level overview and quick start. |
 | `CHANGELOG.md` | Reverse-chronological technical changelog. |

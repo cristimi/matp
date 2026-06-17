@@ -130,7 +130,7 @@ See `MATP-Session-07-Prompt.md` (already delivered).
 **Goal:** Dashboard UI — Accounts page (list, add, edit, deactivate)
 **Estimated Gemini work time:** 70 min
 **Flash Lite safe:** Yes
-**Design reference:** `MATP_UI_IMPLEMENTATION_PLAN.md` — no specific page spec; follow existing UI patterns
+**Design reference:** `docs/MATP_UI_IMPLEMENTATION_PLAN.md` — no specific page spec; follow existing UI patterns
 
 > Claude delivers this as `MATP-Session-10-Prompt.md` after Session 9 report is received.
 
@@ -148,7 +148,7 @@ See `MATP-Session-07-Prompt.md` (already delivered).
 **Goal:** Dashboard UI — Strategies screen redesign to v0.37 spec
 **Estimated Gemini work time:** 80 min
 **Flash Lite safe:** NO — card anatomy is complex
-**Design reference:** `strategies_added_by_Gemini.html` (v0.37) + `MATP_UI_IMPLEMENTATION_PLAN.md` §3
+**Design reference:** `strategies_added_by_Gemini.html` (v0.37) + `docs/MATP_UI_IMPLEMENTATION_PLAN.md` §3
 
 > Claude delivers this as `MATP-Session-11-Prompt.md` after Session 10 report is received.
 
@@ -166,7 +166,7 @@ See `MATP-Session-07-Prompt.md` (already delivered).
 **Goal:** Dashboard UI — shared components library
 **Estimated Gemini work time:** 70 min
 **Flash Lite safe:** Yes
-**Design reference:** `MATP_UI_IMPLEMENTATION_PLAN.md` §2
+**Design reference:** `docs/MATP_UI_IMPLEMENTATION_PLAN.md` §2
 
 > Claude delivers this as `MATP-Session-12-Prompt.md` after Session 11 report is received.
 
@@ -183,7 +183,7 @@ See `MATP-Session-07-Prompt.md` (already delivered).
 **Goal:** Dashboard UI — Positions screen redesign to v0.37 spec
 **Estimated Gemini work time:** 80 min
 **Flash Lite safe:** NO
-**Design reference:** `matp-ui-v0.33.html` positions screen + `MATP_UI_IMPLEMENTATION_PLAN.md` §4
+**Design reference:** `matp-ui-v0.33.html` positions screen + `docs/MATP_UI_IMPLEMENTATION_PLAN.md` §4
 
 > Claude delivers this as `MATP-Session-13-Prompt.md` after Session 12 report is received.
 
@@ -202,7 +202,7 @@ See `MATP-Session-07-Prompt.md` (already delivered).
 **Goal:** Dashboard UI — Orders screen redesign to v0.37 spec
 **Estimated Gemini work time:** 65 min
 **Flash Lite safe:** Partial
-**Design reference:** `matp-ui-v0.33.html` orders screen + `MATP_UI_IMPLEMENTATION_PLAN.md` §5
+**Design reference:** `matp-ui-v0.33.html` orders screen + `docs/MATP_UI_IMPLEMENTATION_PLAN.md` §5
 
 > Claude delivers this as `MATP-Session-14-Prompt.md` after Session 13 report is received.
 
@@ -336,12 +336,12 @@ If **Flash Lite was used on a session marked Flash Lite safe: NO**, paste the re
 
 | What Gemini reads for context | Where it lives |
 |-------------------------------|----------------|
-| Architecture source of truth | `MATP.SDD.md` (v4.0) |
+| Architecture source of truth | `docs/MATP.SDD.md` (v4.0) |
 | Current DB schema | `db/init.sql` + `db/migrations/` |
 | Previous session handoff | `.gemini/NEXT_SESSION.md` |
 | Current task state | `.gemini/CHECKPOINT.md` |
 | Full session history | `.gemini/SESSION_LOG.md` |
-| UI design spec | `MATP_UI_IMPLEMENTATION_PLAN.md` |
+| UI design spec | `docs/MATP_UI_IMPLEMENTATION_PLAN.md` |
 | UI reference HTML v0.33 | `matp-ui-v0.33.html` |
 | UI reference HTML v0.37 | `strategies_added_by_Gemini.html` |
 
