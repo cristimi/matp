@@ -19,6 +19,7 @@ env/
 node_modules/
 .next/
 *.tsbuildinfo
+.vite/
 
 # Docker volumes (local dev)
 postgres_data/
