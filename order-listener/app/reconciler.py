@@ -36,6 +36,7 @@ async def reconcile_once(pool) -> None:
             """
             SELECT sp.id, sp.strategy_id, sp.symbol, sp.side,
                    sp.size, sp.opened_at, sp.reconcile_miss_count,
+                   sp.reconcile_divergent,
                    s.account_id
             FROM strategy_positions sp
             JOIN strategies s ON sp.strategy_id = s.id
@@ -112,39 +113,51 @@ async def reconcile_once(pool) -> None:
         _tol = max(_SIZE_EPSILON_ABS, db_size * _SIZE_EPSILON_REL)
 
         if ex_size is not None and abs(size_diff) <= _tol:
-            # Sizes match within tolerance — reset miss counter
-            if miss_count != 0:
+            # Sizes match within tolerance — reset miss counter and clear any divergence flag
+            already_divergent = row.get("reconcile_divergent", False)
+            if miss_count != 0 or already_divergent:
                 async with pool.acquire() as conn:
                     await conn.execute(
-                        "UPDATE strategy_positions SET reconcile_miss_count = 0,"
-                        " updated_at = NOW() WHERE id = $1",
+                        """
+                        UPDATE strategy_positions
+                        SET reconcile_miss_count    = 0,
+                            reconcile_divergent     = FALSE,
+                            reconcile_exchange_size = NULL,
+                            reconcile_divergence_at = NULL,
+                            updated_at              = NOW()
+                        WHERE id = $1
+                        """,
                         pos_id,
                     )
-                logger.debug(f"reconciler: position {pos_id} ({symbol} {side}) match reset")
+                logger.debug(f"reconciler: position {pos_id} ({symbol} {side}) match reset (divergent={already_divergent})")
             continue
 
         if ex_size is not None and ex_size_dec > db_size + _tol:
-            # Exchange size is LARGER than DB — never grow from reconciliation.
-            # The position IS confirmed present, so reset the miss streak: positive evidence
-            # it is NOT disappearing. Previously this branch reset nothing, which turned
-            # reconcile_miss_count into a one-way ratchet whenever db_size never matched the
-            # exchange (e.g. a size/units tracking mismatch), letting transient failures
-            # accumulate to a false close.
+            # Exchange size LARGER than DB — flag divergence; never grow from reconciliation.
+            # Reset miss counter: the position IS confirmed present (positive evidence it is
+            # not disappearing). Flag the size discrepancy so the dashboard can surface it.
             logger.warning(
-                f"reconciler: position {pos_id} ({symbol} {side}) exchange_size={ex_size_dec}"
-                f" > db_size={db_size} — ignoring (will not grow)"
+                f"reconciler: position {pos_id} ({symbol} {side}) "
+                f"exchange_size={ex_size_dec} > db_size={db_size} — flagging divergence"
             )
-            if miss_count != 0:
-                async with pool.acquire() as conn:
-                    await conn.execute(
-                        "UPDATE strategy_positions SET reconcile_miss_count = 0,"
-                        " updated_at = NOW() WHERE id = $1",
-                        pos_id,
-                    )
-                logger.info(
-                    f"reconciler: position {pos_id} ({symbol} {side}) confirmed present "
-                    f"(exchange_size={ex_size_dec}) — miss streak reset"
+            async with pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    UPDATE strategy_positions
+                    SET reconcile_miss_count    = 0,
+                        reconcile_divergent     = TRUE,
+                        reconcile_exchange_size = $1,
+                        reconcile_divergence_at = COALESCE(reconcile_divergence_at, NOW()),
+                        updated_at              = NOW()
+                    WHERE id = $2
+                    """,
+                    ex_size_dec,
+                    pos_id,
                 )
+            logger.info(
+                f"reconciler: position {pos_id} ({symbol} {side}) divergence flagged "
+                f"(exchange={ex_size_dec} > db={db_size})"
+            )
             continue
 
         # Discrepancy: absent or smaller on exchange → increment miss counter

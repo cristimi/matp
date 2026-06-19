@@ -1,20 +1,8 @@
--- ============================================================
--- MATP — Database Baseline (db/init.sql)
--- GENERATED from live DB via pg_dump on 2026-06-17T20:41Z
--- Loaded once by Postgres at /docker-entrypoint-initdb.d/init.sql
---
--- Contains: full public + tester schema, and reference-data seeds for
---   config, assets, trading_pairs, ai_prompt_templates.
--- Excludes (intentionally): exchange_accounts credentials and ALL
---   operational/tester row data — fresh instances start empty.
--- Regenerate after applying new migrations to the live DB.
--- ============================================================
-
 --
 -- PostgreSQL database dump
 --
 
-\restrict e6dWmOaDigKvk6hPvKON45tFvVdzxDK3RvyLTedYXIm3txKQDhCQA2EMSgfmOah
+\restrict K2jIuW7sDeF6tikiv9J611N5ZBPCUTnYqynfVw18OS5j5kBqwFA7CuUuBaMrOsh
 
 -- Dumped from database version 16.14
 -- Dumped by pg_dump version 16.14
@@ -31,31 +19,30 @@ SET client_min_messages = warning;
 SET row_security = off;
 
 --
--- Name: public; Type: SCHEMA; Schema: -; Owner: -
---
-
-CREATE SCHEMA IF NOT EXISTS public;
-
--- Required extension (provides gen_random_bytes used in webhook_secret defaults)
-CREATE EXTENSION IF NOT EXISTS pgcrypto WITH SCHEMA public;
-
-
---
--- Name: SCHEMA public; Type: COMMENT; Schema: -; Owner: -
---
-
-COMMENT ON SCHEMA public IS 'standard public schema';
-
-
---
--- Name: tester; Type: SCHEMA; Schema: -; Owner: -
+-- Name: tester; Type: SCHEMA; Schema: -; Owner: matp
 --
 
 CREATE SCHEMA tester;
 
 
+ALTER SCHEMA tester OWNER TO matp;
+
 --
--- Name: update_updated_at_column(); Type: FUNCTION; Schema: public; Owner: -
+-- Name: pgcrypto; Type: EXTENSION; Schema: -; Owner: -
+--
+
+CREATE EXTENSION IF NOT EXISTS pgcrypto WITH SCHEMA public;
+
+
+--
+-- Name: EXTENSION pgcrypto; Type: COMMENT; Schema: -; Owner: 
+--
+
+COMMENT ON EXTENSION pgcrypto IS 'cryptographic functions';
+
+
+--
+-- Name: update_updated_at_column(); Type: FUNCTION; Schema: public; Owner: matp
 --
 
 CREATE FUNCTION public.update_updated_at_column() RETURNS trigger
@@ -68,12 +55,14 @@ END;
 $$;
 
 
+ALTER FUNCTION public.update_updated_at_column() OWNER TO matp;
+
 SET default_tablespace = '';
 
 SET default_table_access_method = heap;
 
 --
--- Name: ai_prompt_templates; Type: TABLE; Schema: public; Owner: -
+-- Name: ai_prompt_templates; Type: TABLE; Schema: public; Owner: matp
 --
 
 CREATE TABLE public.ai_prompt_templates (
@@ -85,8 +74,10 @@ CREATE TABLE public.ai_prompt_templates (
 );
 
 
+ALTER TABLE public.ai_prompt_templates OWNER TO matp;
+
 --
--- Name: ai_risk_config; Type: TABLE; Schema: public; Owner: -
+-- Name: ai_risk_config; Type: TABLE; Schema: public; Owner: matp
 --
 
 CREATE TABLE public.ai_risk_config (
@@ -97,8 +88,10 @@ CREATE TABLE public.ai_risk_config (
 );
 
 
+ALTER TABLE public.ai_risk_config OWNER TO matp;
+
 --
--- Name: ai_risk_config_audit; Type: TABLE; Schema: public; Owner: -
+-- Name: ai_risk_config_audit; Type: TABLE; Schema: public; Owner: matp
 --
 
 CREATE TABLE public.ai_risk_config_audit (
@@ -112,8 +105,10 @@ CREATE TABLE public.ai_risk_config_audit (
 );
 
 
+ALTER TABLE public.ai_risk_config_audit OWNER TO matp;
+
 --
--- Name: ai_risk_config_audit_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+-- Name: ai_risk_config_audit_id_seq; Type: SEQUENCE; Schema: public; Owner: matp
 --
 
 CREATE SEQUENCE public.ai_risk_config_audit_id_seq
@@ -124,15 +119,17 @@ CREATE SEQUENCE public.ai_risk_config_audit_id_seq
     CACHE 1;
 
 
+ALTER SEQUENCE public.ai_risk_config_audit_id_seq OWNER TO matp;
+
 --
--- Name: ai_risk_config_audit_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+-- Name: ai_risk_config_audit_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: matp
 --
 
 ALTER SEQUENCE public.ai_risk_config_audit_id_seq OWNED BY public.ai_risk_config_audit.id;
 
 
 --
--- Name: ai_signal_log; Type: TABLE; Schema: public; Owner: -
+-- Name: ai_signal_log; Type: TABLE; Schema: public; Owner: matp
 --
 
 CREATE TABLE public.ai_signal_log (
@@ -161,8 +158,10 @@ CREATE TABLE public.ai_signal_log (
 );
 
 
+ALTER TABLE public.ai_signal_log OWNER TO matp;
+
 --
--- Name: ai_signal_log_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+-- Name: ai_signal_log_id_seq; Type: SEQUENCE; Schema: public; Owner: matp
 --
 
 CREATE SEQUENCE public.ai_signal_log_id_seq
@@ -173,15 +172,17 @@ CREATE SEQUENCE public.ai_signal_log_id_seq
     CACHE 1;
 
 
+ALTER SEQUENCE public.ai_signal_log_id_seq OWNER TO matp;
+
 --
--- Name: ai_signal_log_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+-- Name: ai_signal_log_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: matp
 --
 
 ALTER SEQUENCE public.ai_signal_log_id_seq OWNED BY public.ai_signal_log.id;
 
 
 --
--- Name: ai_strategy_config; Type: TABLE; Schema: public; Owner: -
+-- Name: ai_strategy_config; Type: TABLE; Schema: public; Owner: matp
 --
 
 CREATE TABLE public.ai_strategy_config (
@@ -221,22 +222,24 @@ CREATE TABLE public.ai_strategy_config (
 );
 
 
+ALTER TABLE public.ai_strategy_config OWNER TO matp;
+
 --
--- Name: COLUMN ai_strategy_config.llm_provider; Type: COMMENT; Schema: public; Owner: -
+-- Name: COLUMN ai_strategy_config.llm_provider; Type: COMMENT; Schema: public; Owner: matp
 --
 
 COMMENT ON COLUMN public.ai_strategy_config.llm_provider IS 'LLM provider: google | openai | anthropic';
 
 
 --
--- Name: COLUMN ai_strategy_config.llm_model; Type: COMMENT; Schema: public; Owner: -
+-- Name: COLUMN ai_strategy_config.llm_model; Type: COMMENT; Schema: public; Owner: matp
 --
 
 COMMENT ON COLUMN public.ai_strategy_config.llm_model IS 'Model name as accepted by the provider SDK';
 
 
 --
--- Name: assets; Type: TABLE; Schema: public; Owner: -
+-- Name: assets; Type: TABLE; Schema: public; Owner: matp
 --
 
 CREATE TABLE public.assets (
@@ -246,8 +249,10 @@ CREATE TABLE public.assets (
 );
 
 
+ALTER TABLE public.assets OWNER TO matp;
+
 --
--- Name: assets_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+-- Name: assets_id_seq; Type: SEQUENCE; Schema: public; Owner: matp
 --
 
 CREATE SEQUENCE public.assets_id_seq
@@ -259,15 +264,17 @@ CREATE SEQUENCE public.assets_id_seq
     CACHE 1;
 
 
+ALTER SEQUENCE public.assets_id_seq OWNER TO matp;
+
 --
--- Name: assets_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+-- Name: assets_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: matp
 --
 
 ALTER SEQUENCE public.assets_id_seq OWNED BY public.assets.id;
 
 
 --
--- Name: config; Type: TABLE; Schema: public; Owner: -
+-- Name: config; Type: TABLE; Schema: public; Owner: matp
 --
 
 CREATE TABLE public.config (
@@ -277,8 +284,10 @@ CREATE TABLE public.config (
 );
 
 
+ALTER TABLE public.config OWNER TO matp;
+
 --
--- Name: dead_letter_orders; Type: TABLE; Schema: public; Owner: -
+-- Name: dead_letter_orders; Type: TABLE; Schema: public; Owner: matp
 --
 
 CREATE TABLE public.dead_letter_orders (
@@ -291,8 +300,10 @@ CREATE TABLE public.dead_letter_orders (
 );
 
 
+ALTER TABLE public.dead_letter_orders OWNER TO matp;
+
 --
--- Name: dead_letter_orders_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+-- Name: dead_letter_orders_id_seq; Type: SEQUENCE; Schema: public; Owner: matp
 --
 
 CREATE SEQUENCE public.dead_letter_orders_id_seq
@@ -303,15 +314,17 @@ CREATE SEQUENCE public.dead_letter_orders_id_seq
     CACHE 1;
 
 
+ALTER SEQUENCE public.dead_letter_orders_id_seq OWNER TO matp;
+
 --
--- Name: dead_letter_orders_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+-- Name: dead_letter_orders_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: matp
 --
 
 ALTER SEQUENCE public.dead_letter_orders_id_seq OWNED BY public.dead_letter_orders.id;
 
 
 --
--- Name: exchange_accounts; Type: TABLE; Schema: public; Owner: -
+-- Name: exchange_accounts; Type: TABLE; Schema: public; Owner: matp
 --
 
 CREATE TABLE public.exchange_accounts (
@@ -327,8 +340,10 @@ CREATE TABLE public.exchange_accounts (
 );
 
 
+ALTER TABLE public.exchange_accounts OWNER TO matp;
+
 --
--- Name: order_events; Type: TABLE; Schema: public; Owner: -
+-- Name: order_events; Type: TABLE; Schema: public; Owner: matp
 --
 
 CREATE TABLE public.order_events (
@@ -341,8 +356,10 @@ CREATE TABLE public.order_events (
 );
 
 
+ALTER TABLE public.order_events OWNER TO matp;
+
 --
--- Name: order_events_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+-- Name: order_events_id_seq; Type: SEQUENCE; Schema: public; Owner: matp
 --
 
 CREATE SEQUENCE public.order_events_id_seq
@@ -353,15 +370,17 @@ CREATE SEQUENCE public.order_events_id_seq
     CACHE 1;
 
 
+ALTER SEQUENCE public.order_events_id_seq OWNER TO matp;
+
 --
--- Name: order_events_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+-- Name: order_events_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: matp
 --
 
 ALTER SEQUENCE public.order_events_id_seq OWNED BY public.order_events.id;
 
 
 --
--- Name: order_execution_log; Type: TABLE; Schema: public; Owner: -
+-- Name: order_execution_log; Type: TABLE; Schema: public; Owner: matp
 --
 
 CREATE TABLE public.order_execution_log (
@@ -388,8 +407,10 @@ CREATE TABLE public.order_execution_log (
 );
 
 
+ALTER TABLE public.order_execution_log OWNER TO matp;
+
 --
--- Name: order_execution_log_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+-- Name: order_execution_log_id_seq; Type: SEQUENCE; Schema: public; Owner: matp
 --
 
 CREATE SEQUENCE public.order_execution_log_id_seq
@@ -400,15 +421,17 @@ CREATE SEQUENCE public.order_execution_log_id_seq
     CACHE 1;
 
 
+ALTER SEQUENCE public.order_execution_log_id_seq OWNER TO matp;
+
 --
--- Name: order_execution_log_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+-- Name: order_execution_log_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: matp
 --
 
 ALTER SEQUENCE public.order_execution_log_id_seq OWNED BY public.order_execution_log.id;
 
 
 --
--- Name: orders; Type: TABLE; Schema: public; Owner: -
+-- Name: orders; Type: TABLE; Schema: public; Owner: matp
 --
 
 CREATE TABLE public.orders (
@@ -443,8 +466,10 @@ CREATE TABLE public.orders (
 );
 
 
+ALTER TABLE public.orders OWNER TO matp;
+
 --
--- Name: signal_log; Type: TABLE; Schema: public; Owner: -
+-- Name: signal_log; Type: TABLE; Schema: public; Owner: matp
 --
 
 CREATE TABLE public.signal_log (
@@ -462,22 +487,24 @@ CREATE TABLE public.signal_log (
 );
 
 
+ALTER TABLE public.signal_log OWNER TO matp;
+
 --
--- Name: COLUMN signal_log.ai_reasoning; Type: COMMENT; Schema: public; Owner: -
+-- Name: COLUMN signal_log.ai_reasoning; Type: COMMENT; Schema: public; Owner: matp
 --
 
 COMMENT ON COLUMN public.signal_log.ai_reasoning IS 'LLM reasoning text from AI signal generator. NULL for non-AI signals.';
 
 
 --
--- Name: COLUMN signal_log.ai_confidence; Type: COMMENT; Schema: public; Owner: -
+-- Name: COLUMN signal_log.ai_confidence; Type: COMMENT; Schema: public; Owner: matp
 --
 
 COMMENT ON COLUMN public.signal_log.ai_confidence IS 'LLM confidence score (0.0-0.95) from AI signal generator. NULL for non-AI signals.';
 
 
 --
--- Name: signal_log_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+-- Name: signal_log_id_seq; Type: SEQUENCE; Schema: public; Owner: matp
 --
 
 CREATE SEQUENCE public.signal_log_id_seq
@@ -488,15 +515,17 @@ CREATE SEQUENCE public.signal_log_id_seq
     CACHE 1;
 
 
+ALTER SEQUENCE public.signal_log_id_seq OWNER TO matp;
+
 --
--- Name: signal_log_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+-- Name: signal_log_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: matp
 --
 
 ALTER SEQUENCE public.signal_log_id_seq OWNED BY public.signal_log.id;
 
 
 --
--- Name: strategies; Type: TABLE; Schema: public; Owner: -
+-- Name: strategies; Type: TABLE; Schema: public; Owner: matp
 --
 
 CREATE TABLE public.strategies (
@@ -542,15 +571,17 @@ CREATE TABLE public.strategies (
 );
 
 
+ALTER TABLE public.strategies OWNER TO matp;
+
 --
--- Name: COLUMN strategies.strategy_source; Type: COMMENT; Schema: public; Owner: -
+-- Name: COLUMN strategies.strategy_source; Type: COMMENT; Schema: public; Owner: matp
 --
 
 COMMENT ON COLUMN public.strategies.strategy_source IS 'Signal source: tradingview | ai_engine | manual';
 
 
 --
--- Name: strategy_performance; Type: TABLE; Schema: public; Owner: -
+-- Name: strategy_performance; Type: TABLE; Schema: public; Owner: matp
 --
 
 CREATE TABLE public.strategy_performance (
@@ -580,8 +611,10 @@ CREATE TABLE public.strategy_performance (
 );
 
 
+ALTER TABLE public.strategy_performance OWNER TO matp;
+
 --
--- Name: strategy_performance_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+-- Name: strategy_performance_id_seq; Type: SEQUENCE; Schema: public; Owner: matp
 --
 
 CREATE SEQUENCE public.strategy_performance_id_seq
@@ -592,15 +625,17 @@ CREATE SEQUENCE public.strategy_performance_id_seq
     CACHE 1;
 
 
+ALTER SEQUENCE public.strategy_performance_id_seq OWNER TO matp;
+
 --
--- Name: strategy_performance_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+-- Name: strategy_performance_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: matp
 --
 
 ALTER SEQUENCE public.strategy_performance_id_seq OWNED BY public.strategy_performance.id;
 
 
 --
--- Name: strategy_positions; Type: TABLE; Schema: public; Owner: -
+-- Name: strategy_positions; Type: TABLE; Schema: public; Owner: matp
 --
 
 CREATE TABLE public.strategy_positions (
@@ -627,12 +662,17 @@ CREATE TABLE public.strategy_positions (
     liquidation_price numeric,
     pair_id integer,
     close_reason character varying(30),
-    reconcile_miss_count integer DEFAULT 0 NOT NULL
+    reconcile_miss_count integer DEFAULT 0 NOT NULL,
+    reconcile_divergent boolean DEFAULT false NOT NULL,
+    reconcile_exchange_size numeric,
+    reconcile_divergence_at timestamp with time zone
 );
 
 
+ALTER TABLE public.strategy_positions OWNER TO matp;
+
 --
--- Name: strategy_stats; Type: TABLE; Schema: public; Owner: -
+-- Name: strategy_stats; Type: TABLE; Schema: public; Owner: matp
 --
 
 CREATE TABLE public.strategy_stats (
@@ -653,8 +693,10 @@ CREATE TABLE public.strategy_stats (
 );
 
 
+ALTER TABLE public.strategy_stats OWNER TO matp;
+
 --
--- Name: strategy_stats_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+-- Name: strategy_stats_id_seq; Type: SEQUENCE; Schema: public; Owner: matp
 --
 
 CREATE SEQUENCE public.strategy_stats_id_seq
@@ -665,15 +707,17 @@ CREATE SEQUENCE public.strategy_stats_id_seq
     CACHE 1;
 
 
+ALTER SEQUENCE public.strategy_stats_id_seq OWNER TO matp;
+
 --
--- Name: strategy_stats_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+-- Name: strategy_stats_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: matp
 --
 
 ALTER SEQUENCE public.strategy_stats_id_seq OWNED BY public.strategy_stats.id;
 
 
 --
--- Name: strategy_webhook_calls; Type: TABLE; Schema: public; Owner: -
+-- Name: strategy_webhook_calls; Type: TABLE; Schema: public; Owner: matp
 --
 
 CREATE TABLE public.strategy_webhook_calls (
@@ -686,8 +730,10 @@ CREATE TABLE public.strategy_webhook_calls (
 );
 
 
+ALTER TABLE public.strategy_webhook_calls OWNER TO matp;
+
 --
--- Name: strategy_webhook_calls_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+-- Name: strategy_webhook_calls_id_seq; Type: SEQUENCE; Schema: public; Owner: matp
 --
 
 CREATE SEQUENCE public.strategy_webhook_calls_id_seq
@@ -698,15 +744,17 @@ CREATE SEQUENCE public.strategy_webhook_calls_id_seq
     CACHE 1;
 
 
+ALTER SEQUENCE public.strategy_webhook_calls_id_seq OWNER TO matp;
+
 --
--- Name: strategy_webhook_calls_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+-- Name: strategy_webhook_calls_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: matp
 --
 
 ALTER SEQUENCE public.strategy_webhook_calls_id_seq OWNED BY public.strategy_webhook_calls.id;
 
 
 --
--- Name: trading_pairs; Type: TABLE; Schema: public; Owner: -
+-- Name: trading_pairs; Type: TABLE; Schema: public; Owner: matp
 --
 
 CREATE TABLE public.trading_pairs (
@@ -717,8 +765,10 @@ CREATE TABLE public.trading_pairs (
 );
 
 
+ALTER TABLE public.trading_pairs OWNER TO matp;
+
 --
--- Name: trading_pairs_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+-- Name: trading_pairs_id_seq; Type: SEQUENCE; Schema: public; Owner: matp
 --
 
 CREATE SEQUENCE public.trading_pairs_id_seq
@@ -730,15 +780,17 @@ CREATE SEQUENCE public.trading_pairs_id_seq
     CACHE 1;
 
 
+ALTER SEQUENCE public.trading_pairs_id_seq OWNER TO matp;
+
 --
--- Name: trading_pairs_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+-- Name: trading_pairs_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: matp
 --
 
 ALTER SEQUENCE public.trading_pairs_id_seq OWNED BY public.trading_pairs.id;
 
 
 --
--- Name: ai_risk_config; Type: TABLE; Schema: tester; Owner: -
+-- Name: ai_risk_config; Type: TABLE; Schema: tester; Owner: matp
 --
 
 CREATE TABLE tester.ai_risk_config (
@@ -751,8 +803,10 @@ CREATE TABLE tester.ai_risk_config (
 );
 
 
+ALTER TABLE tester.ai_risk_config OWNER TO matp;
+
 --
--- Name: ai_risk_config_id_seq; Type: SEQUENCE; Schema: tester; Owner: -
+-- Name: ai_risk_config_id_seq; Type: SEQUENCE; Schema: tester; Owner: matp
 --
 
 CREATE SEQUENCE tester.ai_risk_config_id_seq
@@ -763,15 +817,17 @@ CREATE SEQUENCE tester.ai_risk_config_id_seq
     CACHE 1;
 
 
+ALTER SEQUENCE tester.ai_risk_config_id_seq OWNER TO matp;
+
 --
--- Name: ai_risk_config_id_seq; Type: SEQUENCE OWNED BY; Schema: tester; Owner: -
+-- Name: ai_risk_config_id_seq; Type: SEQUENCE OWNED BY; Schema: tester; Owner: matp
 --
 
 ALTER SEQUENCE tester.ai_risk_config_id_seq OWNED BY tester.ai_risk_config.id;
 
 
 --
--- Name: ai_signal_log; Type: TABLE; Schema: tester; Owner: -
+-- Name: ai_signal_log; Type: TABLE; Schema: tester; Owner: matp
 --
 
 CREATE TABLE tester.ai_signal_log (
@@ -798,8 +854,10 @@ CREATE TABLE tester.ai_signal_log (
 );
 
 
+ALTER TABLE tester.ai_signal_log OWNER TO matp;
+
 --
--- Name: ai_signal_log_id_seq; Type: SEQUENCE; Schema: tester; Owner: -
+-- Name: ai_signal_log_id_seq; Type: SEQUENCE; Schema: tester; Owner: matp
 --
 
 CREATE SEQUENCE tester.ai_signal_log_id_seq
@@ -810,15 +868,17 @@ CREATE SEQUENCE tester.ai_signal_log_id_seq
     CACHE 1;
 
 
+ALTER SEQUENCE tester.ai_signal_log_id_seq OWNER TO matp;
+
 --
--- Name: ai_signal_log_id_seq; Type: SEQUENCE OWNED BY; Schema: tester; Owner: -
+-- Name: ai_signal_log_id_seq; Type: SEQUENCE OWNED BY; Schema: tester; Owner: matp
 --
 
 ALTER SEQUENCE tester.ai_signal_log_id_seq OWNED BY tester.ai_signal_log.id;
 
 
 --
--- Name: ai_strategy_config; Type: TABLE; Schema: tester; Owner: -
+-- Name: ai_strategy_config; Type: TABLE; Schema: tester; Owner: matp
 --
 
 CREATE TABLE tester.ai_strategy_config (
@@ -851,8 +911,10 @@ CREATE TABLE tester.ai_strategy_config (
 );
 
 
+ALTER TABLE tester.ai_strategy_config OWNER TO matp;
+
 --
--- Name: ai_strategy_config_id_seq; Type: SEQUENCE; Schema: tester; Owner: -
+-- Name: ai_strategy_config_id_seq; Type: SEQUENCE; Schema: tester; Owner: matp
 --
 
 CREATE SEQUENCE tester.ai_strategy_config_id_seq
@@ -863,15 +925,17 @@ CREATE SEQUENCE tester.ai_strategy_config_id_seq
     CACHE 1;
 
 
+ALTER SEQUENCE tester.ai_strategy_config_id_seq OWNER TO matp;
+
 --
--- Name: ai_strategy_config_id_seq; Type: SEQUENCE OWNED BY; Schema: tester; Owner: -
+-- Name: ai_strategy_config_id_seq; Type: SEQUENCE OWNED BY; Schema: tester; Owner: matp
 --
 
 ALTER SEQUENCE tester.ai_strategy_config_id_seq OWNED BY tester.ai_strategy_config.id;
 
 
 --
--- Name: backtest_runs; Type: TABLE; Schema: tester; Owner: -
+-- Name: backtest_runs; Type: TABLE; Schema: tester; Owner: matp
 --
 
 CREATE TABLE tester.backtest_runs (
@@ -921,8 +985,10 @@ CREATE TABLE tester.backtest_runs (
 );
 
 
+ALTER TABLE tester.backtest_runs OWNER TO matp;
+
 --
--- Name: equity_curve; Type: TABLE; Schema: tester; Owner: -
+-- Name: equity_curve; Type: TABLE; Schema: tester; Owner: matp
 --
 
 CREATE TABLE tester.equity_curve (
@@ -936,8 +1002,10 @@ CREATE TABLE tester.equity_curve (
 );
 
 
+ALTER TABLE tester.equity_curve OWNER TO matp;
+
 --
--- Name: equity_curve_id_seq; Type: SEQUENCE; Schema: tester; Owner: -
+-- Name: equity_curve_id_seq; Type: SEQUENCE; Schema: tester; Owner: matp
 --
 
 CREATE SEQUENCE tester.equity_curve_id_seq
@@ -948,15 +1016,17 @@ CREATE SEQUENCE tester.equity_curve_id_seq
     CACHE 1;
 
 
+ALTER SEQUENCE tester.equity_curve_id_seq OWNER TO matp;
+
 --
--- Name: equity_curve_id_seq; Type: SEQUENCE OWNED BY; Schema: tester; Owner: -
+-- Name: equity_curve_id_seq; Type: SEQUENCE OWNED BY; Schema: tester; Owner: matp
 --
 
 ALTER SEQUENCE tester.equity_curve_id_seq OWNED BY tester.equity_curve.id;
 
 
 --
--- Name: ohlcv_cache; Type: TABLE; Schema: tester; Owner: -
+-- Name: ohlcv_cache; Type: TABLE; Schema: tester; Owner: matp
 --
 
 CREATE TABLE tester.ohlcv_cache (
@@ -974,8 +1044,10 @@ CREATE TABLE tester.ohlcv_cache (
 );
 
 
+ALTER TABLE tester.ohlcv_cache OWNER TO matp;
+
 --
--- Name: ohlcv_cache_id_seq; Type: SEQUENCE; Schema: tester; Owner: -
+-- Name: ohlcv_cache_id_seq; Type: SEQUENCE; Schema: tester; Owner: matp
 --
 
 CREATE SEQUENCE tester.ohlcv_cache_id_seq
@@ -986,15 +1058,17 @@ CREATE SEQUENCE tester.ohlcv_cache_id_seq
     CACHE 1;
 
 
+ALTER SEQUENCE tester.ohlcv_cache_id_seq OWNER TO matp;
+
 --
--- Name: ohlcv_cache_id_seq; Type: SEQUENCE OWNED BY; Schema: tester; Owner: -
+-- Name: ohlcv_cache_id_seq; Type: SEQUENCE OWNED BY; Schema: tester; Owner: matp
 --
 
 ALTER SEQUENCE tester.ohlcv_cache_id_seq OWNED BY tester.ohlcv_cache.id;
 
 
 --
--- Name: orders; Type: TABLE; Schema: tester; Owner: -
+-- Name: orders; Type: TABLE; Schema: tester; Owner: matp
 --
 
 CREATE TABLE tester.orders (
@@ -1024,8 +1098,10 @@ CREATE TABLE tester.orders (
 );
 
 
+ALTER TABLE tester.orders OWNER TO matp;
+
 --
--- Name: strategies; Type: TABLE; Schema: tester; Owner: -
+-- Name: strategies; Type: TABLE; Schema: tester; Owner: matp
 --
 
 CREATE TABLE tester.strategies (
@@ -1068,8 +1144,10 @@ CREATE TABLE tester.strategies (
 );
 
 
+ALTER TABLE tester.strategies OWNER TO matp;
+
 --
--- Name: strategy_positions; Type: TABLE; Schema: tester; Owner: -
+-- Name: strategy_positions; Type: TABLE; Schema: tester; Owner: matp
 --
 
 CREATE TABLE tester.strategy_positions (
@@ -1100,120 +1178,122 @@ CREATE TABLE tester.strategy_positions (
 );
 
 
+ALTER TABLE tester.strategy_positions OWNER TO matp;
+
 --
--- Name: ai_risk_config_audit id; Type: DEFAULT; Schema: public; Owner: -
+-- Name: ai_risk_config_audit id; Type: DEFAULT; Schema: public; Owner: matp
 --
 
 ALTER TABLE ONLY public.ai_risk_config_audit ALTER COLUMN id SET DEFAULT nextval('public.ai_risk_config_audit_id_seq'::regclass);
 
 
 --
--- Name: ai_signal_log id; Type: DEFAULT; Schema: public; Owner: -
+-- Name: ai_signal_log id; Type: DEFAULT; Schema: public; Owner: matp
 --
 
 ALTER TABLE ONLY public.ai_signal_log ALTER COLUMN id SET DEFAULT nextval('public.ai_signal_log_id_seq'::regclass);
 
 
 --
--- Name: assets id; Type: DEFAULT; Schema: public; Owner: -
+-- Name: assets id; Type: DEFAULT; Schema: public; Owner: matp
 --
 
 ALTER TABLE ONLY public.assets ALTER COLUMN id SET DEFAULT nextval('public.assets_id_seq'::regclass);
 
 
 --
--- Name: dead_letter_orders id; Type: DEFAULT; Schema: public; Owner: -
+-- Name: dead_letter_orders id; Type: DEFAULT; Schema: public; Owner: matp
 --
 
 ALTER TABLE ONLY public.dead_letter_orders ALTER COLUMN id SET DEFAULT nextval('public.dead_letter_orders_id_seq'::regclass);
 
 
 --
--- Name: order_events id; Type: DEFAULT; Schema: public; Owner: -
+-- Name: order_events id; Type: DEFAULT; Schema: public; Owner: matp
 --
 
 ALTER TABLE ONLY public.order_events ALTER COLUMN id SET DEFAULT nextval('public.order_events_id_seq'::regclass);
 
 
 --
--- Name: order_execution_log id; Type: DEFAULT; Schema: public; Owner: -
+-- Name: order_execution_log id; Type: DEFAULT; Schema: public; Owner: matp
 --
 
 ALTER TABLE ONLY public.order_execution_log ALTER COLUMN id SET DEFAULT nextval('public.order_execution_log_id_seq'::regclass);
 
 
 --
--- Name: signal_log id; Type: DEFAULT; Schema: public; Owner: -
+-- Name: signal_log id; Type: DEFAULT; Schema: public; Owner: matp
 --
 
 ALTER TABLE ONLY public.signal_log ALTER COLUMN id SET DEFAULT nextval('public.signal_log_id_seq'::regclass);
 
 
 --
--- Name: strategy_performance id; Type: DEFAULT; Schema: public; Owner: -
+-- Name: strategy_performance id; Type: DEFAULT; Schema: public; Owner: matp
 --
 
 ALTER TABLE ONLY public.strategy_performance ALTER COLUMN id SET DEFAULT nextval('public.strategy_performance_id_seq'::regclass);
 
 
 --
--- Name: strategy_stats id; Type: DEFAULT; Schema: public; Owner: -
+-- Name: strategy_stats id; Type: DEFAULT; Schema: public; Owner: matp
 --
 
 ALTER TABLE ONLY public.strategy_stats ALTER COLUMN id SET DEFAULT nextval('public.strategy_stats_id_seq'::regclass);
 
 
 --
--- Name: strategy_webhook_calls id; Type: DEFAULT; Schema: public; Owner: -
+-- Name: strategy_webhook_calls id; Type: DEFAULT; Schema: public; Owner: matp
 --
 
 ALTER TABLE ONLY public.strategy_webhook_calls ALTER COLUMN id SET DEFAULT nextval('public.strategy_webhook_calls_id_seq'::regclass);
 
 
 --
--- Name: trading_pairs id; Type: DEFAULT; Schema: public; Owner: -
+-- Name: trading_pairs id; Type: DEFAULT; Schema: public; Owner: matp
 --
 
 ALTER TABLE ONLY public.trading_pairs ALTER COLUMN id SET DEFAULT nextval('public.trading_pairs_id_seq'::regclass);
 
 
 --
--- Name: ai_risk_config id; Type: DEFAULT; Schema: tester; Owner: -
+-- Name: ai_risk_config id; Type: DEFAULT; Schema: tester; Owner: matp
 --
 
 ALTER TABLE ONLY tester.ai_risk_config ALTER COLUMN id SET DEFAULT nextval('tester.ai_risk_config_id_seq'::regclass);
 
 
 --
--- Name: ai_signal_log id; Type: DEFAULT; Schema: tester; Owner: -
+-- Name: ai_signal_log id; Type: DEFAULT; Schema: tester; Owner: matp
 --
 
 ALTER TABLE ONLY tester.ai_signal_log ALTER COLUMN id SET DEFAULT nextval('tester.ai_signal_log_id_seq'::regclass);
 
 
 --
--- Name: ai_strategy_config id; Type: DEFAULT; Schema: tester; Owner: -
+-- Name: ai_strategy_config id; Type: DEFAULT; Schema: tester; Owner: matp
 --
 
 ALTER TABLE ONLY tester.ai_strategy_config ALTER COLUMN id SET DEFAULT nextval('tester.ai_strategy_config_id_seq'::regclass);
 
 
 --
--- Name: equity_curve id; Type: DEFAULT; Schema: tester; Owner: -
+-- Name: equity_curve id; Type: DEFAULT; Schema: tester; Owner: matp
 --
 
 ALTER TABLE ONLY tester.equity_curve ALTER COLUMN id SET DEFAULT nextval('tester.equity_curve_id_seq'::regclass);
 
 
 --
--- Name: ohlcv_cache id; Type: DEFAULT; Schema: tester; Owner: -
+-- Name: ohlcv_cache id; Type: DEFAULT; Schema: tester; Owner: matp
 --
 
 ALTER TABLE ONLY tester.ohlcv_cache ALTER COLUMN id SET DEFAULT nextval('tester.ohlcv_cache_id_seq'::regclass);
 
 
 --
--- Name: ai_prompt_templates ai_prompt_templates_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: ai_prompt_templates ai_prompt_templates_pkey; Type: CONSTRAINT; Schema: public; Owner: matp
 --
 
 ALTER TABLE ONLY public.ai_prompt_templates
@@ -1221,7 +1301,7 @@ ALTER TABLE ONLY public.ai_prompt_templates
 
 
 --
--- Name: ai_risk_config_audit ai_risk_config_audit_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: ai_risk_config_audit ai_risk_config_audit_pkey; Type: CONSTRAINT; Schema: public; Owner: matp
 --
 
 ALTER TABLE ONLY public.ai_risk_config_audit
@@ -1229,7 +1309,7 @@ ALTER TABLE ONLY public.ai_risk_config_audit
 
 
 --
--- Name: ai_risk_config ai_risk_config_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: ai_risk_config ai_risk_config_pkey; Type: CONSTRAINT; Schema: public; Owner: matp
 --
 
 ALTER TABLE ONLY public.ai_risk_config
@@ -1237,7 +1317,7 @@ ALTER TABLE ONLY public.ai_risk_config
 
 
 --
--- Name: ai_signal_log ai_signal_log_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: ai_signal_log ai_signal_log_pkey; Type: CONSTRAINT; Schema: public; Owner: matp
 --
 
 ALTER TABLE ONLY public.ai_signal_log
@@ -1245,7 +1325,7 @@ ALTER TABLE ONLY public.ai_signal_log
 
 
 --
--- Name: ai_strategy_config ai_strategy_config_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: ai_strategy_config ai_strategy_config_pkey; Type: CONSTRAINT; Schema: public; Owner: matp
 --
 
 ALTER TABLE ONLY public.ai_strategy_config
@@ -1253,7 +1333,7 @@ ALTER TABLE ONLY public.ai_strategy_config
 
 
 --
--- Name: assets assets_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: assets assets_pkey; Type: CONSTRAINT; Schema: public; Owner: matp
 --
 
 ALTER TABLE ONLY public.assets
@@ -1261,7 +1341,7 @@ ALTER TABLE ONLY public.assets
 
 
 --
--- Name: assets assets_symbol_key; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: assets assets_symbol_key; Type: CONSTRAINT; Schema: public; Owner: matp
 --
 
 ALTER TABLE ONLY public.assets
@@ -1269,7 +1349,7 @@ ALTER TABLE ONLY public.assets
 
 
 --
--- Name: config config_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: config config_pkey; Type: CONSTRAINT; Schema: public; Owner: matp
 --
 
 ALTER TABLE ONLY public.config
@@ -1277,7 +1357,7 @@ ALTER TABLE ONLY public.config
 
 
 --
--- Name: dead_letter_orders dead_letter_orders_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: dead_letter_orders dead_letter_orders_pkey; Type: CONSTRAINT; Schema: public; Owner: matp
 --
 
 ALTER TABLE ONLY public.dead_letter_orders
@@ -1285,7 +1365,7 @@ ALTER TABLE ONLY public.dead_letter_orders
 
 
 --
--- Name: exchange_accounts exchange_accounts_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: exchange_accounts exchange_accounts_pkey; Type: CONSTRAINT; Schema: public; Owner: matp
 --
 
 ALTER TABLE ONLY public.exchange_accounts
@@ -1293,7 +1373,7 @@ ALTER TABLE ONLY public.exchange_accounts
 
 
 --
--- Name: order_events order_events_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: order_events order_events_pkey; Type: CONSTRAINT; Schema: public; Owner: matp
 --
 
 ALTER TABLE ONLY public.order_events
@@ -1301,7 +1381,7 @@ ALTER TABLE ONLY public.order_events
 
 
 --
--- Name: order_execution_log order_execution_log_client_order_id_key; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: order_execution_log order_execution_log_client_order_id_key; Type: CONSTRAINT; Schema: public; Owner: matp
 --
 
 ALTER TABLE ONLY public.order_execution_log
@@ -1309,7 +1389,7 @@ ALTER TABLE ONLY public.order_execution_log
 
 
 --
--- Name: order_execution_log order_execution_log_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: order_execution_log order_execution_log_pkey; Type: CONSTRAINT; Schema: public; Owner: matp
 --
 
 ALTER TABLE ONLY public.order_execution_log
@@ -1317,7 +1397,7 @@ ALTER TABLE ONLY public.order_execution_log
 
 
 --
--- Name: orders orders_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: orders orders_pkey; Type: CONSTRAINT; Schema: public; Owner: matp
 --
 
 ALTER TABLE ONLY public.orders
@@ -1325,7 +1405,7 @@ ALTER TABLE ONLY public.orders
 
 
 --
--- Name: signal_log signal_log_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: signal_log signal_log_pkey; Type: CONSTRAINT; Schema: public; Owner: matp
 --
 
 ALTER TABLE ONLY public.signal_log
@@ -1333,7 +1413,7 @@ ALTER TABLE ONLY public.signal_log
 
 
 --
--- Name: strategies strategies_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: strategies strategies_pkey; Type: CONSTRAINT; Schema: public; Owner: matp
 --
 
 ALTER TABLE ONLY public.strategies
@@ -1341,7 +1421,7 @@ ALTER TABLE ONLY public.strategies
 
 
 --
--- Name: strategies strategies_webhook_secret_key; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: strategies strategies_webhook_secret_key; Type: CONSTRAINT; Schema: public; Owner: matp
 --
 
 ALTER TABLE ONLY public.strategies
@@ -1349,7 +1429,7 @@ ALTER TABLE ONLY public.strategies
 
 
 --
--- Name: strategy_performance strategy_performance_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: strategy_performance strategy_performance_pkey; Type: CONSTRAINT; Schema: public; Owner: matp
 --
 
 ALTER TABLE ONLY public.strategy_performance
@@ -1357,7 +1437,7 @@ ALTER TABLE ONLY public.strategy_performance
 
 
 --
--- Name: strategy_performance strategy_performance_strategy_id_period_type_period_date_key; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: strategy_performance strategy_performance_strategy_id_period_type_period_date_key; Type: CONSTRAINT; Schema: public; Owner: matp
 --
 
 ALTER TABLE ONLY public.strategy_performance
@@ -1365,7 +1445,7 @@ ALTER TABLE ONLY public.strategy_performance
 
 
 --
--- Name: strategy_positions strategy_positions_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: strategy_positions strategy_positions_pkey; Type: CONSTRAINT; Schema: public; Owner: matp
 --
 
 ALTER TABLE ONLY public.strategy_positions
@@ -1373,7 +1453,7 @@ ALTER TABLE ONLY public.strategy_positions
 
 
 --
--- Name: strategy_stats strategy_stats_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: strategy_stats strategy_stats_pkey; Type: CONSTRAINT; Schema: public; Owner: matp
 --
 
 ALTER TABLE ONLY public.strategy_stats
@@ -1381,7 +1461,7 @@ ALTER TABLE ONLY public.strategy_stats
 
 
 --
--- Name: strategy_stats strategy_stats_strategy_id_period_date_key; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: strategy_stats strategy_stats_strategy_id_period_date_key; Type: CONSTRAINT; Schema: public; Owner: matp
 --
 
 ALTER TABLE ONLY public.strategy_stats
@@ -1389,7 +1469,7 @@ ALTER TABLE ONLY public.strategy_stats
 
 
 --
--- Name: strategy_webhook_calls strategy_webhook_calls_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: strategy_webhook_calls strategy_webhook_calls_pkey; Type: CONSTRAINT; Schema: public; Owner: matp
 --
 
 ALTER TABLE ONLY public.strategy_webhook_calls
@@ -1397,7 +1477,7 @@ ALTER TABLE ONLY public.strategy_webhook_calls
 
 
 --
--- Name: trading_pairs trading_pairs_base_asset_id_quote_asset_id_key; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: trading_pairs trading_pairs_base_asset_id_quote_asset_id_key; Type: CONSTRAINT; Schema: public; Owner: matp
 --
 
 ALTER TABLE ONLY public.trading_pairs
@@ -1405,7 +1485,7 @@ ALTER TABLE ONLY public.trading_pairs
 
 
 --
--- Name: trading_pairs trading_pairs_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: trading_pairs trading_pairs_pkey; Type: CONSTRAINT; Schema: public; Owner: matp
 --
 
 ALTER TABLE ONLY public.trading_pairs
@@ -1413,7 +1493,7 @@ ALTER TABLE ONLY public.trading_pairs
 
 
 --
--- Name: ai_risk_config ai_risk_config_pkey; Type: CONSTRAINT; Schema: tester; Owner: -
+-- Name: ai_risk_config ai_risk_config_pkey; Type: CONSTRAINT; Schema: tester; Owner: matp
 --
 
 ALTER TABLE ONLY tester.ai_risk_config
@@ -1421,7 +1501,7 @@ ALTER TABLE ONLY tester.ai_risk_config
 
 
 --
--- Name: ai_risk_config ai_risk_config_strategy_id_key; Type: CONSTRAINT; Schema: tester; Owner: -
+-- Name: ai_risk_config ai_risk_config_strategy_id_key; Type: CONSTRAINT; Schema: tester; Owner: matp
 --
 
 ALTER TABLE ONLY tester.ai_risk_config
@@ -1429,7 +1509,7 @@ ALTER TABLE ONLY tester.ai_risk_config
 
 
 --
--- Name: ai_signal_log ai_signal_log_pkey; Type: CONSTRAINT; Schema: tester; Owner: -
+-- Name: ai_signal_log ai_signal_log_pkey; Type: CONSTRAINT; Schema: tester; Owner: matp
 --
 
 ALTER TABLE ONLY tester.ai_signal_log
@@ -1437,7 +1517,7 @@ ALTER TABLE ONLY tester.ai_signal_log
 
 
 --
--- Name: ai_strategy_config ai_strategy_config_pkey; Type: CONSTRAINT; Schema: tester; Owner: -
+-- Name: ai_strategy_config ai_strategy_config_pkey; Type: CONSTRAINT; Schema: tester; Owner: matp
 --
 
 ALTER TABLE ONLY tester.ai_strategy_config
@@ -1445,7 +1525,7 @@ ALTER TABLE ONLY tester.ai_strategy_config
 
 
 --
--- Name: ai_strategy_config ai_strategy_config_strategy_id_key; Type: CONSTRAINT; Schema: tester; Owner: -
+-- Name: ai_strategy_config ai_strategy_config_strategy_id_key; Type: CONSTRAINT; Schema: tester; Owner: matp
 --
 
 ALTER TABLE ONLY tester.ai_strategy_config
@@ -1453,7 +1533,7 @@ ALTER TABLE ONLY tester.ai_strategy_config
 
 
 --
--- Name: backtest_runs backtest_runs_pkey; Type: CONSTRAINT; Schema: tester; Owner: -
+-- Name: backtest_runs backtest_runs_pkey; Type: CONSTRAINT; Schema: tester; Owner: matp
 --
 
 ALTER TABLE ONLY tester.backtest_runs
@@ -1461,7 +1541,7 @@ ALTER TABLE ONLY tester.backtest_runs
 
 
 --
--- Name: equity_curve equity_curve_backtest_run_id_candle_ts_key; Type: CONSTRAINT; Schema: tester; Owner: -
+-- Name: equity_curve equity_curve_backtest_run_id_candle_ts_key; Type: CONSTRAINT; Schema: tester; Owner: matp
 --
 
 ALTER TABLE ONLY tester.equity_curve
@@ -1469,7 +1549,7 @@ ALTER TABLE ONLY tester.equity_curve
 
 
 --
--- Name: equity_curve equity_curve_pkey; Type: CONSTRAINT; Schema: tester; Owner: -
+-- Name: equity_curve equity_curve_pkey; Type: CONSTRAINT; Schema: tester; Owner: matp
 --
 
 ALTER TABLE ONLY tester.equity_curve
@@ -1477,7 +1557,7 @@ ALTER TABLE ONLY tester.equity_curve
 
 
 --
--- Name: ohlcv_cache ohlcv_cache_pkey; Type: CONSTRAINT; Schema: tester; Owner: -
+-- Name: ohlcv_cache ohlcv_cache_pkey; Type: CONSTRAINT; Schema: tester; Owner: matp
 --
 
 ALTER TABLE ONLY tester.ohlcv_cache
@@ -1485,7 +1565,7 @@ ALTER TABLE ONLY tester.ohlcv_cache
 
 
 --
--- Name: ohlcv_cache ohlcv_cache_symbol_timeframe_exchange_candle_ts_key; Type: CONSTRAINT; Schema: tester; Owner: -
+-- Name: ohlcv_cache ohlcv_cache_symbol_timeframe_exchange_candle_ts_key; Type: CONSTRAINT; Schema: tester; Owner: matp
 --
 
 ALTER TABLE ONLY tester.ohlcv_cache
@@ -1493,7 +1573,7 @@ ALTER TABLE ONLY tester.ohlcv_cache
 
 
 --
--- Name: orders orders_pkey; Type: CONSTRAINT; Schema: tester; Owner: -
+-- Name: orders orders_pkey; Type: CONSTRAINT; Schema: tester; Owner: matp
 --
 
 ALTER TABLE ONLY tester.orders
@@ -1501,7 +1581,7 @@ ALTER TABLE ONLY tester.orders
 
 
 --
--- Name: strategies strategies_pkey; Type: CONSTRAINT; Schema: tester; Owner: -
+-- Name: strategies strategies_pkey; Type: CONSTRAINT; Schema: tester; Owner: matp
 --
 
 ALTER TABLE ONLY tester.strategies
@@ -1509,7 +1589,7 @@ ALTER TABLE ONLY tester.strategies
 
 
 --
--- Name: strategy_positions strategy_positions_pkey; Type: CONSTRAINT; Schema: tester; Owner: -
+-- Name: strategy_positions strategy_positions_pkey; Type: CONSTRAINT; Schema: tester; Owner: matp
 --
 
 ALTER TABLE ONLY tester.strategy_positions
@@ -1517,413 +1597,413 @@ ALTER TABLE ONLY tester.strategy_positions
 
 
 --
--- Name: ai_sl_confidence_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: ai_sl_confidence_idx; Type: INDEX; Schema: public; Owner: matp
 --
 
 CREATE INDEX ai_sl_confidence_idx ON public.ai_signal_log USING btree (confidence);
 
 
 --
--- Name: ai_sl_proposed_action_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: ai_sl_proposed_action_idx; Type: INDEX; Schema: public; Owner: matp
 --
 
 CREATE INDEX ai_sl_proposed_action_idx ON public.ai_signal_log USING btree (proposed_action);
 
 
 --
--- Name: ai_sl_strategy_id_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: ai_sl_strategy_id_idx; Type: INDEX; Schema: public; Owner: matp
 --
 
 CREATE INDEX ai_sl_strategy_id_idx ON public.ai_signal_log USING btree (strategy_id);
 
 
 --
--- Name: ai_sl_triggered_at_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: ai_sl_triggered_at_idx; Type: INDEX; Schema: public; Owner: matp
 --
 
 CREATE INDEX ai_sl_triggered_at_idx ON public.ai_signal_log USING btree (triggered_at DESC);
 
 
 --
--- Name: idx_orders_closes_position; Type: INDEX; Schema: public; Owner: -
+-- Name: idx_orders_closes_position; Type: INDEX; Schema: public; Owner: matp
 --
 
 CREATE INDEX idx_orders_closes_position ON public.orders USING btree (closes_position_id) WHERE (closes_position_id IS NOT NULL);
 
 
 --
--- Name: idx_orders_strategy_source; Type: INDEX; Schema: public; Owner: -
+-- Name: idx_orders_strategy_source; Type: INDEX; Schema: public; Owner: matp
 --
 
 CREATE INDEX idx_orders_strategy_source ON public.orders USING btree (strategy_id, signal_source);
 
 
 --
--- Name: idx_strat_perf_period; Type: INDEX; Schema: public; Owner: -
+-- Name: idx_strat_perf_period; Type: INDEX; Schema: public; Owner: matp
 --
 
 CREATE INDEX idx_strat_perf_period ON public.strategy_performance USING btree (period_type, period_date DESC);
 
 
 --
--- Name: idx_strat_perf_strategy; Type: INDEX; Schema: public; Owner: -
+-- Name: idx_strat_perf_strategy; Type: INDEX; Schema: public; Owner: matp
 --
 
 CREATE INDEX idx_strat_perf_strategy ON public.strategy_performance USING btree (strategy_id);
 
 
 --
--- Name: idx_strat_pos_closing_order_id; Type: INDEX; Schema: public; Owner: -
+-- Name: idx_strat_pos_closing_order_id; Type: INDEX; Schema: public; Owner: matp
 --
 
 CREATE INDEX idx_strat_pos_closing_order_id ON public.strategy_positions USING btree (closing_order_id);
 
 
 --
--- Name: idx_strat_pos_opened_at; Type: INDEX; Schema: public; Owner: -
+-- Name: idx_strat_pos_opened_at; Type: INDEX; Schema: public; Owner: matp
 --
 
 CREATE INDEX idx_strat_pos_opened_at ON public.strategy_positions USING btree (opened_at DESC);
 
 
 --
--- Name: idx_strat_pos_strategy_status; Type: INDEX; Schema: public; Owner: -
+-- Name: idx_strat_pos_strategy_status; Type: INDEX; Schema: public; Owner: matp
 --
 
 CREATE INDEX idx_strat_pos_strategy_status ON public.strategy_positions USING btree (strategy_id, status);
 
 
 --
--- Name: idx_strat_pos_symbol_status; Type: INDEX; Schema: public; Owner: -
+-- Name: idx_strat_pos_symbol_status; Type: INDEX; Schema: public; Owner: matp
 --
 
 CREATE INDEX idx_strat_pos_symbol_status ON public.strategy_positions USING btree (symbol, status);
 
 
 --
--- Name: idx_strat_stats_strategy_date; Type: INDEX; Schema: public; Owner: -
+-- Name: idx_strat_stats_strategy_date; Type: INDEX; Schema: public; Owner: matp
 --
 
 CREATE INDEX idx_strat_stats_strategy_date ON public.strategy_stats USING btree (strategy_id, period_date DESC);
 
 
 --
--- Name: idx_strategies_enabled; Type: INDEX; Schema: public; Owner: -
+-- Name: idx_strategies_enabled; Type: INDEX; Schema: public; Owner: matp
 --
 
 CREATE INDEX idx_strategies_enabled ON public.strategies USING btree (webhook_enabled);
 
 
 --
--- Name: idx_strategies_webhook_secret; Type: INDEX; Schema: public; Owner: -
+-- Name: idx_strategies_webhook_secret; Type: INDEX; Schema: public; Owner: matp
 --
 
 CREATE INDEX idx_strategies_webhook_secret ON public.strategies USING btree (webhook_secret);
 
 
 --
--- Name: idx_webhook_calls_status; Type: INDEX; Schema: public; Owner: -
+-- Name: idx_webhook_calls_status; Type: INDEX; Schema: public; Owner: matp
 --
 
 CREATE INDEX idx_webhook_calls_status ON public.strategy_webhook_calls USING btree (http_status);
 
 
 --
--- Name: idx_webhook_calls_strategy; Type: INDEX; Schema: public; Owner: -
+-- Name: idx_webhook_calls_strategy; Type: INDEX; Schema: public; Owner: matp
 --
 
 CREATE INDEX idx_webhook_calls_strategy ON public.strategy_webhook_calls USING btree (strategy_id, received_at DESC);
 
 
 --
--- Name: oel_exchange_oid_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: oel_exchange_oid_idx; Type: INDEX; Schema: public; Owner: matp
 --
 
 CREATE INDEX oel_exchange_oid_idx ON public.order_execution_log USING btree (exchange_order_id);
 
 
 --
--- Name: oel_signal_log_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: oel_signal_log_idx; Type: INDEX; Schema: public; Owner: matp
 --
 
 CREATE INDEX oel_signal_log_idx ON public.order_execution_log USING btree (signal_log_id);
 
 
 --
--- Name: order_events_order_id_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: order_events_order_id_idx; Type: INDEX; Schema: public; Owner: matp
 --
 
 CREATE INDEX order_events_order_id_idx ON public.order_events USING btree (order_id);
 
 
 --
--- Name: orders_account_id_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: orders_account_id_idx; Type: INDEX; Schema: public; Owner: matp
 --
 
 CREATE INDEX orders_account_id_idx ON public.orders USING btree (account_id);
 
 
 --
--- Name: orders_pair_id_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: orders_pair_id_idx; Type: INDEX; Schema: public; Owner: matp
 --
 
 CREATE INDEX orders_pair_id_idx ON public.orders USING btree (pair_id);
 
 
 --
--- Name: orders_platform_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: orders_platform_idx; Type: INDEX; Schema: public; Owner: matp
 --
 
 CREATE INDEX orders_platform_idx ON public.orders USING btree (platform);
 
 
 --
--- Name: orders_received_at_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: orders_received_at_idx; Type: INDEX; Schema: public; Owner: matp
 --
 
 CREATE INDEX orders_received_at_idx ON public.orders USING btree (received_at DESC);
 
 
 --
--- Name: orders_status_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: orders_status_idx; Type: INDEX; Schema: public; Owner: matp
 --
 
 CREATE INDEX orders_status_idx ON public.orders USING btree (status);
 
 
 --
--- Name: orders_strategy_id_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: orders_strategy_id_idx; Type: INDEX; Schema: public; Owner: matp
 --
 
 CREATE INDEX orders_strategy_id_idx ON public.orders USING btree (strategy_id);
 
 
 --
--- Name: signal_log_outcome_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: signal_log_outcome_idx; Type: INDEX; Schema: public; Owner: matp
 --
 
 CREATE INDEX signal_log_outcome_idx ON public.signal_log USING btree (outcome);
 
 
 --
--- Name: signal_log_strategy_time_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: signal_log_strategy_time_idx; Type: INDEX; Schema: public; Owner: matp
 --
 
 CREATE INDEX signal_log_strategy_time_idx ON public.signal_log USING btree (strategy_id, received_at DESC);
 
 
 --
--- Name: sp_pair_id_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: sp_pair_id_idx; Type: INDEX; Schema: public; Owner: matp
 --
 
 CREATE INDEX sp_pair_id_idx ON public.strategy_positions USING btree (pair_id);
 
 
 --
--- Name: sp_status_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: sp_status_idx; Type: INDEX; Schema: public; Owner: matp
 --
 
 CREATE INDEX sp_status_idx ON public.strategy_positions USING btree (status);
 
 
 --
--- Name: sp_strategy_id_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: sp_strategy_id_idx; Type: INDEX; Schema: public; Owner: matp
 --
 
 CREATE INDEX sp_strategy_id_idx ON public.strategy_positions USING btree (strategy_id);
 
 
 --
--- Name: swc_received_at_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: swc_received_at_idx; Type: INDEX; Schema: public; Owner: matp
 --
 
 CREATE INDEX swc_received_at_idx ON public.strategy_webhook_calls USING btree (received_at DESC);
 
 
 --
--- Name: swc_strategy_id_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: swc_strategy_id_idx; Type: INDEX; Schema: public; Owner: matp
 --
 
 CREATE INDEX swc_strategy_id_idx ON public.strategy_webhook_calls USING btree (strategy_id);
 
 
 --
--- Name: uq_strat_pos_one_open; Type: INDEX; Schema: public; Owner: -
+-- Name: uq_strat_pos_one_open; Type: INDEX; Schema: public; Owner: matp
 --
 
 CREATE UNIQUE INDEX uq_strat_pos_one_open ON public.strategy_positions USING btree (strategy_id, symbol, side) WHERE ((status)::text = 'open'::text);
 
 
 --
--- Name: tester_equity_run_idx; Type: INDEX; Schema: tester; Owner: -
+-- Name: tester_equity_run_idx; Type: INDEX; Schema: tester; Owner: matp
 --
 
 CREATE INDEX tester_equity_run_idx ON tester.equity_curve USING btree (backtest_run_id, candle_ts);
 
 
 --
--- Name: tester_ohlcv_lookup_idx; Type: INDEX; Schema: tester; Owner: -
+-- Name: tester_ohlcv_lookup_idx; Type: INDEX; Schema: tester; Owner: matp
 --
 
 CREATE INDEX tester_ohlcv_lookup_idx ON tester.ohlcv_cache USING btree (symbol, timeframe, exchange, candle_ts);
 
 
 --
--- Name: tester_orders_run_idx; Type: INDEX; Schema: tester; Owner: -
+-- Name: tester_orders_run_idx; Type: INDEX; Schema: tester; Owner: matp
 --
 
 CREATE INDEX tester_orders_run_idx ON tester.orders USING btree (backtest_run_id);
 
 
 --
--- Name: tester_orders_strategy_idx; Type: INDEX; Schema: tester; Owner: -
+-- Name: tester_orders_strategy_idx; Type: INDEX; Schema: tester; Owner: matp
 --
 
 CREATE INDEX tester_orders_strategy_idx ON tester.orders USING btree (strategy_id);
 
 
 --
--- Name: tester_pos_run_idx; Type: INDEX; Schema: tester; Owner: -
+-- Name: tester_pos_run_idx; Type: INDEX; Schema: tester; Owner: matp
 --
 
 CREATE INDEX tester_pos_run_idx ON tester.strategy_positions USING btree (backtest_run_id);
 
 
 --
--- Name: tester_pos_strategy_idx; Type: INDEX; Schema: tester; Owner: -
+-- Name: tester_pos_strategy_idx; Type: INDEX; Schema: tester; Owner: matp
 --
 
 CREATE INDEX tester_pos_strategy_idx ON tester.strategy_positions USING btree (strategy_id, status);
 
 
 --
--- Name: tester_runs_status_idx; Type: INDEX; Schema: tester; Owner: -
+-- Name: tester_runs_status_idx; Type: INDEX; Schema: tester; Owner: matp
 --
 
 CREATE INDEX tester_runs_status_idx ON tester.backtest_runs USING btree (status);
 
 
 --
--- Name: tester_runs_strategy_idx; Type: INDEX; Schema: tester; Owner: -
+-- Name: tester_runs_strategy_idx; Type: INDEX; Schema: tester; Owner: matp
 --
 
 CREATE INDEX tester_runs_strategy_idx ON tester.backtest_runs USING btree (strategy_id, created_at DESC);
 
 
 --
--- Name: tester_signal_log_cooldown_idx; Type: INDEX; Schema: tester; Owner: -
+-- Name: tester_signal_log_cooldown_idx; Type: INDEX; Schema: tester; Owner: matp
 --
 
 CREATE INDEX tester_signal_log_cooldown_idx ON tester.ai_signal_log USING btree (backtest_run_id, strategy_id, proposed_action, gate_passed, triggered_at DESC);
 
 
 --
--- Name: tester_signal_log_run_idx; Type: INDEX; Schema: tester; Owner: -
+-- Name: tester_signal_log_run_idx; Type: INDEX; Schema: tester; Owner: matp
 --
 
 CREATE INDEX tester_signal_log_run_idx ON tester.ai_signal_log USING btree (backtest_run_id);
 
 
 --
--- Name: tester_signal_log_strategy_idx; Type: INDEX; Schema: tester; Owner: -
+-- Name: tester_signal_log_strategy_idx; Type: INDEX; Schema: tester; Owner: matp
 --
 
 CREATE INDEX tester_signal_log_strategy_idx ON tester.ai_signal_log USING btree (strategy_id, triggered_at DESC);
 
 
 --
--- Name: config update_config_modtime; Type: TRIGGER; Schema: public; Owner: -
+-- Name: config update_config_modtime; Type: TRIGGER; Schema: public; Owner: matp
 --
 
 CREATE TRIGGER update_config_modtime BEFORE UPDATE ON public.config FOR EACH ROW EXECUTE FUNCTION public.update_updated_at_column();
 
 
 --
--- Name: exchange_accounts update_exchange_accounts_modtime; Type: TRIGGER; Schema: public; Owner: -
+-- Name: exchange_accounts update_exchange_accounts_modtime; Type: TRIGGER; Schema: public; Owner: matp
 --
 
 CREATE TRIGGER update_exchange_accounts_modtime BEFORE UPDATE ON public.exchange_accounts FOR EACH ROW EXECUTE FUNCTION public.update_updated_at_column();
 
 
 --
--- Name: exchange_accounts update_exchange_accounts_updated_at; Type: TRIGGER; Schema: public; Owner: -
+-- Name: exchange_accounts update_exchange_accounts_updated_at; Type: TRIGGER; Schema: public; Owner: matp
 --
 
 CREATE TRIGGER update_exchange_accounts_updated_at BEFORE UPDATE ON public.exchange_accounts FOR EACH ROW EXECUTE FUNCTION public.update_updated_at_column();
 
 
 --
--- Name: orders update_orders_updated_at; Type: TRIGGER; Schema: public; Owner: -
+-- Name: orders update_orders_updated_at; Type: TRIGGER; Schema: public; Owner: matp
 --
 
 CREATE TRIGGER update_orders_updated_at BEFORE UPDATE ON public.orders FOR EACH ROW EXECUTE FUNCTION public.update_updated_at_column();
 
 
 --
--- Name: strategies update_strategies_modtime; Type: TRIGGER; Schema: public; Owner: -
+-- Name: strategies update_strategies_modtime; Type: TRIGGER; Schema: public; Owner: matp
 --
 
 CREATE TRIGGER update_strategies_modtime BEFORE UPDATE ON public.strategies FOR EACH ROW EXECUTE FUNCTION public.update_updated_at_column();
 
 
 --
--- Name: strategies update_strategies_updated_at; Type: TRIGGER; Schema: public; Owner: -
+-- Name: strategies update_strategies_updated_at; Type: TRIGGER; Schema: public; Owner: matp
 --
 
 CREATE TRIGGER update_strategies_updated_at BEFORE UPDATE ON public.strategies FOR EACH ROW EXECUTE FUNCTION public.update_updated_at_column();
 
 
 --
--- Name: strategy_positions update_strategy_positions_modtime; Type: TRIGGER; Schema: public; Owner: -
+-- Name: strategy_positions update_strategy_positions_modtime; Type: TRIGGER; Schema: public; Owner: matp
 --
 
 CREATE TRIGGER update_strategy_positions_modtime BEFORE UPDATE ON public.strategy_positions FOR EACH ROW EXECUTE FUNCTION public.update_updated_at_column();
 
 
 --
--- Name: strategy_stats update_strategy_stats_modtime; Type: TRIGGER; Schema: public; Owner: -
+-- Name: strategy_stats update_strategy_stats_modtime; Type: TRIGGER; Schema: public; Owner: matp
 --
 
 CREATE TRIGGER update_strategy_stats_modtime BEFORE UPDATE ON public.strategy_stats FOR EACH ROW EXECUTE FUNCTION public.update_updated_at_column();
 
 
 --
--- Name: strategy_positions update_tester_positions_updated_at; Type: TRIGGER; Schema: tester; Owner: -
+-- Name: strategy_positions update_tester_positions_updated_at; Type: TRIGGER; Schema: tester; Owner: matp
 --
 
 CREATE TRIGGER update_tester_positions_updated_at BEFORE UPDATE ON tester.strategy_positions FOR EACH ROW EXECUTE FUNCTION public.update_updated_at_column();
 
 
 --
--- Name: ai_risk_config update_tester_risk_config_updated_at; Type: TRIGGER; Schema: tester; Owner: -
+-- Name: ai_risk_config update_tester_risk_config_updated_at; Type: TRIGGER; Schema: tester; Owner: matp
 --
 
 CREATE TRIGGER update_tester_risk_config_updated_at BEFORE UPDATE ON tester.ai_risk_config FOR EACH ROW EXECUTE FUNCTION public.update_updated_at_column();
 
 
 --
--- Name: backtest_runs update_tester_runs_updated_at; Type: TRIGGER; Schema: tester; Owner: -
+-- Name: backtest_runs update_tester_runs_updated_at; Type: TRIGGER; Schema: tester; Owner: matp
 --
 
 CREATE TRIGGER update_tester_runs_updated_at BEFORE UPDATE ON tester.backtest_runs FOR EACH ROW EXECUTE FUNCTION public.update_updated_at_column();
 
 
 --
--- Name: strategies update_tester_strategies_updated_at; Type: TRIGGER; Schema: tester; Owner: -
+-- Name: strategies update_tester_strategies_updated_at; Type: TRIGGER; Schema: tester; Owner: matp
 --
 
 CREATE TRIGGER update_tester_strategies_updated_at BEFORE UPDATE ON tester.strategies FOR EACH ROW EXECUTE FUNCTION public.update_updated_at_column();
 
 
 --
--- Name: ai_strategy_config update_tester_strategy_config_updated_at; Type: TRIGGER; Schema: tester; Owner: -
+-- Name: ai_strategy_config update_tester_strategy_config_updated_at; Type: TRIGGER; Schema: tester; Owner: matp
 --
 
 CREATE TRIGGER update_tester_strategy_config_updated_at BEFORE UPDATE ON tester.ai_strategy_config FOR EACH ROW EXECUTE FUNCTION public.update_updated_at_column();
 
 
 --
--- Name: ai_risk_config ai_risk_config_strategy_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: ai_risk_config ai_risk_config_strategy_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: matp
 --
 
 ALTER TABLE ONLY public.ai_risk_config
@@ -1931,7 +2011,7 @@ ALTER TABLE ONLY public.ai_risk_config
 
 
 --
--- Name: ai_signal_log ai_signal_log_order_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: ai_signal_log ai_signal_log_order_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: matp
 --
 
 ALTER TABLE ONLY public.ai_signal_log
@@ -1939,7 +2019,7 @@ ALTER TABLE ONLY public.ai_signal_log
 
 
 --
--- Name: ai_signal_log ai_signal_log_strategy_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: ai_signal_log ai_signal_log_strategy_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: matp
 --
 
 ALTER TABLE ONLY public.ai_signal_log
@@ -1947,7 +2027,7 @@ ALTER TABLE ONLY public.ai_signal_log
 
 
 --
--- Name: ai_strategy_config ai_strategy_config_strategy_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: ai_strategy_config ai_strategy_config_strategy_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: matp
 --
 
 ALTER TABLE ONLY public.ai_strategy_config
@@ -1955,7 +2035,7 @@ ALTER TABLE ONLY public.ai_strategy_config
 
 
 --
--- Name: dead_letter_orders dead_letter_orders_order_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: dead_letter_orders dead_letter_orders_order_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: matp
 --
 
 ALTER TABLE ONLY public.dead_letter_orders
@@ -1963,7 +2043,7 @@ ALTER TABLE ONLY public.dead_letter_orders
 
 
 --
--- Name: order_events order_events_order_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: order_events order_events_order_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: matp
 --
 
 ALTER TABLE ONLY public.order_events
@@ -1971,7 +2051,7 @@ ALTER TABLE ONLY public.order_events
 
 
 --
--- Name: order_execution_log order_execution_log_account_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: order_execution_log order_execution_log_account_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: matp
 --
 
 ALTER TABLE ONLY public.order_execution_log
@@ -1979,7 +2059,7 @@ ALTER TABLE ONLY public.order_execution_log
 
 
 --
--- Name: order_execution_log order_execution_log_signal_log_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: order_execution_log order_execution_log_signal_log_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: matp
 --
 
 ALTER TABLE ONLY public.order_execution_log
@@ -1987,7 +2067,7 @@ ALTER TABLE ONLY public.order_execution_log
 
 
 --
--- Name: orders orders_closes_position_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: orders orders_closes_position_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: matp
 --
 
 ALTER TABLE ONLY public.orders
@@ -1995,7 +2075,7 @@ ALTER TABLE ONLY public.orders
 
 
 --
--- Name: orders orders_pair_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: orders orders_pair_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: matp
 --
 
 ALTER TABLE ONLY public.orders
@@ -2003,7 +2083,7 @@ ALTER TABLE ONLY public.orders
 
 
 --
--- Name: strategies strategies_pair_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: strategies strategies_pair_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: matp
 --
 
 ALTER TABLE ONLY public.strategies
@@ -2011,7 +2091,7 @@ ALTER TABLE ONLY public.strategies
 
 
 --
--- Name: strategy_performance strategy_performance_strategy_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: strategy_performance strategy_performance_strategy_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: matp
 --
 
 ALTER TABLE ONLY public.strategy_performance
@@ -2019,7 +2099,7 @@ ALTER TABLE ONLY public.strategy_performance
 
 
 --
--- Name: strategy_positions strategy_positions_closing_order_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: strategy_positions strategy_positions_closing_order_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: matp
 --
 
 ALTER TABLE ONLY public.strategy_positions
@@ -2027,7 +2107,7 @@ ALTER TABLE ONLY public.strategy_positions
 
 
 --
--- Name: strategy_positions strategy_positions_opening_order_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: strategy_positions strategy_positions_opening_order_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: matp
 --
 
 ALTER TABLE ONLY public.strategy_positions
@@ -2035,7 +2115,7 @@ ALTER TABLE ONLY public.strategy_positions
 
 
 --
--- Name: strategy_positions strategy_positions_pair_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: strategy_positions strategy_positions_pair_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: matp
 --
 
 ALTER TABLE ONLY public.strategy_positions
@@ -2043,7 +2123,7 @@ ALTER TABLE ONLY public.strategy_positions
 
 
 --
--- Name: strategy_positions strategy_positions_strategy_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: strategy_positions strategy_positions_strategy_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: matp
 --
 
 ALTER TABLE ONLY public.strategy_positions
@@ -2051,7 +2131,7 @@ ALTER TABLE ONLY public.strategy_positions
 
 
 --
--- Name: strategy_stats strategy_stats_strategy_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: strategy_stats strategy_stats_strategy_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: matp
 --
 
 ALTER TABLE ONLY public.strategy_stats
@@ -2059,7 +2139,7 @@ ALTER TABLE ONLY public.strategy_stats
 
 
 --
--- Name: strategy_webhook_calls strategy_webhook_calls_strategy_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: strategy_webhook_calls strategy_webhook_calls_strategy_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: matp
 --
 
 ALTER TABLE ONLY public.strategy_webhook_calls
@@ -2067,7 +2147,7 @@ ALTER TABLE ONLY public.strategy_webhook_calls
 
 
 --
--- Name: trading_pairs trading_pairs_base_asset_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: trading_pairs trading_pairs_base_asset_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: matp
 --
 
 ALTER TABLE ONLY public.trading_pairs
@@ -2075,7 +2155,7 @@ ALTER TABLE ONLY public.trading_pairs
 
 
 --
--- Name: trading_pairs trading_pairs_quote_asset_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: trading_pairs trading_pairs_quote_asset_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: matp
 --
 
 ALTER TABLE ONLY public.trading_pairs
@@ -2083,7 +2163,7 @@ ALTER TABLE ONLY public.trading_pairs
 
 
 --
--- Name: ai_risk_config ai_risk_config_strategy_id_fkey; Type: FK CONSTRAINT; Schema: tester; Owner: -
+-- Name: ai_risk_config ai_risk_config_strategy_id_fkey; Type: FK CONSTRAINT; Schema: tester; Owner: matp
 --
 
 ALTER TABLE ONLY tester.ai_risk_config
@@ -2091,7 +2171,7 @@ ALTER TABLE ONLY tester.ai_risk_config
 
 
 --
--- Name: ai_signal_log ai_signal_log_backtest_run_id_fkey; Type: FK CONSTRAINT; Schema: tester; Owner: -
+-- Name: ai_signal_log ai_signal_log_backtest_run_id_fkey; Type: FK CONSTRAINT; Schema: tester; Owner: matp
 --
 
 ALTER TABLE ONLY tester.ai_signal_log
@@ -2099,7 +2179,7 @@ ALTER TABLE ONLY tester.ai_signal_log
 
 
 --
--- Name: ai_signal_log ai_signal_log_order_id_fkey; Type: FK CONSTRAINT; Schema: tester; Owner: -
+-- Name: ai_signal_log ai_signal_log_order_id_fkey; Type: FK CONSTRAINT; Schema: tester; Owner: matp
 --
 
 ALTER TABLE ONLY tester.ai_signal_log
@@ -2107,7 +2187,7 @@ ALTER TABLE ONLY tester.ai_signal_log
 
 
 --
--- Name: ai_strategy_config ai_strategy_config_strategy_id_fkey; Type: FK CONSTRAINT; Schema: tester; Owner: -
+-- Name: ai_strategy_config ai_strategy_config_strategy_id_fkey; Type: FK CONSTRAINT; Schema: tester; Owner: matp
 --
 
 ALTER TABLE ONLY tester.ai_strategy_config
@@ -2115,7 +2195,7 @@ ALTER TABLE ONLY tester.ai_strategy_config
 
 
 --
--- Name: backtest_runs backtest_runs_strategy_id_fkey; Type: FK CONSTRAINT; Schema: tester; Owner: -
+-- Name: backtest_runs backtest_runs_strategy_id_fkey; Type: FK CONSTRAINT; Schema: tester; Owner: matp
 --
 
 ALTER TABLE ONLY tester.backtest_runs
@@ -2123,7 +2203,7 @@ ALTER TABLE ONLY tester.backtest_runs
 
 
 --
--- Name: equity_curve equity_curve_backtest_run_id_fkey; Type: FK CONSTRAINT; Schema: tester; Owner: -
+-- Name: equity_curve equity_curve_backtest_run_id_fkey; Type: FK CONSTRAINT; Schema: tester; Owner: matp
 --
 
 ALTER TABLE ONLY tester.equity_curve
@@ -2131,7 +2211,7 @@ ALTER TABLE ONLY tester.equity_curve
 
 
 --
--- Name: orders orders_backtest_run_id_fkey; Type: FK CONSTRAINT; Schema: tester; Owner: -
+-- Name: orders orders_backtest_run_id_fkey; Type: FK CONSTRAINT; Schema: tester; Owner: matp
 --
 
 ALTER TABLE ONLY tester.orders
@@ -2139,7 +2219,7 @@ ALTER TABLE ONLY tester.orders
 
 
 --
--- Name: strategy_positions strategy_positions_backtest_run_id_fkey; Type: FK CONSTRAINT; Schema: tester; Owner: -
+-- Name: strategy_positions strategy_positions_backtest_run_id_fkey; Type: FK CONSTRAINT; Schema: tester; Owner: matp
 --
 
 ALTER TABLE ONLY tester.strategy_positions
@@ -2147,7 +2227,7 @@ ALTER TABLE ONLY tester.strategy_positions
 
 
 --
--- Name: strategy_positions strategy_positions_closing_order_id_fkey; Type: FK CONSTRAINT; Schema: tester; Owner: -
+-- Name: strategy_positions strategy_positions_closing_order_id_fkey; Type: FK CONSTRAINT; Schema: tester; Owner: matp
 --
 
 ALTER TABLE ONLY tester.strategy_positions
@@ -2155,7 +2235,7 @@ ALTER TABLE ONLY tester.strategy_positions
 
 
 --
--- Name: strategy_positions strategy_positions_opening_order_id_fkey; Type: FK CONSTRAINT; Schema: tester; Owner: -
+-- Name: strategy_positions strategy_positions_opening_order_id_fkey; Type: FK CONSTRAINT; Schema: tester; Owner: matp
 --
 
 ALTER TABLE ONLY tester.strategy_positions
@@ -2166,117 +2246,5 @@ ALTER TABLE ONLY tester.strategy_positions
 -- PostgreSQL database dump complete
 --
 
-\unrestrict e6dWmOaDigKvk6hPvKON45tFvVdzxDK3RvyLTedYXIm3txKQDhCQA2EMSgfmOah
-
-
--- ─── Reference / seed data ──────────────────────────────────
---
--- PostgreSQL database dump
---
-
-\restrict Z9IuPekIhfk7nljsTHJJBPmrB7WRgAoKzDkUFmsReo8l2dpRHAcPNpZAHatCiEj
-
--- Dumped from database version 16.14
--- Dumped by pg_dump version 16.14
-
-SET statement_timeout = 0;
-SET lock_timeout = 0;
-SET idle_in_transaction_session_timeout = 0;
-SET client_encoding = 'UTF8';
-SET standard_conforming_strings = on;
-SELECT pg_catalog.set_config('search_path', '', false);
-SET check_function_bodies = false;
-SET xmloption = content;
-SET client_min_messages = warning;
-SET row_security = off;
-
---
--- Data for Name: ai_prompt_templates; Type: TABLE DATA; Schema: public; Owner: -
---
-
-INSERT INTO public.ai_prompt_templates (id, name, description, system_prompt, created_at) VALUES ('trend_following', 'Trend Following', 'Identifies and trades sustained directional momentum using EMA crossovers and MACD confirmation.', 'You are a quantitative crypto analyst specializing in trend-following strategies on perpetual futures.
-Your primary signals are EMA crossovers (50/200), MACD histogram direction, and volume confirmation.
-You prefer high-confidence setups with clear directional bias. You avoid counter-trend trades.
-In ranging markets, output HOLD. Only recommend a trade when multiple indicators align.', '2026-06-08 20:00:12.217763+00');
-INSERT INTO public.ai_prompt_templates (id, name, description, system_prompt, created_at) VALUES ('mean_reversion', 'Mean Reversion', 'Identifies overextended price moves and trades the return to equilibrium.', 'You are a quantitative crypto analyst specializing in mean-reversion strategies on perpetual futures.
-Your primary signals are RSI extremes (oversold <30, overbought >70), Bollinger Band squeezes, and VWAP deviation.
-You trade against extended moves, expecting price to return toward the mean.
-You require confirmation that momentum is slowing before recommending entry. You use tight stop losses.', '2026-06-08 20:00:12.217763+00');
-INSERT INTO public.ai_prompt_templates (id, name, description, system_prompt, created_at) VALUES ('breakout', 'Breakout Hunter', 'Identifies and trades volume-confirmed breakouts above key structural levels.', 'You are a quantitative crypto analyst specializing in breakout strategies on perpetual futures.
-Your primary signals are price breaking above/below consolidation zones with volume confirmation (>150% average).
-You look for compression patterns (BB squeeze, low ATR) followed by expansion.
-You require the breakout candle to close convincingly beyond the level. False breakouts without volume are HOLD.', '2026-06-08 20:00:12.217763+00');
-INSERT INTO public.ai_prompt_templates (id, name, description, system_prompt, created_at) VALUES ('scalper', 'Scalper', 'High-frequency short-duration trades on lower timeframes with tight risk management.', 'You are a quantitative crypto analyst specializing in scalping strategies on perpetual futures.
-You trade on short timeframes (15m-1H). Your primary signals are VWAP positioning, order flow imbalance, and momentum bursts.
-You use very tight stop losses (0.3-0.8%). You close positions quickly — target hold time under 2 hours.
-You avoid entering during low-volume periods or major news events.', '2026-06-08 20:00:12.217763+00');
-INSERT INTO public.ai_prompt_templates (id, name, description, system_prompt, created_at) VALUES ('conservative', 'Conservative', 'Low-frequency, high-conviction trades only. Capital preservation priority.', 'You are a conservative quantitative crypto analyst specializing in low-frequency, high-conviction setups on perpetual futures.
-You require confluence of at least 4 independent signals before recommending a trade.
-You express confidence above 0.85 only when the setup is exceptional. You default to HOLD when uncertain.
-You give significant weight to macro conditions and sentiment data. Capital preservation always overrides opportunity.', '2026-06-08 20:00:12.217763+00');
-INSERT INTO public.ai_prompt_templates (id, name, description, system_prompt, created_at) VALUES ('range_rotation', 'Range Rotation', 'Trades range boundaries (fade highs, buy lows) while the range holds; stands aside or flips directional when the range breaks with confirmation.', 'You are a quantitative crypto analyst specializing in range-trading strategies on perpetual futures.
-
-PHASE 1 — RANGE IDENTIFICATION:
-A valid range requires: at least 2 touches of support and 2 touches of resistance, flat EMA 50 (no sustained slope), RSI oscillating between roughly 35-65 without pinning at extremes, and price contained within the Bollinger Bands. If no valid range exists, output HOLD.
-
-PHASE 2 — TRADING THE RANGE:
-Open SHORT near resistance when: price is within 1.5% of the range high, RSI > 60 and rolling over, and volume is declining on the approach (no breakout pressure).
-Open LONG near support when: price is within 1.5% of the range low, RSI < 40 and curling up, and volume is declining on the approach.
-Stop loss goes just beyond the range boundary (0.5-1.0% past it). Take profit targets the opposite side of the range or the midpoint (VWAP) for partial exits.
-NEVER enter in the middle of the range — the edge is only at the boundaries.
-
-PHASE 3 — BREAK DETECTION (overrides everything):
-The range is considered BROKEN when: a candle closes beyond the boundary by more than 0.5x ATR(14) with volume above 150% of average, OR two consecutive closes beyond the boundary.
-If holding a position when the range breaks AGAINST you: output close_long or close_short immediately. Do not average down. Do not wait for the stop.
-If flat when a confirmed break occurs: you may output a trade in the DIRECTION of the break (open_long on upside break, open_short on downside break), but only with volume confirmation and a retest holding the broken level as new support/resistance. A break without retest or volume is a trap — output HOLD.
-
-RISK POSTURE:
-Range trades are mean-probability, small-edge trades: confidence should rarely exceed 0.80 inside the range. Break-and-retest trades may score higher. Funding rate extremes or major scheduled news invalidate the range thesis — output HOLD.', '2026-06-09 20:31:58.132871+00');
-
-
---
--- Data for Name: assets; Type: TABLE DATA; Schema: public; Owner: -
---
-
-INSERT INTO public.assets (id, symbol, name) VALUES (1, 'BTC', 'Bitcoin');
-INSERT INTO public.assets (id, symbol, name) VALUES (2, 'ETH', 'Ethereum');
-INSERT INTO public.assets (id, symbol, name) VALUES (3, 'USDT', 'Tether');
-INSERT INTO public.assets (id, symbol, name) VALUES (4, 'SOL', 'Solana');
-
-
---
--- Data for Name: config; Type: TABLE DATA; Schema: public; Owner: -
---
-
-INSERT INTO public.config (key, value, updated_at) VALUES ('max_order_size_btc', '1.0', '2026-05-18 15:41:14.011312+00');
-INSERT INTO public.config (key, value, updated_at) VALUES ('max_order_size_eth', '10.0', '2026-05-18 15:41:14.011312+00');
-INSERT INTO public.config (key, value, updated_at) VALUES ('active_platform', 'hyperliquid', '2026-06-11 18:20:58.536961+00');
-
-
---
--- Data for Name: trading_pairs; Type: TABLE DATA; Schema: public; Owner: -
---
-
-INSERT INTO public.trading_pairs (id, base_asset_id, quote_asset_id, exchange_meta) VALUES (1, 1, 3, '{"blofin": {"instId": "BTC-USDT"}}');
-
-
---
--- Name: assets_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
---
-
-SELECT pg_catalog.setval('public.assets_id_seq', 6, true);
-
-
---
--- Name: trading_pairs_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
---
-
-SELECT pg_catalog.setval('public.trading_pairs_id_seq', 2, true);
-
-
---
--- PostgreSQL database dump complete
---
-
-\unrestrict Z9IuPekIhfk7nljsTHJJBPmrB7WRgAoKzDkUFmsReo8l2dpRHAcPNpZAHatCiEj
+\unrestrict K2jIuW7sDeF6tikiv9J611N5ZBPCUTnYqynfVw18OS5j5kBqwFA7CuUuBaMrOsh
 
