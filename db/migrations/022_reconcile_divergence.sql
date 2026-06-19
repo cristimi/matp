@@ -11,3 +11,19 @@ ALTER TABLE strategy_positions
     ADD COLUMN IF NOT EXISTS reconcile_divergent     BOOLEAN   NOT NULL DEFAULT FALSE,
     ADD COLUMN IF NOT EXISTS reconcile_exchange_size NUMERIC,
     ADD COLUMN IF NOT EXISTS reconcile_divergence_at TIMESTAMP WITH TIME ZONE;
+
+DO $$
+DECLARE
+  n INT;
+BEGIN
+  SELECT COUNT(*) INTO n
+  FROM information_schema.columns
+  WHERE table_schema = 'public'
+    AND table_name   = 'strategy_positions'
+    AND column_name IN ('reconcile_divergent', 'reconcile_exchange_size', 'reconcile_divergence_at');
+
+  IF n <> 3 THEN
+    RAISE EXCEPTION 'Migration 022: expected 3 reconcile divergence columns on public.strategy_positions, found %', n;
+  END IF;
+  RAISE NOTICE 'Migration 022 verified OK — reconcile_divergent / reconcile_exchange_size / reconcile_divergence_at present';
+END $$;
