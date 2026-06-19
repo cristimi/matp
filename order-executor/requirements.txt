@@ -12,3 +12,5 @@ eth-keys>=0.4.0
 pycryptodome
 pynacl
 msgpack==1.0.8
+pytest
+pytest-asyncio

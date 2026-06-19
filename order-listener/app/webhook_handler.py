@@ -1037,6 +1037,64 @@ async def _process_order(
 
         pos_symbol = resolved.execution_symbol
 
+        # ── Close signals: route through the safe reduce-only close path ──────
+        # close_strategy_position(skip_exchange=False) calls the adapter's
+        # close_position() which uses a dedicated close endpoint (full) or
+        # reduce-only order (partial) — never an uncapped market order.
+        if payload.signal in ("close_long", "close_short"):
+            pos_side = "long" if payload.signal == "close_long" else "short"
+            close_result = await close_strategy_position(
+                pool, strategy,
+                symbol=resolved.execution_symbol,
+                side=pos_side,
+                close_size=payload.size,      # clamped to open size inside routine
+                closing_order_id=order_id,
+                skip_exchange=False,
+            )
+
+            order_result = None
+            if close_result.get("success"):
+                fp = close_result.get("actual_fill_price")
+                rp = close_result.get("realized_pnl")
+                order_result = OrderResult(
+                    success=True,
+                    status="filled",
+                    exchange_order_id=close_result.get("exchange_order_id"),
+                    actual_fill_price=Decimal(str(fp)) if fp is not None else None,
+                    realized_pnl=Decimal(str(rp)) if rp is not None else None,
+                )
+
+            await _update_order_status(
+                pool, order_id,
+                close_result.get("status", "route_failed"),
+                payload, order_result, account_id, account_label, strategy_id,
+            )
+            await _finalize_signal_log(
+                pool, signal_log_id, 200,
+                "filled" if close_result.get("success") else "route_failed",
+                close_result.get("error_msg"), start_ms,
+            )
+            result_pnl = close_result.get("realized_pnl")
+            if result_pnl is not None:
+                try:
+                    async with pool.acquire() as conn:
+                        await conn.execute(
+                            """
+                            UPDATE strategies
+                            SET pnl_today  = pnl_today + $1,
+                                pnl_total  = pnl_total + $1,
+                                updated_at = NOW()
+                            WHERE id = $2
+                            """,
+                            float(result_pnl),
+                            strategy['id'],
+                        )
+                    logger.debug(f"Updated pnl_today/total for {strategy['id']}: delta={result_pnl}")
+                except Exception as e:
+                    logger.warning(f"Failed to update pnl_today/total for {strategy['id']}: {e}")
+            return
+        # ── End close handler ────────────────────────────────────────────────
+
         # ── Step 6: Same-symbol guard (open signals only) ─────────────────────
         if payload.signal in ("open_long", "open_short"):
             _conflict_reason = None
@@ -1157,24 +1215,9 @@ async def _process_order(
 
         if result.success and payload.base_asset and payload.quote_asset and payload.size:
 
-            # ── Close path: canonical routine (exchange already executed) ─────
-            if payload.signal in ("close_long", "close_short"):
-                pos_side = "long" if payload.signal == "close_long" else "short"
-                # Pass payload.size as close_size: if size < open size it's a partial reduce
-                # (e.g. AI partial_close); if size >= open size it's a full close.
-                await close_strategy_position(
-                    pool, strategy,
-                    symbol=pos_symbol,
-                    side=pos_side,
-                    close_size=payload.size,
-                    closing_order_id=order_id,
-                    skip_exchange=True,
-                    fill_price=result.actual_fill_price,
-                    realized_pnl=result.realized_pnl,
-                )
-
             # ── Open path: top-up existing or create new position ─────────────
-            elif payload.signal in ("open_long", "open_short"):
+            # (Close signals returned early above via the unified close handler.)
+            if payload.signal in ("open_long", "open_short"):
                 pos_side = "long" if payload.signal == "open_long" else "short"
                 fill_price_val = (
                     result.actual_fill_price

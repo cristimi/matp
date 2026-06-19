@@ -217,6 +217,7 @@ class BlofinAdapter(ExchangeAdapter):
             await self._set_leverage(order.symbol, leverage, margin_mode)
 
             path = "/api/v1/trade/order"
+            is_close = order.signal in ("close_long", "close_short")
             body_data = {
                 "instId": order.symbol,
                 "marginMode": margin_mode,
@@ -225,7 +226,12 @@ class BlofinAdapter(ExchangeAdapter):
                 "size": str(order_size),
                 "lever": str(leverage),
             }
-            
+            if is_close:
+                # Belt-and-suspenders: close signals must never open a net position.
+                # Without reduceOnly, an oversized close flips the position on BloFin.
+                body_data["reduceOnly"] = "true"
+                body_data["positionSide"] = "net"
+
             if order.price:
                 body_data["price"] = str(order.price)
             if order.tp_price:
