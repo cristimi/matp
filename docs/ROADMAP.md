@@ -60,3 +60,42 @@ Changes required: DB migration, one line in `node_ingest.py`, `ai.ts` GET/PUT, U
   - Needs `is_system` (or `created_by`) flag to distinguish/protect seeded rows; CRUD endpoints; a "N strategies use this" warning before destructive actions.
   - `ai_prompt_templates` is a single canonical table in `public` — tester reads it, has no duplicate — so no schema-sync needed.
   - Display side is **already done** (committed): the config modal shows `system_prompt` + active data sources read-only via the `TemplatePreview` component in `Strategies.tsx`.
+### Dynamic strategy allocation (realized-PnL-compounding base)
+
+**Status:** Deferred — design intent captured, not yet implemented.
+
+**Intent:** A strategy's allocation is not a static figure. The capital base
+that position sizing is computed against compounds with **realized P&L only**:
+
+    current_allocation = initial_allocation + cumulative_realized_pnl
+
+It steps only when positions close (deterministic; it does NOT float with mark
+price / unrealized P&L). This `current_allocation` — not the seed figure — is
+what feeds `margin_per_trade` and the drawdown math.
+
+**Open questions to resolve before implementing:**
+
+- Two distinct quantities now exist: `initial_allocation` (the seed, static)
+  and `current_allocation` (derived). Decide storage: persist only
+  `initial_allocation` and compute current on read (single source of truth,
+  but requires summing realized P&L over the strategy's position lifetime),
+  vs. persist a running `current_allocation` updated on each position close.
+- Confirm `cumulative_realized_pnl` is **net of fees** — i.e. the same realized
+  figure already shown (with its fees bracket) in the UI feeds allocation.
+- `max_drawdown_pct` / Guard 5 interaction: is cumulative drawdown measured
+  against `initial_allocation`, against `current_allocation`, or against a
+  running peak of `current_allocation`? Compounding the base changes what
+  "drawdown" means and must be decided explicitly.
+- Floor behaviour: if cumulative realized P&L drives `current_allocation` to or
+  below a minimum viable margin, sizing must halt cleanly rather than emit
+  zero/negative size.
+- UI: the Strategies screen should surface both seed and current (compounded)
+  allocation so the compounding is visible. Current mockup shows a single
+  "Allocated" figure.
+- Strategy-tester parity: the tester's sizing must apply the same compounding
+  rule or backtests diverge from live. Ties into the existing open tester-parity
+  item for `capital_allocation` / `margin_per_trade`.
+
+**Layer note:** Upstream sizing logic — belongs wherever `capital_allocation` /
+`margin_per_trade` are resolved, never in adapters. Adapters keep receiving
+canonical units.
