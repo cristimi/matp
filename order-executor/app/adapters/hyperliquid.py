@@ -490,11 +490,18 @@ class HyperliquidAdapter(ExchangeAdapter):
         if reduce_only and oid:
             realized_pnl = await self._get_fill_pnl(int(oid))
 
+        ts = filled.get("totalSz")
+        actual_fill_size = (
+            Decimal(str(ts)) if ts not in (None, "", "0")
+            else Decimal(str(size_rounded))
+        )
+
         return OrderResult(
             success=True,
             status="filled",
             exchange_order_id=oid or None,
             actual_fill_price=Decimal(str(avg_px)) if avg_px else None,
+            actual_fill_size=actual_fill_size,
             realized_pnl=realized_pnl,
             raw_response=data,
         )

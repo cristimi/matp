@@ -175,3 +175,84 @@ async def test_submit_order_fill_size_none_when_details_fetch_fails():
     assert result.actual_fill_size is None, (
         "actual_fill_size must be None when details fetch fails"
     )
+
+
+def _make_limit_order(symbol="HYPE-USDT", size="1.45598556", price="68.00"):
+    return OrderRequest(
+        order_id="test-order-limit",
+        account_id="acc_test",
+        symbol=symbol,
+        side="buy",
+        signal="open_long",
+        order_type="limit",
+        size=Decimal(size),
+        price=Decimal(price),
+        leverage=20,
+        margin_mode="isolated",
+    )
+
+
+@pytest.mark.asyncio
+async def test_limit_order_returns_actual_fill_size():
+    """Limit orders must set actual_fill_size = _to_base(order_size).
+    No details fetch happens; the rounded submitted size is stored instead.
+    HYPE: contractValue=1, lotSize=0.1, size=1.45598556 → order_size='1.5' → base=1.5."""
+    adapter = _make_adapter()
+    order = _make_limit_order(size="1.45598556", price="68.00")
+
+    async def fake_post(url, content=None, headers=None, **kw):
+        return _mock_place_response()
+
+    with patch.object(adapter, "_get_instrument", AsyncMock(return_value=HYPE_SPEC)), \
+         patch.object(adapter, "_set_leverage", AsyncMock()), \
+         patch("app.adapters.blofin.httpx.AsyncClient") as mock_client:
+        mock_client.return_value.__aenter__ = AsyncMock(
+            return_value=MagicMock(post=AsyncMock(side_effect=fake_post))
+        )
+        mock_client.return_value.__aexit__ = AsyncMock(return_value=False)
+        result = await adapter.submit_order(order)
+
+    assert result.success, f"Expected success: {result}"
+    assert result.actual_fill_size is not None, (
+        "actual_fill_size must be set for limit orders (rounded submitted size)"
+    )
+    # HYPE contractValue=1, lotSize=0.1 → _to_contracts(1.45598556)=1.5 → _to_base(1.5)=1.5
+    assert result.actual_fill_size == Decimal("1.5"), (
+        f"Expected 1.5 base coins for limit order, got {result.actual_fill_size}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_market_order_still_uses_details_fetch():
+    """Regression: market orders must still use the details fetch path, not the limit-order else."""
+    adapter = _make_adapter()
+    order = _make_order(side="buy", signal="open_long", size="1.45598556")
+
+    async def fake_post(url, content=None, headers=None, **kw):
+        return _mock_place_response()
+
+    async def fake_get(url, headers=None, **kw):
+        # Details return filledSize=1.3 — different from the submitted 1.5
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            "code": "0",
+            "data": [{"orderId": "777", "filledSize": "1.3", "avgPrice": "68.50", "pnl": "0"}],
+        }
+        return mock_resp
+
+    with patch.object(adapter, "_get_instrument", AsyncMock(return_value=HYPE_SPEC)), \
+         patch.object(adapter, "_set_leverage", AsyncMock()), \
+         patch("app.adapters.blofin.httpx.AsyncClient") as mock_client:
+        mock_client.return_value.__aenter__ = AsyncMock(
+            return_value=MagicMock(post=AsyncMock(side_effect=fake_post),
+                                   get=AsyncMock(side_effect=fake_get))
+        )
+        mock_client.return_value.__aexit__ = AsyncMock(return_value=False)
+        result = await adapter.submit_order(order)
+
+    assert result.success
+    # Must use the details-fetched value, not the submitted order_size
+    assert result.actual_fill_size == Decimal("1.3"), (
+        f"Market order must use filledSize from details, got {result.actual_fill_size}"
+    )

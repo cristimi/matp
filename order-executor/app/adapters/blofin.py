@@ -292,6 +292,12 @@ class BlofinAdapter(ExchangeAdapter):
                             pnl = Decimal(str(pnl_raw)) if pnl_raw is not None else None
                     except Exception as e:
                         logger.warning(f"Blofin submit_order: fill details fetch failed (order still filled): {e}")
+                else:
+                    # No immediate fill to query (limit/resting). Store the rounded
+                    # submitted size so the DB matches what the exchange will hold.
+                    actual_fill_size = await self._to_base(
+                        order.symbol, Decimal(str(order_size))
+                    )
 
                 return OrderResult(
                     success=True,
