@@ -506,6 +506,7 @@ router.put('/:id', async (req: Request, res: Response) => {
     capital_allocation,
     margin_per_trade,
     max_drawdown_pct,
+    account_id,
   } = req.body;
 
   // Normalise symbol if provided
@@ -513,15 +514,26 @@ router.put('/:id', async (req: Request, res: Response) => {
     ? symbol.toUpperCase().replace('/', '-')
     : null;
 
+  // Validate new account_id when it is being changed
+  if (account_id !== undefined) {
+    const acctCheck = await getPool().query(
+      `SELECT id FROM exchange_accounts WHERE id = $1 AND is_active = true`,
+      [account_id]
+    );
+    if ((acctCheck.rowCount ?? 0) === 0) {
+      return res.status(422).json({ error: `Account not found or inactive: ${account_id}` });
+    }
+  }
+
   // Validate symbol against exchange instrument list (only when symbol is being changed)
   if (normalisedSymbol) {
-    // Need account_id — fetch from existing strategy or use provided one
+    // Effective account: prefer the new one being set, fall back to existing
     const acctRow = await getPool().query(
       `SELECT account_id FROM strategies WHERE id = $1`,
       [req.params.id]
     );
     if (acctRow.rowCount !== 0) {
-      const effectiveAccountId = req.body.account_id ?? acctRow.rows[0].account_id;
+      const effectiveAccountId = account_id ?? acctRow.rows[0].account_id;
       const symbolCheck = await validateSymbolForAccount(effectiveAccountId, normalisedSymbol);
       if (!symbolCheck.valid) {
         return res.status(422).json({ error: symbolCheck.error });
@@ -571,6 +583,7 @@ router.put('/:id', async (req: Request, res: Response) => {
          capital_allocation         = COALESCE($13, capital_allocation),
          margin_per_trade           = COALESCE($14, margin_per_trade),
          max_drawdown_pct           = COALESCE($15, max_drawdown_pct),
+         account_id                 = COALESCE($16, account_id),
          drawdown_anchor_pnl        = CASE WHEN $13 IS NOT NULL THEN pnl_total ELSE drawdown_anchor_pnl END,
          updated_at                 = NOW()
        WHERE id = $12
@@ -595,6 +608,7 @@ router.put('/:id', async (req: Request, res: Response) => {
         capital_allocation !== undefined ? Number(capital_allocation) : null,
         margin_per_trade   !== undefined ? Number(margin_per_trade)   : null,
         max_drawdown_pct   !== undefined ? Number(max_drawdown_pct)   : null,
+        account_id ?? null,
       ]
     );
     if (result.rowCount === 0) {
