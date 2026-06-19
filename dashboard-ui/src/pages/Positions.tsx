@@ -34,6 +34,9 @@ interface Position {
   pnl_pct?:         number;
   close_reason?:    string;
   strategy_source?: string;
+  size_exchange?:   number | null;
+  size_divergent?:  boolean;
+  margin_exchange?: number | null;
 }
 
 function PositionCard({
@@ -110,7 +113,24 @@ function PositionCard({
     },
     {
       label: 'Size',
-      value: (
+      value: position.size_divergent ? (
+        <span style={{ display:'flex', flexDirection:'column', gap:'1px', whiteSpace:'nowrap' }}>
+          <span style={{
+            fontFamily:'JetBrains Mono, monospace', fontSize:'13px',
+            fontWeight:700, color:'var(--failed-color)',
+          }}>
+            {formatSize(symbol, position.size)} ⚠
+          </span>
+          {position.size_exchange != null && (
+            <span style={{
+              fontFamily:'JetBrains Mono, monospace', fontSize:'10px',
+              fontWeight:600, color:'var(--dim)',
+            }}>
+              exch {formatSize(symbol, position.size_exchange)}
+            </span>
+          )}
+        </span>
+      ) : (
         <span style={{
           fontFamily:'JetBrains Mono, monospace', fontSize:'13px',
           fontWeight:700, color:'var(--text)', whiteSpace:'nowrap',
