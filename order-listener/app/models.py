@@ -69,6 +69,7 @@ class OrderResult(BaseModel):
     error_msg:         Optional[str] = None
     raw_response:      Optional[dict] = None
     actual_fill_price: Optional[Decimal] = None
+    actual_fill_size:  Optional[Decimal] = None
     pnl:               Optional[Decimal] = None
     realized_pnl:      Optional[Decimal] = None
 

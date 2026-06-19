@@ -15,7 +15,8 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 RECONCILE_MISS_THRESHOLD: int = int(os.environ.get("RECONCILE_MISS_THRESHOLD", "3"))
-_SIZE_EPSILON = Decimal("0.000001")
+_SIZE_EPSILON_ABS = Decimal("0.000001")          # absolute floor
+_SIZE_EPSILON_REL = Decimal("0.005")             # 0.5% of db_size — absorbs lot-rounding drift
 
 
 async def reconcile_once(pool) -> None:
@@ -108,9 +109,10 @@ async def reconcile_once(pool) -> None:
             ex_size_dec = ex_size
 
         size_diff = db_size - ex_size_dec
+        _tol = max(_SIZE_EPSILON_ABS, db_size * _SIZE_EPSILON_REL)
 
-        if ex_size is not None and abs(size_diff) <= _SIZE_EPSILON:
-            # Sizes match — reset miss counter
+        if ex_size is not None and abs(size_diff) <= _tol:
+            # Sizes match within tolerance — reset miss counter
             if miss_count != 0:
                 async with pool.acquire() as conn:
                     await conn.execute(
@@ -121,7 +123,7 @@ async def reconcile_once(pool) -> None:
                 logger.debug(f"reconciler: position {pos_id} ({symbol} {side}) match reset")
             continue
 
-        if ex_size is not None and ex_size_dec > db_size + _SIZE_EPSILON:
+        if ex_size is not None and ex_size_dec > db_size + _tol:
             # Exchange size is LARGER than DB — never grow from reconciliation.
             # The position IS confirmed present, so reset the miss streak: positive evidence
             # it is NOT disappearing. Previously this branch reset nothing, which turned
@@ -165,7 +167,7 @@ async def reconcile_once(pool) -> None:
         # Threshold reached — act
         strategy = {"id": row["strategy_id"], "account_id": acct_id}
 
-        if ex_size is None or ex_size_dec <= _SIZE_EPSILON:
+        if ex_size is None or ex_size_dec <= _SIZE_EPSILON_ABS:
             # Full external close
             await _handle_full_external_close(
                 pool, strategy, symbol, side, pos_id, opened_at,

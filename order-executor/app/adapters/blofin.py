@@ -146,6 +146,19 @@ class BlofinAdapter(ExchangeAdapter):
         except Exception:
             return None
 
+    async def _parse_fill_size(self, inst_id: str, details: dict, fallback_contracts: str) -> Optional[Decimal]:
+        """Extract filled contract count from order details and convert to base coins.
+        BloFin field priority: filledSize → accFillSz → fillSz → fallback (submitted size)."""
+        raw = (details.get("filledSize") or details.get("accFillSz")
+               or details.get("fillSz") or fallback_contracts)
+        try:
+            contracts = Decimal(str(raw)) if raw else None
+            if not contracts or contracts <= 0:
+                return None
+            return await self._to_base(inst_id, contracts)
+        except Exception:
+            return None
+
     async def get_max_leverage(self, symbol: str) -> int:
         """Exchange max leverage for the instrument. Returns 0 if unknown."""
         try:
@@ -262,8 +275,9 @@ class BlofinAdapter(ExchangeAdapter):
                 order_info = data["data"][0]
                 exchange_order_id = order_info.get("orderId")
                 
-                # For market orders, wait a bit and fetch details to get fill price and P&L
+                # For market orders, wait a bit and fetch details to get fill price, size and P&L
                 actual_fill_price = None
+                actual_fill_size  = None
                 pnl = None
                 if order.order_type == "market":
                     try:
@@ -271,6 +285,9 @@ class BlofinAdapter(ExchangeAdapter):
                         details = await self._get_order_details(order.symbol, exchange_order_id)
                         if details:
                             actual_fill_price = self._parse_fill_price(details)
+                            actual_fill_size  = await self._parse_fill_size(
+                                order.symbol, details, order_size
+                            )
                             pnl_raw = details.get("pnl") or details.get("realizedPnl")
                             pnl = Decimal(str(pnl_raw)) if pnl_raw is not None else None
                     except Exception as e:
@@ -282,6 +299,7 @@ class BlofinAdapter(ExchangeAdapter):
                     exchange_order_id=exchange_order_id,
                     raw_response=data,
                     actual_fill_price=actual_fill_price,
+                    actual_fill_size=actual_fill_size,
                     realized_pnl=pnl,
                 )
             else:

@@ -733,10 +733,12 @@ async def receive_webhook(
     return OrderResponse(order_id=order_id, status="received", message="OK")
 
 
-async def _create_strategy_position(pool, payload: WebhookPayload, strategy: dict, opening_order_id: uuid.UUID, result: OrderResult, effective_leverage: int, effective_margin_mode: str = "isolated") -> None:
+async def _create_strategy_position(pool, payload: WebhookPayload, strategy: dict, opening_order_id: uuid.UUID, result: OrderResult, effective_leverage: int, effective_margin_mode: str = "isolated", fill_size=None) -> None:
     """Create a new strategy position record in the database."""
     async with pool.acquire() as conn:
         entry_price = result.actual_fill_price or payload.price or payload.indicator_price or 0
+        # Use exchange-confirmed fill size when available (avoids lot-rounding drift).
+        db_size = fill_size if fill_size is not None else payload.size
 
         # Look up pair_id
         pair = await conn.fetchrow(
@@ -764,7 +766,7 @@ async def _create_strategy_position(pool, payload: WebhookPayload, strategy: dic
             pair_id,
             pos_side,
             entry_price,
-            payload.size,
+            db_size,
             effective_leverage,
             effective_margin_mode,
             opening_order_id,
@@ -1225,6 +1227,10 @@ async def _process_order(
                     or payload.indicator_price
                     or Decimal("0")
                 )
+                # Use exchange-confirmed fill size if the adapter returned it.
+                # BloFin lot-rounding means _to_contracts(payload.size) != payload.size;
+                # using the rounded-back base coins keeps DB and exchange in sync.
+                fill_size = result.actual_fill_size if result.actual_fill_size else payload.size
 
                 async with pool.acquire() as conn:
                     existing = await conn.fetchrow(
@@ -1237,9 +1243,9 @@ async def _process_order(
                     if existing:
                         old_size  = Decimal(str(existing['size']))
                         old_entry = Decimal(str(existing['entry_price']))
-                        new_size  = old_size + payload.size
+                        new_size  = old_size + fill_size
                         new_entry = (
-                            (old_entry * old_size + Decimal(str(fill_price_val)) * payload.size)
+                            (old_entry * old_size + Decimal(str(fill_price_val)) * fill_size)
                             / new_size
                         )
                         await conn.execute(
@@ -1261,6 +1267,7 @@ async def _process_order(
                         await _create_strategy_position(
                             pool, payload, strategy, order_id, result,
                             effective_leverage, effective_margin_mode,
+                            fill_size=fill_size,
                         )
 
     except Exception as e:
