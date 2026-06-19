@@ -57,10 +57,10 @@ function formatSignal(row: any): any {
 }
 
 function notifyConfigReload(strategyId: string): void {
-  fetch(`${AI_URL}/internal/schedulers/${strategyId}/config-reload`, {
+  fetch(`${AI_URL}/internal/schedulers/${strategyId}/reconcile`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-  }).catch((e) => console.warn(`Could not notify scheduler config-reload for ${strategyId}:`, e));
+  }).catch((e) => console.warn(`Could not notify scheduler reconcile for ${strategyId}:`, e));
 }
 
 // ── GET /templates ────────────────────────────────────────────────────────────

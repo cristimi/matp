@@ -183,9 +183,17 @@ TRIGGER_CHECKS = {
 }
 
 
-async def start_all_event_watchers(db_pool, graph, schedulers: dict) -> list:
+def start_event_watcher(strategy_id: str, db_pool, graph, scheduler) -> asyncio.Task:
+    """Spawn one event_watcher_loop task for a single strategy."""
+    return asyncio.create_task(
+        event_watcher_loop(strategy_id, db_pool, graph, scheduler),
+        name=f"event_watcher_{strategy_id}",
+    )
+
+
+async def start_all_event_watchers(db_pool, graph, schedulers: dict) -> dict:
     """Starts one event_watcher_loop per enabled AI strategy that has a running scheduler."""
-    tasks = []
+    tasks: dict[str, asyncio.Task] = {}
     try:
         async with db_pool.acquire() as conn:
             rows = await conn.fetch(
@@ -198,15 +206,11 @@ async def start_all_event_watchers(db_pool, graph, schedulers: dict) -> list:
                 """,
             )
         for row in rows:
-            sid      = row['id']
+            sid = row['id']
             scheduler = schedulers.get(sid)
             if not scheduler:
                 continue
-            task = asyncio.create_task(
-                event_watcher_loop(sid, db_pool, graph, scheduler),
-                name=f"event_watcher_{sid}",
-            )
-            tasks.append(task)
+            tasks[sid] = start_event_watcher(sid, db_pool, graph, scheduler)
         logger.info("Started %d event watcher(s)", len(tasks))
     except Exception as exc:
         logger.error("Failed to start event watchers: %s", exc)

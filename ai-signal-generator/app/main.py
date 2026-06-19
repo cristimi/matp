@@ -14,8 +14,8 @@ from app.config import settings
 from app.database import init_db, get_pool
 from app.graph.graph import build_graph
 from app.prompt.builder import build_prompt, get_estimated_tokens
-from app.scheduler import start_all_schedulers, stop_all_schedulers
-from app.event_watcher import start_all_event_watchers
+from app.scheduler import start_all_schedulers, stop_all_schedulers, AdaptiveScheduler
+from app.event_watcher import start_all_event_watchers, start_event_watcher
 
 logging.basicConfig(
     level=logging.INFO,
@@ -66,10 +66,10 @@ async def lifespan(app: FastAPI):
     probe_task.cancel()
     await stop_all_schedulers(schedulers)
 
-    for task in watcher_tasks:
+    for task in watcher_tasks.values():
         task.cancel()
     if watcher_tasks:
-        await asyncio.gather(*watcher_tasks, return_exceptions=True)
+        await asyncio.gather(*watcher_tasks.values(), return_exceptions=True)
 
     logger.info("AI Signal Generator shutdown complete")
 
@@ -302,14 +302,71 @@ async def trigger_scheduler(strategy_id: str, body: TriggerSchedulerRequest):
     return {'strategy_id': strategy_id, 'trigger_reason': body.trigger_reason, 'status': 'queued'}
 
 
+async def _reconcile_scheduler(strategy_id: str) -> dict:
+    """Make the in-memory scheduler/watcher for `strategy_id` match its DB state.
+
+    Should-run = strategy is enabled, not deleted, and has an ai_strategy_config row.
+    Starts, reloads, or tears down the scheduler + its event watcher accordingly.
+    """
+    pool       = get_pool()
+    graph      = app.state.graph
+    schedulers = app.state.schedulers
+    watchers   = app.state.watcher_tasks
+
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT s.id
+            FROM strategies s
+            JOIN ai_strategy_config a ON a.strategy_id = s.id
+            WHERE s.id = $1
+              AND s.enabled = true
+              AND COALESCE(s.is_deleted, false) = false
+            """,
+            strategy_id,
+        )
+    should_run = row is not None
+    running    = strategy_id in schedulers
+
+    if should_run and not running:
+        sched = AdaptiveScheduler(strategy_id, pool, graph)
+        await sched.start()
+        schedulers[strategy_id] = sched
+        watchers[strategy_id]   = start_event_watcher(strategy_id, pool, graph, sched)
+        logger.info("reconcile: started scheduler+watcher strategy=%s", strategy_id)
+        return {"status": "started", "strategy_id": strategy_id}
+
+    if should_run and running:
+        schedulers[strategy_id].interrupt()
+        logger.info("reconcile: reloaded (interrupted) strategy=%s", strategy_id)
+        return {"status": "reloaded", "strategy_id": strategy_id}
+
+    if (not should_run) and running:
+        await schedulers[strategy_id].stop()
+        del schedulers[strategy_id]
+        task = watchers.pop(strategy_id, None)
+        if task is not None:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        logger.info("reconcile: stopped scheduler+watcher strategy=%s", strategy_id)
+        return {"status": "stopped", "strategy_id": strategy_id}
+
+    logger.info("reconcile: noop strategy=%s", strategy_id)
+    return {"status": "noop", "strategy_id": strategy_id}
+
+
+@app.post("/internal/schedulers/{strategy_id}/reconcile")
+async def reconcile_scheduler(strategy_id: str):
+    return await _reconcile_scheduler(strategy_id)
+
+
 @app.post("/internal/schedulers/{strategy_id}/config-reload")
 async def config_reload(strategy_id: str):
-    schedulers = getattr(app.state, 'schedulers', {})
-    if strategy_id not in schedulers:
-        return {'status': 'not_found', 'strategy_id': strategy_id}
-    schedulers[strategy_id].interrupt()
-    logger.info("config-reload: interrupted sleep for strategy=%s", strategy_id)
-    return {'status': 'ok', 'strategy_id': strategy_id, 'interrupted': True}
+    result = await _reconcile_scheduler(strategy_id)
+    return {"status": "ok", "strategy_id": strategy_id, "reconcile": result}
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────

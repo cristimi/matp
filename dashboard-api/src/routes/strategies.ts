@@ -5,6 +5,16 @@ import { getPool } from '../db';
 const router = Router();
 
 const EXECUTOR_URL = process.env.EXECUTOR_URL || 'http://order-executor:8004';
+const AI_URL = process.env.AI_SIGNAL_GENERATOR_URL || 'http://ai-signal-generator:8005';
+
+// Fire-and-forget: tell ai-signal-generator to reconcile this strategy's scheduler
+// against its current DB state (start / reload / teardown). No-op for non-AI strategies.
+function notifyReconcile(strategyId: string): void {
+  fetch(`${AI_URL}/internal/schedulers/${strategyId}/reconcile`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+  }).catch((e) => console.warn(`Could not notify scheduler reconcile for ${strategyId}:`, e));
+}
 
 // ── Exchange symbol validation (routed through order-executor) ─────────────
 // Cache: { account_id -> { symbols: Set<string>, fetchedAt: number } }
@@ -639,6 +649,7 @@ router.post('/:id/stop', async (req: Request, res: Response) => {
     if (result.rowCount === 0) {
       return res.status(404).json({ error: `Strategy not found: ${req.params.id}` });
     }
+    notifyReconcile(req.params.id);
     res.json({ stopped: req.params.id, enabled: false });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
@@ -658,6 +669,7 @@ router.post('/:id/start', async (req: Request, res: Response) => {
     if (result.rowCount === 0) {
       return res.status(404).json({ error: `Strategy not found: ${req.params.id}` });
     }
+    notifyReconcile(req.params.id);
     res.json({ started: req.params.id, enabled: true });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
@@ -697,6 +709,7 @@ router.delete('/:id', async (req: Request, res: Response) => {
        WHERE id = $1`,
       [req.params.id]
     );
+    notifyReconcile(req.params.id);
     res.json({ deleted: req.params.id });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
@@ -775,6 +788,7 @@ router.post('/:id/max-daily-signals', async (req: Request, res: Response) => {
 router.post('/:id/enable', async (req: Request, res: Response) => {
   try {
     await getPool().query('UPDATE strategies SET enabled = true WHERE id = $1', [req.params.id]);
+    notifyReconcile(req.params.id);
     res.json({ message: 'Strategy enabled' });
   } catch (err) {
     console.error('Error enabling strategy:', err);
@@ -785,6 +799,7 @@ router.post('/:id/enable', async (req: Request, res: Response) => {
 router.post('/:id/disable', async (req: Request, res: Response) => {
   try {
     await getPool().query('UPDATE strategies SET enabled = false WHERE id = $1', [req.params.id]);
+    notifyReconcile(req.params.id);
     res.json({ message: 'Strategy disabled' });
   } catch (err) {
     console.error('Error disabling strategy:', err);
