@@ -54,7 +54,12 @@ router.get('/', async (_req: Request, res: Response) => {
       const key = `${dbPos.account_id}:${dbPos.symbol}:${dbPos.side}`;
       const realPos = executorPositionsMap.get(key);
 
-      const enrichedPos = {
+      // Exchange-confirmed size: live feed first, then reconciler snapshot when divergent
+      const sizeExchange: number | null = realPos
+        ? Number(realPos.size)
+        : (dbPos.reconcile_divergent ? Number(dbPos.reconcile_exchange_size) : null);
+
+      const enrichedPos: any = {
         id:                dbPos.id,
         symbol:            dbPos.symbol,
         side:              dbPos.side,
@@ -71,7 +76,10 @@ router.get('/', async (_req: Request, res: Response) => {
         mark_price:        realPos ? Number(realPos.mark_price || realPos.entry_price) : Number(dbPos.current_price),
         close_price:       Number(dbPos.closing_price || dbPos.close_price || 0),
         size:              Number(dbPos.size),
+        size_exchange:     sizeExchange,
+        size_divergent:    Boolean(dbPos.reconcile_divergent),
         margin:            0, // computed below from entry_price * size / leverage
+        margin_exchange:   null as number | null,
         realized_pnl:      Number(dbPos.pnl_realized || 0),
         realized_pnl_fees: 0,
         unrealized_pnl:    realPos ? Number(realPos.unrealized_pnl) : Number(dbPos.pnl_unrealized),
@@ -85,6 +93,11 @@ router.get('/', async (_req: Request, res: Response) => {
       // Compute margin from position notional — no margin column in DB
       if (enrichedPos.entry_price > 0 && enrichedPos.size > 0) {
         enrichedPos.margin = (enrichedPos.entry_price * enrichedPos.size) / (enrichedPos.leverage || 1);
+      }
+
+      // Exchange-confirmed margin uses exchange size when available
+      if (sizeExchange !== null && sizeExchange > 0 && enrichedPos.entry_price > 0) {
+        enrichedPos.margin_exchange = (enrichedPos.entry_price * sizeExchange) / (enrichedPos.leverage || 1);
       }
 
       // P&L % — open uses unrealized, closed uses realized
