@@ -542,15 +542,14 @@ async def receive_webhook(
         await _finalize_signal_log(pool, signal_log_id, 429, "guard_rejected", detail, start_ms)
         raise HTTPException(status_code=429, detail=detail)
 
-    # Guard 5: Cumulative drawdown stop (opening signals only)
+    # Guard 5: High-water drawdown stop (opening signals only).
+    # Trip when the live compounding allocation falls max_drawdown_pct below its peak.
     if payload.signal in ("open_long", "open_short"):
-        _pnl_total         = float(strategy.get("pnl_total") or 0)
-        _anchor_pnl        = float(strategy.get("drawdown_anchor_pnl") or 0)
-        _cap_alloc         = float(strategy.get("capital_allocation") or 100)
-        _max_dd_pct        = float(strategy.get("max_drawdown_pct") or 50)
-        _loss              = _pnl_total - _anchor_pnl
-        _drawdown_limit    = -(_cap_alloc * _max_dd_pct / 100.0)
-        if _loss <= _drawdown_limit:
+        _cap_alloc  = float(strategy.get("capital_allocation") or 0)
+        _peak       = float(strategy.get("allocation_peak") or _cap_alloc)
+        _max_dd_pct = float(strategy.get("max_drawdown_pct") or 50)
+        _floor      = _peak * (1.0 - _max_dd_pct / 100.0)
+        if _peak > 0 and _cap_alloc <= _floor:
             try:
                 async with pool.acquire() as conn:
                     await conn.execute(
@@ -561,43 +560,12 @@ async def receive_webhook(
                 logger.error(f"Failed to auto-disable strategy {strategy_id} on drawdown stop: {_e}")
             _detail = (
                 f"Drawdown stop hit for strategy {strategy_id}: "
-                f"realized loss ${-_loss:.2f} >= ${-_drawdown_limit:.2f} "
-                f"({_max_dd_pct:.0f}% of ${_cap_alloc:.2f} allocation). "
-                f"Strategy auto-disabled."
+                f"allocation ${_cap_alloc:.2f} <= floor ${_floor:.2f} "
+                f"({_max_dd_pct:.0f}% below peak ${_peak:.2f}). Strategy auto-disabled."
             )
             logger.warning(
                 f"DRAWDOWN STOP strategy={strategy_id}: "
-                f"loss={_loss:.2f} limit={_drawdown_limit:.2f}"
-            )
-            await _finalize_signal_log(pool, signal_log_id, 429, "drawdown_stop", _detail, start_ms)
-            raise HTTPException(status_code=429, detail=_detail)
-
-    # Guard 5: Cumulative drawdown stop (opening signals only)
-    if payload.signal in ("open_long", "open_short"):
-        _pnl_total         = float(strategy.get("pnl_total") or 0)
-        _anchor_pnl        = float(strategy.get("drawdown_anchor_pnl") or 0)
-        _cap_alloc         = float(strategy.get("capital_allocation") or 100)
-        _max_dd_pct        = float(strategy.get("max_drawdown_pct") or 50)
-        _loss              = _pnl_total - _anchor_pnl
-        _drawdown_limit    = -(_cap_alloc * _max_dd_pct / 100.0)
-        if _loss <= _drawdown_limit:
-            try:
-                async with pool.acquire() as conn:
-                    await conn.execute(
-                        "UPDATE strategies SET enabled = false, updated_at = NOW() WHERE id = $1",
-                        strategy_id,
-                    )
-            except Exception as _e:
-                logger.error(f"Failed to auto-disable strategy {strategy_id} on drawdown stop: {_e}")
-            _detail = (
-                f"Drawdown stop hit for strategy {strategy_id}: "
-                f"realized loss ${-_loss:.2f} >= ${-_drawdown_limit:.2f} "
-                f"({_max_dd_pct:.0f}% of ${_cap_alloc:.2f} allocation). "
-                f"Strategy auto-disabled."
-            )
-            logger.warning(
-                f"DRAWDOWN STOP strategy={strategy_id}: "
-                f"loss={_loss:.2f} limit={_drawdown_limit:.2f}"
+                f"alloc={_cap_alloc:.2f} peak={_peak:.2f} floor={_floor:.2f}"
             )
             await _finalize_signal_log(pool, signal_log_id, 429, "drawdown_stop", _detail, start_ms)
             raise HTTPException(status_code=429, detail=_detail)
@@ -1019,9 +987,12 @@ async def _process_order(
                         await conn.execute(
                             """
                             UPDATE strategies
-                            SET pnl_today  = pnl_today + $1,
-                                pnl_total  = pnl_total + $1,
-                                updated_at = NOW()
+                            SET pnl_today          = pnl_today + $1,
+                                pnl_total          = pnl_total + $1,
+                                capital_allocation = capital_allocation + $1,
+                                allocation_peak    = GREATEST(COALESCE(allocation_peak, capital_allocation),
+                                                              capital_allocation + $1),
+                                updated_at         = NOW()
                             WHERE id = $2
                             """,
                             float(result_pnl),
@@ -1083,9 +1054,12 @@ async def _process_order(
                         await conn.execute(
                             """
                             UPDATE strategies
-                            SET pnl_today  = pnl_today + $1,
-                                pnl_total  = pnl_total + $1,
-                                updated_at = NOW()
+                            SET pnl_today          = pnl_today + $1,
+                                pnl_total          = pnl_total + $1,
+                                capital_allocation = capital_allocation + $1,
+                                allocation_peak    = GREATEST(COALESCE(allocation_peak, capital_allocation),
+                                                              capital_allocation + $1),
+                                updated_at         = NOW()
                             WHERE id = $2
                             """,
                             float(result_pnl),
@@ -1201,9 +1175,12 @@ async def _process_order(
                     await conn.execute(
                         """
                         UPDATE strategies
-                        SET pnl_today  = pnl_today + $1,
-                            pnl_total  = pnl_total + $1,
-                            updated_at = NOW()
+                        SET pnl_today          = pnl_today + $1,
+                            pnl_total          = pnl_total + $1,
+                            capital_allocation = capital_allocation + $1,
+                            allocation_peak    = GREATEST(COALESCE(allocation_peak, capital_allocation),
+                                                          capital_allocation + $1),
+                            updated_at         = NOW()
                         WHERE id = $2
                         """,
                         float(result_pnl),
