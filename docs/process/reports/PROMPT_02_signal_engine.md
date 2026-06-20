@@ -218,3 +218,33 @@ send `"signal_source": "tv_test"` in the webhook JSON payload.
 1. **`signal_source='tv_test'` not yet in orders** — TV Pine Script needs `"signal_source": "tv_test"` added to its alert webhook body. The diff infrastructure is correct and will match 100% once this is done.
 2. **`warmup_bars = RSI_LENGTH × 5 = 70`** — matches spec. Replay fetches warmup × 2 bars before the since window for full RSI convergence.
 3. **Exit signals (`close_long`/`close_short`) written to `shadow_signals`** — these appear as a side-effect of the position-flip logic (entry signals paired with conditional closes). Exit diff is out of scope for this prompt.
+
+---
+
+## Fixup: strategy_id-keyed ground truth
+
+`_fetch_tv_entries` and the `cmd_live` inner lookup now filter on `strategy_id` instead of
+`signal_source='tv_test'`. Since `tv_test_harness` is a dedicated strategy, all its orders are
+TV entries regardless of how the listener stores the payload's `signal_source` field.
+
+### `diff replay tv_test_harness 2026-06-19T00:00:00Z` (post-fixup)
+```
+2026-06-20 21:32:57,422 [INFO] __main__: replay: 9 local entry signals in window
+2026-06-20 21:32:57,668 [INFO] __main__: replay: 0 tv_test entry orders in window
+BAR (UTC)               TV signal       Local signal      Verdict
+----------------------------------------------------------------------
+2026-06-19 13:00        -               open_long         missing_in_tv
+2026-06-19 16:00        -               open_short        missing_in_tv
+2026-06-19 17:00        -               open_long         missing_in_tv
+2026-06-19 19:00        -               open_short        missing_in_tv
+2026-06-19 20:00        -               open_long         missing_in_tv
+2026-06-19 21:00        -               open_short        missing_in_tv
+2026-06-19 22:00        -               open_long         missing_in_tv
+2026-06-20 13:00        -               open_short        missing_in_tv
+2026-06-20 14:00        -               open_long         missing_in_tv
+
+Summary: 0 matched / 9 total, 9 mismatches
+```
+
+No SQL/parameter errors. Runs clean. 0 TV orders in window because no webhook has fired
+against `strategy_id='tv_test_harness'` yet — the diff is waiting on real orders, not broken.

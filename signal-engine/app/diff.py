@@ -4,7 +4,7 @@ Usage:
   python -m app.diff replay <strategy_id> <since_iso>
   python -m app.diff live   <strategy_id>
 
-Ground truth = public.orders WHERE signal_source='tv_test' AND signal IN ('open_long','open_short').
+Ground truth = public.orders for the given strategy_id (open_long/open_short).
 """
 import asyncio
 import logging
@@ -52,19 +52,22 @@ def _print_table(rows: list[dict]) -> None:
         print(f"{bar_str:<22}  {tv_sig:<14}  {loc_sig:<16}  {verdict}")
 
 
-async def _fetch_tv_entries(conn, since_ms: int) -> dict[int, dict]:
-    """Return dict of bar_open_ms -> order row for tv_test open entries."""
+async def _fetch_tv_entries(conn, strategy_id: str, since_ms: int) -> dict[int, dict]:
+    """Ground truth keyed on strategy_id: the test-harness strategy is dedicated,
+    so every one of its orders is a TV entry — independent of whether the listener
+    preserves the payload's signal_source."""
     tf_ms = _TIMEFRAME_MS["1h"]
     since_dt = _ms_to_dt(since_ms)
     rows = await conn.fetch(
         """
         SELECT id, received_at, signal, side
         FROM public.orders
-        WHERE signal_source = 'tv_test'
+        WHERE strategy_id = $1
           AND signal IN ('open_long', 'open_short')
-          AND received_at >= $1
+          AND received_at >= $2
         ORDER BY received_at
         """,
+        strategy_id,
         since_dt,
     )
     result: dict[int, dict] = {}
@@ -145,7 +148,7 @@ async def cmd_replay(strategy_id: str, since_iso: str) -> None:
     # Fetch TV ground-truth entries
     conn = await asyncpg.connect(settings.database_url)
     try:
-        tv_entries = await _fetch_tv_entries(conn, since_ms)
+        tv_entries = await _fetch_tv_entries(conn, strategy_id, since_ms)
     finally:
         await conn.close()
 
@@ -220,12 +223,13 @@ async def cmd_live(strategy_id: str) -> None:
             tv_row = await conn.fetchrow(
                 """
                 SELECT id, signal FROM public.orders
-                WHERE signal_source = 'tv_test'
+                WHERE strategy_id = $1
                   AND signal IN ('open_long', 'open_short')
-                  AND received_at >= $1
-                  AND received_at <  $2
+                  AND received_at >= $2
+                  AND received_at <  $3
                 LIMIT 1
                 """,
+                strategy_id,
                 _ms_to_dt(bar_ms),
                 _ms_to_dt(bar_ms + tf_ms),
             )
