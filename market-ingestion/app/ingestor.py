@@ -68,17 +68,38 @@ class Ingestor:
 
         # All candles except the last are definitively closed
         closed = raw[:-1]
-        for c in closed:
-            await self.store.add_closed_candle(self.canonical, self.timeframe, _candle_from_raw(c))
 
-        # Track the last (potentially forming) candle
+        # Idempotent: skip bars already in the stream (no duplicate `t` across restarts)
+        last_ts = await self.store.get_last_closed_ts(self.canonical, self.timeframe)
+        written = 0
+        skipped = 0
+        for c in closed:
+            if last_ts is not None and int(c[0]) <= last_ts:
+                skipped += 1
+                continue
+            await self.store.add_closed_candle(
+                self.canonical, self.timeframe, _candle_from_raw(c)
+            )
+            written += 1
+
+        # Warn (don't silently hole) if an outage exceeded the warmup window
+        if last_ts is not None and written > 0:
+            oldest_new = next(int(c[0]) for c in closed if int(c[0]) > last_ts)
+            if oldest_new > last_ts + self._tf_ms:
+                logger.warning(
+                    "Warmup discontinuity %s %s: stream tail t=%d, oldest new t=%d "
+                    "(outage exceeded warmup window; older gap not backfilled)",
+                    self.canonical, self.timeframe, last_ts, oldest_new,
+                )
+
         if raw:
             await self.store.set_forming_candle(
                 self.canonical, self.timeframe, _candle_from_raw(raw[-1])
             )
 
         logger.info(
-            "Warmup done: %s %s — %d closed bars written", self.canonical, self.timeframe, len(closed)
+            "Warmup done: %s %s — %d new bars written, %d already present",
+            self.canonical, self.timeframe, written, skipped,
         )
 
     async def run(self, pro_exchange) -> None:

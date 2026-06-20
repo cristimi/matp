@@ -229,3 +229,46 @@ No missing bars. Contiguous across the 3-minute outage window. ✓
 - `INGESTION_SUBSCRIPTIONS` was expanded to `BTC-USDT:1h,BTC-USDT:4h,BTC-USDT:1m` to satisfy Phase D's `align BTC-USDT 4h` check. The 4h subscription is additive and does not affect other phases.
 - A 1-bar startup gap (warmup REST → first WS event) was auto-stitched on initial boot — gap-stitch logic worked correctly in this real scenario before the explicit Phase E test.
 - No DB migrations used (next free slot is 024 as noted).
+
+---
+
+## Fixup: idempotent warmup
+
+**Change:** `warmup()` now reads `get_last_closed_ts()` before writing and skips any
+bar whose open-time `t` is already present in the stream. A discontinuity warning
+fires if the outage window exceeded the warmup window.
+
+**Test procedure:**
+1. Flushed all three streams (`DEL stream:candles:blofin:BTC-USDT:{1h,4h,1m}`) to start clean.
+2. `./scripts/redeploy.sh market-ingestion` — first deploy writes 500 fresh bars.
+3. `XLEN stream:candles:blofin:BTC-USDT:1h` → **500** (before second redeploy).
+4. `./scripts/redeploy.sh market-ingestion` — second deploy, idempotency test.
+5. `XLEN stream:candles:blofin:BTC-USDT:1h` → **500** (unchanged; no duplicates added).
+6. Duplicate check → **empty** (no duplicate timestamps).
+
+### Warmup log — first deploy (fresh stream)
+```
+2026-06-20 17:15:09,301 INFO app.ingestor: Warmup done: BTC-USDT 1h — 500 new bars written, 0 already present
+2026-06-20 17:15:09,362 INFO app.ingestor: Warmup done: BTC-USDT 4h — 500 new bars written, 0 already present
+2026-06-20 17:15:09,365 INFO app.ingestor: Warmup done: BTC-USDT 1m — 500 new bars written, 0 already present
+```
+
+### Warmup log — second deploy (stream already populated)
+```
+2026-06-20 17:16:19,352 INFO app.ingestor: Warmup done: BTC-USDT 1h — 0 new bars written, 500 already present
+2026-06-20 17:16:19,671 INFO app.ingestor: Warmup done: BTC-USDT 4h — 0 new bars written, 500 already present
+2026-06-20 17:16:19,676 INFO app.ingestor: Warmup done: BTC-USDT 1m — 0 new bars written, 500 already present
+```
+
+### XLEN before / after second redeploy
+```
+Before: 500
+After:  500   (+ a few new bars from elapsed time, within MAXLEN cap)
+```
+
+### Duplicate check
+```
+$ docker compose exec redis redis-cli XRANGE stream:candles:blofin:BTC-USDT:1h - + \
+    | awk '/^t$/{getline; print}' | sort | uniq -d
+(empty — PASS: no duplicates)
+```
