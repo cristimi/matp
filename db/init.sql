@@ -1,20 +1,8 @@
--- ============================================================
--- MATP — Database Baseline (db/init.sql)
--- GENERATED from live DB via pg_dump on 2026-06-17T20:41Z
--- Loaded once by Postgres at /docker-entrypoint-initdb.d/init.sql
---
--- Contains: full public + tester schema, and reference-data seeds for
---   config, assets, trading_pairs, ai_prompt_templates.
--- Excludes (intentionally): exchange_accounts credentials and ALL
---   operational/tester row data — fresh instances start empty.
--- Regenerate after applying new migrations to the live DB.
--- ============================================================
-
 --
 -- PostgreSQL database dump
 --
 
-\restrict e6dWmOaDigKvk6hPvKON45tFvVdzxDK3RvyLTedYXIm3txKQDhCQA2EMSgfmOah
+\restrict KDsbdpFynvghw4Dfy9flvxUdO3I18Q9lyc9gQERSuTIRa89GzZOdytZ7dG1rmsK
 
 -- Dumped from database version 16.14
 -- Dumped by pg_dump version 16.14
@@ -31,27 +19,24 @@ SET client_min_messages = warning;
 SET row_security = off;
 
 --
--- Name: public; Type: SCHEMA; Schema: -; Owner: -
---
-
-CREATE SCHEMA IF NOT EXISTS public;
-
--- Required extension (provides gen_random_bytes used in webhook_secret defaults)
-CREATE EXTENSION IF NOT EXISTS pgcrypto WITH SCHEMA public;
-
-
---
--- Name: SCHEMA public; Type: COMMENT; Schema: -; Owner: -
---
-
-COMMENT ON SCHEMA public IS 'standard public schema';
-
-
---
 -- Name: tester; Type: SCHEMA; Schema: -; Owner: -
 --
 
 CREATE SCHEMA tester;
+
+
+--
+-- Name: pgcrypto; Type: EXTENSION; Schema: -; Owner: -
+--
+
+CREATE EXTENSION IF NOT EXISTS pgcrypto WITH SCHEMA public;
+
+
+--
+-- Name: EXTENSION pgcrypto; Type: COMMENT; Schema: -; Owner: -
+--
+
+COMMENT ON EXTENSION pgcrypto IS 'cryptographic functions';
 
 
 --
@@ -323,7 +308,7 @@ CREATE TABLE public.exchange_accounts (
     is_active boolean DEFAULT true NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT exchange_accounts_mode_check CHECK (((mode)::text = ANY ((ARRAY['live'::character varying, 'demo'::character varying])::text[])))
+    CONSTRAINT exchange_accounts_mode_check CHECK (((mode)::text = ANY (ARRAY[('live'::character varying)::text, ('demo'::character varying)::text])))
 );
 
 
@@ -538,7 +523,9 @@ CREATE TABLE public.strategies (
     margin_per_trade numeric DEFAULT 5 NOT NULL,
     max_drawdown_pct numeric DEFAULT 50 NOT NULL,
     drawdown_anchor_pnl numeric DEFAULT 0 NOT NULL,
-    CONSTRAINT strategies_type_check CHECK (((type)::text = ANY ((ARRAY['internal'::character varying, 'tradingview'::character varying])::text[])))
+    initial_allocation numeric,
+    allocation_peak numeric,
+    CONSTRAINT strategies_type_check CHECK (((type)::text = ANY (ARRAY[('internal'::character varying)::text, ('tradingview'::character varying)::text])))
 );
 
 
@@ -920,7 +907,7 @@ CREATE TABLE tester.backtest_runs (
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
     dry_signal_mode boolean DEFAULT false NOT NULL,
-    CONSTRAINT backtest_runs_status_check CHECK (((status)::text = ANY ((ARRAY['pending'::character varying, 'running'::character varying, 'completed'::character varying, 'failed'::character varying, 'cancelled'::character varying, 'aborted_high_failure_rate'::character varying])::text[])))
+    CONSTRAINT backtest_runs_status_check CHECK (((status)::text = ANY (ARRAY[('pending'::character varying)::text, ('running'::character varying)::text, ('completed'::character varying)::text, ('failed'::character varying)::text, ('cancelled'::character varying)::text, ('aborted_high_failure_rate'::character varying)::text])))
 );
 
 
@@ -1067,7 +1054,9 @@ CREATE TABLE tester.strategies (
     source_matp_id character varying(100),
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    ai_config_defaulted boolean DEFAULT false NOT NULL
+    ai_config_defaulted boolean DEFAULT false NOT NULL,
+    initial_allocation numeric,
+    allocation_peak numeric
 );
 
 
@@ -1213,6 +1202,389 @@ ALTER TABLE ONLY tester.equity_curve ALTER COLUMN id SET DEFAULT nextval('tester
 --
 
 ALTER TABLE ONLY tester.ohlcv_cache ALTER COLUMN id SET DEFAULT nextval('tester.ohlcv_cache_id_seq'::regclass);
+
+
+--
+-- Data for Name: ai_prompt_templates; Type: TABLE DATA; Schema: public; Owner: -
+--
+
+COPY public.ai_prompt_templates (id, name, description, system_prompt, created_at) FROM stdin;
+trend_following	Trend Following	Identifies and trades sustained directional momentum using EMA crossovers and MACD confirmation.	You are a quantitative crypto analyst specializing in trend-following strategies on perpetual futures.\nYour primary signals are EMA crossovers (50/200), MACD histogram direction, and volume confirmation.\nYou prefer high-confidence setups with clear directional bias. You avoid counter-trend trades.\nIn ranging markets, output HOLD. Only recommend a trade when multiple indicators align.	2026-06-08 20:00:12.217763+00
+mean_reversion	Mean Reversion	Identifies overextended price moves and trades the return to equilibrium.	You are a quantitative crypto analyst specializing in mean-reversion strategies on perpetual futures.\nYour primary signals are RSI extremes (oversold <30, overbought >70), Bollinger Band squeezes, and VWAP deviation.\nYou trade against extended moves, expecting price to return toward the mean.\nYou require confirmation that momentum is slowing before recommending entry. You use tight stop losses.	2026-06-08 20:00:12.217763+00
+breakout	Breakout Hunter	Identifies and trades volume-confirmed breakouts above key structural levels.	You are a quantitative crypto analyst specializing in breakout strategies on perpetual futures.\nYour primary signals are price breaking above/below consolidation zones with volume confirmation (>150% average).\nYou look for compression patterns (BB squeeze, low ATR) followed by expansion.\nYou require the breakout candle to close convincingly beyond the level. False breakouts without volume are HOLD.	2026-06-08 20:00:12.217763+00
+scalper	Scalper	High-frequency short-duration trades on lower timeframes with tight risk management.	You are a quantitative crypto analyst specializing in scalping strategies on perpetual futures.\nYou trade on short timeframes (15m-1H). Your primary signals are VWAP positioning, order flow imbalance, and momentum bursts.\nYou use very tight stop losses (0.3-0.8%). You close positions quickly — target hold time under 2 hours.\nYou avoid entering during low-volume periods or major news events.	2026-06-08 20:00:12.217763+00
+conservative	Conservative	Low-frequency, high-conviction trades only. Capital preservation priority.	You are a conservative quantitative crypto analyst specializing in low-frequency, high-conviction setups on perpetual futures.\nYou require confluence of at least 4 independent signals before recommending a trade.\nYou express confidence above 0.85 only when the setup is exceptional. You default to HOLD when uncertain.\nYou give significant weight to macro conditions and sentiment data. Capital preservation always overrides opportunity.	2026-06-08 20:00:12.217763+00
+range_rotation	Range Rotation	Trades range boundaries (fade highs, buy lows) while the range holds; stands aside or flips directional when the range breaks with confirmation.	You are a quantitative crypto analyst specializing in range-trading strategies on perpetual futures.\n\nPHASE 1 — RANGE IDENTIFICATION:\nA valid range requires: at least 2 touches of support and 2 touches of resistance, flat EMA 50 (no sustained slope), RSI oscillating between roughly 35-65 without pinning at extremes, and price contained within the Bollinger Bands. If no valid range exists, output HOLD.\n\nPHASE 2 — TRADING THE RANGE:\nOpen SHORT near resistance when: price is within 1.5% of the range high, RSI > 60 and rolling over, and volume is declining on the approach (no breakout pressure).\nOpen LONG near support when: price is within 1.5% of the range low, RSI < 40 and curling up, and volume is declining on the approach.\nStop loss goes just beyond the range boundary (0.5-1.0% past it). Take profit targets the opposite side of the range or the midpoint (VWAP) for partial exits.\nNEVER enter in the middle of the range — the edge is only at the boundaries.\n\nPHASE 3 — BREAK DETECTION (overrides everything):\nThe range is considered BROKEN when: a candle closes beyond the boundary by more than 0.5x ATR(14) with volume above 150% of average, OR two consecutive closes beyond the boundary.\nIf holding a position when the range breaks AGAINST you: output close_long or close_short immediately. Do not average down. Do not wait for the stop.\nIf flat when a confirmed break occurs: you may output a trade in the DIRECTION of the break (open_long on upside break, open_short on downside break), but only with volume confirmation and a retest holding the broken level as new support/resistance. A break without retest or volume is a trap — output HOLD.\n\nRISK POSTURE:\nRange trades are mean-probability, small-edge trades: confidence should rarely exceed 0.80 inside the range. Break-and-retest trades may score higher. Funding rate extremes or major scheduled news invalidate the range thesis — output HOLD.	2026-06-09 20:31:58.132871+00
+\.
+
+
+--
+-- Data for Name: ai_risk_config; Type: TABLE DATA; Schema: public; Owner: -
+--
+
+COPY public.ai_risk_config (strategy_id, max_concurrent_trades, updated_at, updated_by) FROM stdin;
+\.
+
+
+--
+-- Data for Name: ai_risk_config_audit; Type: TABLE DATA; Schema: public; Owner: -
+--
+
+COPY public.ai_risk_config_audit (id, strategy_id, changed_at, changed_by, field_name, old_value, new_value) FROM stdin;
+\.
+
+
+--
+-- Data for Name: ai_signal_log; Type: TABLE DATA; Schema: public; Owner: -
+--
+
+COPY public.ai_signal_log (id, strategy_id, triggered_at, trigger_reason, cycle_interval, prompt_template, data_sources_used, context_tokens, proposed_action, confidence, reasoning, gate_passed, gate_rejection_reason, webhook_fired, webhook_status, order_id, dry_run, outcome_pnl, outcome_pct, outcome_filled_at, llm_provider, llm_model) FROM stdin;
+1	ai-btc-6f8c	2026-06-19 16:44:05.960138+00	startup	4h	mean_reversion	{technical,fear_greed,funding_rate,open_interest,news,btc_dominance}	759	hold	0.700	Price is significantly below VWAP (-11.64%), suggesting an extended downward move that could lead to mean reversion. However, RSI (42.54) is neutral and not oversold, and Bollinger Bands are not indicating a squeeze. MACD remains bearish. The strategy requires confirmation of slowing momentum before entry, which is not present, leading to insufficient confluence for a high-conviction trade setup at this time.	f	hold_or_adjust	f	\N	\N	f	\N	\N	\N	google	gemini-2.5-flash
+2	ai-btc-6f8c	2026-06-19 17:01:15.165703+00	startup	4h	mean_reversion	{technical,fear_greed,funding_rate,open_interest,news,btc_dominance}	\N	\N	\N	\N	f	llm_failed	f	\N	\N	f	\N	\N	\N	google	gemini-2.5-flash
+3	ai-btc-6f8c	2026-06-19 17:07:50.263627+00	startup	4h	mean_reversion	{technical,fear_greed,funding_rate,open_interest,news,btc_dominance}	\N	\N	\N	\N	f	llm_failed	f	\N	\N	f	\N	\N	\N	google	gemini-2.5-flash
+4	ai-btc-6f8c	2026-06-19 17:17:08.842125+00	startup	4h	mean_reversion	{technical,fear_greed,funding_rate,open_interest,news,btc_dominance}	760	hold	0.550	The RSI is neutral at 40.94, not indicating an oversold extreme (<30) as a primary signal for a mean-reversion long. Bollinger Bands are at the mid-band, not showing a squeeze. While price is significantly below VWAP (-11.92%) and the Fear & Greed Index is at 14 (Extreme Fear), there is no clear confirmation that momentum is slowing, with MACD still negative and price falling for 4 consecutive days. The lack of confluence from primary signals (RSI extreme, BB squeeze) and no clear momentum slowing prevents a high-conviction entry.	f	hold_or_adjust	f	\N	\N	f	\N	\N	\N	google	gemini-2.5-flash
+5	ai-btc-6f8c	2026-06-19 21:17:41.356903+00	scheduled	4h	mean_reversion	{technical,fear_greed,funding_rate,open_interest,news,btc_dominance}	760	hold	0.500	While price is significantly below VWAP (-11.63%), indicating an extended move, there is insufficient confluence for a high-conviction mean-reversion trade. RSI (43.16) is neutral, not indicating oversold conditions, and Bollinger Bands are at the mid-band, not showing a squeeze. Momentum slowing is not clearly confirmed by other indicators, and the overall trend remains bearish with price below both EMA50 and EMA200.	f	hold_or_adjust	f	\N	\N	f	\N	\N	\N	google	gemini-2.5-flash
+6	ai-btc-6f8c	2026-06-20 01:18:05.765615+00	scheduled	4h	mean_reversion	{technical,fear_greed,funding_rate,open_interest,news,btc_dominance}	\N	\N	\N	\N	f	llm_failed	f	\N	\N	f	\N	\N	\N	google	gemini-2.5-flash
+7	ai-btc-6f8c	2026-06-20 05:18:27.34984+00	scheduled	4h	mean_reversion	{technical,fear_greed,funding_rate,open_interest,news,btc_dominance}	759	hold	0.700	RSI (48.21) is neutral, not indicating an oversold condition. Bollinger Bands are at the mid-band, not showing a squeeze. While price is significantly below VWAP (-10.91%) and the Fear & Greed Index is at Extreme Fear (23), suggesting a potential mean-reversion long, the lack of an oversold RSI and the prevailing bearish trend (price below EMA50/200) prevent a high-conviction entry. Momentum slowing confirmation is insufficient given the overall bearish context from news and EMAs, despite a recent bullish MACD cross.	f	hold_or_adjust	f	\N	\N	f	\N	\N	\N	google	gemini-2.5-flash
+8	ai-btc-6f8c	2026-06-20 09:18:54.836709+00	scheduled	4h	mean_reversion	{technical,fear_greed,funding_rate,open_interest,news,btc_dominance}	759	open_long	0.700	Price is significantly below VWAP (-11.23%), indicating an extended move away from the mean, aligning with a mean-reversion strategy. The Fear & Greed Index is at 23 (Extreme Fear), suggesting potential capitulation. Volume is significantly below average (49.4% below 20MA), indicating slowing bearish momentum, which provides confirmation for entry.	f	confidence_below_threshold	f	\N	\N	f	\N	\N	\N	google	gemini-2.5-flash
+\.
+
+
+--
+-- Data for Name: ai_strategy_config; Type: TABLE DATA; Schema: public; Owner: -
+--
+
+COPY public.ai_strategy_config (strategy_id, interval_no_position, interval_position_open, interval_at_risk, at_risk_threshold_pct, use_technical, use_fear_greed, use_funding_rate, use_open_interest, use_news, use_economic_calendar, use_btc_dominance, use_macro, indicators, lookback_days, confidence_threshold, cooldown_entry_minutes, cooldown_increase_minutes, cooldown_stop_adj_minutes, template_id, custom_instructions, trigger_news_high, trigger_volume_spike, trigger_funding_spike, trigger_key_level, trigger_liquidation, volume_spike_threshold, funding_spike_threshold, dry_run, updated_at, updated_by, llm_provider, llm_model) FROM stdin;
+ai-btc-6f8c	4h	15m	5m	1.50	t	t	t	t	t	f	t	f	{RSI,MACD,EMA50,EMA200,BB,VWAP}	90	0.720	0	60	30	mean_reversion	\N	t	t	t	t	f	300.0	0.0500	f	2026-06-19 07:37:23.062254+00	\N	google	gemini-2.5-flash
+\.
+
+
+--
+-- Data for Name: assets; Type: TABLE DATA; Schema: public; Owner: -
+--
+
+COPY public.assets (id, symbol, name) FROM stdin;
+1	BTC	Bitcoin
+2	ETH	Ethereum
+3	USDT	Tether
+4	SOL	Solana
+\.
+
+
+--
+-- Data for Name: config; Type: TABLE DATA; Schema: public; Owner: -
+--
+
+COPY public.config (key, value, updated_at) FROM stdin;
+max_order_size_btc	1.0	2026-05-18 15:41:14.011312+00
+max_order_size_eth	10.0	2026-05-18 15:41:14.011312+00
+active_platform	hyperliquid	2026-06-11 18:20:58.536961+00
+\.
+
+
+--
+-- Data for Name: dead_letter_orders; Type: TABLE DATA; Schema: public; Owner: -
+--
+
+COPY public.dead_letter_orders (id, order_id, failed_at, reason, retry_count, last_retry) FROM stdin;
+\.
+
+
+--
+-- Data for Name: exchange_accounts; Type: TABLE DATA; Schema: public; Owner: -
+--
+
+COPY public.exchange_accounts (id, exchange, mode, label, credentials, is_active, created_at, updated_at) FROM stdin;
+blofin-blofin-demo-v5vr	blofin	demo	Blofin Demo	\\xefa001667ae7edc95b7fc7dcc476f35842974a941db7417048c7370e8476c2fd5f721ba8cebae39d164b8f5fbfb739be547e58f6e79c84dd9070e88b92bce6cd1aacfc9506c462bdaf3914f98466173a8615375de97ecdb1a51448ad211e8969a9758a1281959b01289e06e337f7182cb02921dffac8111a078ddda448224b468685f64e1e8988b3f49a4f33a1bf3e3afae279f7	t	2026-06-19 07:31:54.001685+00	2026-06-19 07:31:55.761355+00
+hyperliquid-hyperliquid-hqdy	hyperliquid	demo	Hyperliquid	\\xd3035553411ea7dae3646e05282df7624092efab5484489ad13d8d4066581cfec0bf0d86ab2c58f9b6dce7723d4c62b377a5b27284159bc0c70571fedf234c8e95abdd193282ae31c170e54eec7bf9e2d82ac4de2486f173dfbf5efe7b4a61e4babdc0d570a2c9c38b62369f34e7bf444ed4d10d7379712159ac421e12a4c5a663d274cfe78be143930f020e0445a72184c9c005dff1933b621e6928e5fd864da8b09b480bcfd1172e2d32	t	2026-06-19 07:35:08.333053+00	2026-06-19 07:35:09.215327+00
+\.
+
+
+--
+-- Data for Name: order_events; Type: TABLE DATA; Schema: public; Owner: -
+--
+
+COPY public.order_events (id, order_id, event_time, from_status, to_status, message) FROM stdin;
+\.
+
+
+--
+-- Data for Name: order_execution_log; Type: TABLE DATA; Schema: public; Owner: -
+--
+
+COPY public.order_execution_log (id, signal_log_id, account_id, exchange, exchange_order_id, client_order_id, symbol, side, order_type, requested_size, requested_price, status, cumulative_filled, avg_fill_price, exchange_fee, error_message, placed_at, filled_at, created_at, updated_at) FROM stdin;
+1	2	hyperliquid-hyperliquid-hqdy	hyperliquid	\N	6093ff34-e25c-4af9-b867-afd4970894ff	HYPE-USDT	buy	market	3.920031359999999853727103982237167656421661376953125	\N	rejected	0	0	0	Order could not immediately match against any resting orders. asset=135	2026-06-19 10:06:43.617898+00	\N	2026-06-19 10:06:43.606081+00	2026-06-19 10:06:46.781172+00
+2	3	hyperliquid-hyperliquid-hqdy	hyperliquid	\N	451b27f2-fa9b-4005-b939-7cc62c2c00d7	HYPE-USDT	buy	market	2.7713113800000002129308995790779590606689453125	\N	rejected	0	0	0	Order could not immediately match against any resting orders. asset=135	2026-06-19 13:26:24.15206+00	\N	2026-06-19 13:26:24.131661+00	2026-06-19 13:26:27.253917+00
+3	4	hyperliquid-hyperliquid-hqdy	hyperliquid	55246830057	a13646af-f431-424d-92dd-8c78f182bf04	BTC-USDT	buy	market	0.003185519999999999844753073574565860326401889324188232421875	\N	filled	0	0	0	\N	2026-06-19 13:31:51.033994+00	2026-06-19 13:31:54.527183+00	2026-06-19 13:31:51.012293+00	2026-06-19 13:31:54.527492+00
+4	5	blofin-blofin-demo-v5vr	blofin	1000130566359	00832430-ae1c-488b-9a3c-96992de75f91	HYPE-USDT	buy	market	2.93461674000000005690935722668655216693878173828125	\N	filled	0	0	0	\N	2026-06-19 13:37:16.879012+00	2026-06-19 13:37:20.177903+00	2026-06-19 13:37:16.861774+00	2026-06-19 13:37:20.178247+00
+\.
+
+
+--
+-- Data for Name: orders; Type: TABLE DATA; Schema: public; Owner: -
+--
+
+COPY public.orders (id, received_at, symbol, side, signal, order_type, size, price, leverage, margin_mode, tp_price, sl_price, platform, strategy_id, status, exchange_order_id, pnl, raw_webhook, raw_response, error_msg, updated_at, signal_source, signal_metadata, indicator_price, actual_fill_price, pair_id, account_id, closes_position_id) FROM stdin;
+4351ffc6-026b-4b2a-873b-69bfe8afb659	2026-06-19 10:06:43.314375+00	HYPE-USDT	buy	open_long	market	3.92003136	\N	10	isolated	\N	46.4282	auto	hype-test-7db4	rejected	\N	\N	{"side": "buy", "size": "3.92003136", "price": null, "signal": "open_long", "leverage": 10, "sl_price": "46.4282", "tp_price": null, "timestamp": "2026-06-19T10:06:41Z", "base_asset": "HYPE", "order_type": "market", "margin_mode": null, "quote_asset": "USDT", "signal_source": "tradingview", "indicator_price": null, "signal_metadata": {"entry_ref": 51.02, "sl_source": "liquidation_safe", "used_size": 3.92003136, "original_size": 5.0, "sl_distance_pct": 9.0, "ref_price_source": "exchange_mark", "size_scaled_to_margin": true}, "target_position": null}	{"status": "ok", "response": {"data": {"statuses": [{"error": "Order could not immediately match against any resting orders. asset=135"}]}, "type": "order"}}	Order could not immediately match against any resting orders. asset=135	2026-06-19 10:06:46.826504+00	tradingview	{"entry_ref": 51.02, "sl_source": "liquidation_safe", "used_size": 3.92003136, "original_size": 5.0, "sl_distance_pct": 9.0, "ref_price_source": "exchange_mark", "size_scaled_to_margin": true}	\N	\N	\N	\N	\N
+84e79694-a141-4cd1-9952-b4ff84cef2b4	2026-06-19 13:26:23.719437+00	HYPE-USDT	buy	open_long	market	2.77131138	\N	10	isolated	\N	65.6729	auto	hype-test-7db4	rejected	\N	\N	{"side": "buy", "size": "2.77131138", "price": null, "signal": "open_long", "leverage": 10, "sl_price": "65.6729", "tp_price": null, "timestamp": "2026-06-19T13:26:20Z", "base_asset": "HYPE", "order_type": "market", "margin_mode": null, "quote_asset": "USDT", "signal_source": "tradingview", "indicator_price": null, "signal_metadata": {"entry_ref": 72.168, "sl_source": "liquidation_safe", "used_size": 2.77131138, "original_size": 5.0, "sl_distance_pct": 9.0, "ref_price_source": "exchange_mark", "size_scaled_to_margin": true}, "target_position": null}	{"status": "ok", "response": {"data": {"statuses": [{"error": "Order could not immediately match against any resting orders. asset=135"}]}, "type": "order"}}	Order could not immediately match against any resting orders. asset=135	2026-06-19 13:26:27.276302+00	tradingview	{"entry_ref": 72.168, "sl_source": "liquidation_safe", "used_size": 2.77131138, "original_size": 5.0, "sl_distance_pct": 9.0, "ref_price_source": "exchange_mark", "size_scaled_to_margin": true}	\N	\N	\N	\N	\N
+1ac4c406-3347-474f-85d8-89c1ec1b1b9f	2026-06-19 13:31:50.552333+00	BTC-USDT	buy	open_long	market	0.00318552	\N	40	isolated	\N	61842.2	auto	tv-btc-test-hl-94e1	filled	55246830057	\N	{"side": "buy", "size": "0.00318552", "price": null, "signal": "open_long", "leverage": 40, "sl_price": "61842.2", "tp_price": null, "timestamp": "2026-06-19T13:31:48Z", "base_asset": "BTC", "order_type": "market", "margin_mode": null, "quote_asset": "USDT", "signal_source": "tradingview", "indicator_price": null, "signal_metadata": {"entry_ref": 62784.0, "sl_source": "liquidation_safe", "used_size": 0.00318552, "original_size": 0.05, "sl_distance_pct": 1.5001, "ref_price_source": "exchange_mark", "size_scaled_to_margin": true}, "target_position": null}	{"status": "ok", "response": {"data": {"statuses": [{"filled": {"oid": 55246830057, "avgPx": "62790.0", "totalSz": "0.00319"}}, "waitingForTrigger"]}, "type": "order"}}	\N	2026-06-19 13:31:54.579475+00	tradingview	{"entry_ref": 62784.0, "sl_source": "liquidation_safe", "used_size": 0.00318552, "original_size": 0.05, "sl_distance_pct": 1.5001, "ref_price_source": "exchange_mark", "size_scaled_to_margin": true}	\N	62790.0	\N	\N	\N
+0728af9b-8c17-4d55-992e-e02a71077ffa	2026-06-19 13:37:16.519607+00	HYPE-USDT	buy	open_long	market	2.93461674	\N	10	isolated	\N	62.0183	auto	hype-test-7db4	filled	1000130566359	0	{"side": "buy", "size": "2.93461674", "price": null, "signal": "open_long", "leverage": 10, "sl_price": "62.0183", "tp_price": null, "timestamp": "2026-06-19T13:37:10Z", "base_asset": "HYPE", "order_type": "market", "margin_mode": null, "quote_asset": "USDT", "signal_source": "tradingview", "indicator_price": null, "signal_metadata": {"entry_ref": 68.152, "sl_source": "liquidation_safe", "used_size": 2.93461674, "original_size": 5.0, "sl_distance_pct": 9.0, "ref_price_source": "exchange_mark", "size_scaled_to_margin": true}, "target_position": null}	{"msg": "", "code": "0", "data": [{"msg": "Order placed", "code": "0", "orderId": "1000130566359", "clientOrderId": ""}]}	\N	2026-06-19 13:37:20.221178+00	tradingview	{"entry_ref": 68.152, "sl_source": "liquidation_safe", "used_size": 2.93461674, "original_size": 5.0, "sl_distance_pct": 9.0, "ref_price_source": "exchange_mark", "size_scaled_to_margin": true}	\N	68.151	\N	\N	\N
+\.
+
+
+--
+-- Data for Name: signal_log; Type: TABLE DATA; Schema: public; Owner: -
+--
+
+COPY public.signal_log (id, received_at, source_ip, strategy_id, http_status, outcome, error_detail, raw_body, duration_ms, ai_reasoning, ai_confidence) FROM stdin;
+1	2026-06-19 10:05:59.820866+00	172.18.0.12	hype-test-7db4	422	guard_rejected	Leverage 20x exceeds strategy maximum of 10x for strategy hype-test-7db4.	{"side": "buy", "size": "5", "token": "a358dde02769b0482d121843e1a2cd94", "signal": "open_long", "leverage": "20", "timestamp": "2026-06-19T10:05:58Z", "base_asset": "HYPE", "order_type": "market", "quote_asset": "USDT"}	61	\N	\N
+2	2026-06-19 10:06:42.100561+00	172.18.0.12	hype-test-7db4	200	route_failed	Order could not immediately match against any resting orders. asset=135	{"side": "buy", "size": "5", "token": "a358dde02769b0482d121843e1a2cd94", "signal": "open_long", "leverage": "10", "timestamp": "2026-06-19T10:06:41Z", "base_asset": "HYPE", "order_type": "market", "quote_asset": "USDT"}	4736	\N	\N
+3	2026-06-19 13:26:22.225232+00	172.18.0.12	hype-test-7db4	200	route_failed	Order could not immediately match against any resting orders. asset=135	{"side": "buy", "size": "5", "token": "a358dde02769b0482d121843e1a2cd94", "signal": "open_long", "leverage": "10", "timestamp": "2026-06-19T13:26:20Z", "base_asset": "HYPE", "order_type": "market", "quote_asset": "USDT"}	5062	\N	\N
+4	2026-06-19 13:31:49.240853+00	172.18.0.12	tv-btc-test-hl-94e1	200	filled	\N	{"side": "buy", "size": "0.05", "token": "a18117c6aab67a60347d295ec47baafa", "signal": "open_long", "leverage": "40", "timestamp": "2026-06-19T13:31:48Z", "base_asset": "BTC", "order_type": "market", "quote_asset": "USDT"}	5355	\N	\N
+5	2026-06-19 13:37:15.806405+00	172.18.0.12	hype-test-7db4	200	filled	\N	{"side": "buy", "size": "5", "token": "a358dde02769b0482d121843e1a2cd94", "signal": "open_long", "leverage": "10", "timestamp": "2026-06-19T13:37:10Z", "base_asset": "HYPE", "order_type": "market", "quote_asset": "USDT"}	4433	\N	\N
+\.
+
+
+--
+-- Data for Name: strategies; Type: TABLE DATA; Schema: public; Owner: -
+--
+
+COPY public.strategies (id, name, class, symbol, "interval", platform, enabled, config_yaml, created_at, updated_at, webhook_secret, webhook_enabled, description, platform_override, max_daily_signals, blofin_token, max_leverage, signals_today, pnl_today, pnl_total, win_count, loss_count, last_signal_at, tags, type, pair_id, account_id, allow_quote_variants, allow_cross_charting, default_leverage, is_deleted, config, margin_mode, strategy_source, capital_allocation, margin_per_trade, max_drawdown_pct, drawdown_anchor_pnl, initial_allocation, allocation_peak) FROM stdin;
+tv-btc-test-hl-94e1	TV BTC Test HL	webhook	BTC-USDT	1h	auto	t		2026-06-19 13:30:15.758677+00	2026-06-20 10:15:18.74637+00	a18117c6aab67a60347d295ec47baafa	t		\N	500	\N	40	1	0	0	0	0	2026-06-19 13:31:50.580053+00	{}	internal	\N	hyperliquid-hyperliquid-hqdy	t	f	20	f	{}	isolated	tradingview	100	5	50	0	100	100
+hype-test-7db4	HYPE Test	webhook	HYPE-USDT	4h	auto	t		2026-06-19 07:39:00.475144+00	2026-06-20 10:15:18.74637+00	a358dde02769b0482d121843e1a2cd94	t		\N	500	\N	10	3	0	0	0	0	2026-06-19 13:37:16.547791+00	{}	internal	\N	blofin-blofin-demo-v5vr	t	f	10	f	{}	isolated	tradingview	200	20	75	0	200	200
+ai-btc-6f8c	AI BTC	webhook	BTC-USDT	1h	auto	t		2026-06-19 07:37:22.895888+00	2026-06-20 10:15:18.74637+00	50be8bd56dd338cec7292aec27919e92	t		\N	500	\N	40	0	0	0	0	0	\N	{}	internal	\N	hyperliquid-hyperliquid-hqdy	t	f	10	f	{}	isolated	ai_engine	100	10	50	0	100	100
+\.
+
+
+--
+-- Data for Name: strategy_performance; Type: TABLE DATA; Schema: public; Owner: -
+--
+
+COPY public.strategy_performance (id, strategy_id, period_type, period_date, total_signals, filled_orders, failed_orders, rejected_orders, winning_trades, losing_trades, neutral_trades, win_rate, total_pnl, avg_pnl, median_pnl, max_win, max_loss, consecutive_wins, consecutive_losses, profit_factor, largest_drawdown, calculated_at, updated_at) FROM stdin;
+\.
+
+
+--
+-- Data for Name: strategy_positions; Type: TABLE DATA; Schema: public; Owner: -
+--
+
+COPY public.strategy_positions (id, strategy_id, exchange, symbol, side, entry_price, current_price, size, leverage, margin_mode, pnl_unrealized, pnl_realized, status, opening_order_id, closing_order_id, opened_at, closed_at, created_at, updated_at, closing_price, liquidation_price, pair_id, close_reason, reconcile_miss_count, reconcile_divergent, reconcile_exchange_size, reconcile_divergence_at) FROM stdin;
+c8927ca5-917a-45b7-83e0-c79750770aaf	tv-btc-test-hl-94e1	auto	BTC-USDT	long	62790.0	62790.0	0.00318552	40	isolated	\N	0	open	1ac4c406-3347-474f-85d8-89c1ec1b1b9f	\N	2026-06-19 13:31:54.861506+00	\N	2026-06-19 13:31:54.861506+00	2026-06-19 13:31:54.861506+00	\N	\N	1	\N	0	f	\N	\N
+c495d9e8-e208-4a1a-8f88-11647abbe7e6	hype-test-7db4	auto	HYPE-USDT	long	68.151	68.151	2.9000000000000000000	10	isolated	\N	0	open	0728af9b-8c17-4d55-992e-e02a71077ffa	\N	2026-06-19 13:37:20.433483+00	\N	2026-06-19 13:37:20.433483+00	2026-06-19 13:37:20.433483+00	\N	\N	\N	\N	0	f	\N	\N
+\.
+
+
+--
+-- Data for Name: strategy_stats; Type: TABLE DATA; Schema: public; Owner: -
+--
+
+COPY public.strategy_stats (id, strategy_id, period_date, trades_count, trades_won, trades_lost, win_rate, pnl_total, pnl_avg, max_drawdown, capital_deployed, leverage_avg, created_at, updated_at) FROM stdin;
+\.
+
+
+--
+-- Data for Name: strategy_webhook_calls; Type: TABLE DATA; Schema: public; Owner: -
+--
+
+COPY public.strategy_webhook_calls (id, strategy_id, received_at, http_status, error_message, source_ip) FROM stdin;
+1	hype-test-7db4	2026-06-19 10:06:43.295173+00	200	\N	\N
+2	hype-test-7db4	2026-06-19 13:26:23.711157+00	200	\N	\N
+3	tv-btc-test-hl-94e1	2026-06-19 13:31:50.546764+00	200	\N	\N
+4	hype-test-7db4	2026-06-19 13:37:16.496606+00	200	\N	\N
+\.
+
+
+--
+-- Data for Name: trading_pairs; Type: TABLE DATA; Schema: public; Owner: -
+--
+
+COPY public.trading_pairs (id, base_asset_id, quote_asset_id, exchange_meta) FROM stdin;
+1	1	3	{"blofin": {"instId": "BTC-USDT"}}
+\.
+
+
+--
+-- Data for Name: ai_risk_config; Type: TABLE DATA; Schema: tester; Owner: -
+--
+
+COPY tester.ai_risk_config (id, strategy_id, max_position_size_pct, max_concurrent_trades, created_at, updated_at) FROM stdin;
+\.
+
+
+--
+-- Data for Name: ai_signal_log; Type: TABLE DATA; Schema: tester; Owner: -
+--
+
+COPY tester.ai_signal_log (id, backtest_run_id, strategy_id, triggered_at, trigger_reason, cycle_interval, prompt_template, data_sources_used, context_tokens, proposed_action, confidence, reasoning, gate_passed, gate_rejection_reason, dry_run, llm_provider, llm_model, webhook_fired, webhook_status, order_id) FROM stdin;
+\.
+
+
+--
+-- Data for Name: ai_strategy_config; Type: TABLE DATA; Schema: tester; Owner: -
+--
+
+COPY tester.ai_strategy_config (id, strategy_id, template_id, llm_provider, llm_model, use_technical, use_fear_greed, use_funding_rate, use_open_interest, use_news, use_btc_dominance, use_macro, indicators, lookback_days, confidence_threshold, cooldown_entry_minutes, cooldown_increase_minutes, cooldown_stop_adj_minutes, interval_no_position, interval_position_open, interval_at_risk, at_risk_threshold_pct, dry_run, custom_instructions, created_at, updated_at) FROM stdin;
+\.
+
+
+--
+-- Data for Name: backtest_runs; Type: TABLE DATA; Schema: tester; Owner: -
+--
+
+COPY tester.backtest_runs (id, strategy_id, timeframe, date_from, date_to, lookback_days, initial_balance, slippage_pct, fee_pct, status, candles_processed, total_candles, total_signals, gate_passed, llm_failures, llm_failure_rate, total_trades, winning_trades, losing_trades, win_rate, total_pnl, total_pnl_pct, profit_factor, max_drawdown_pct, sharpe_approx, long_count, short_count, avg_win, avg_loss, largest_win, largest_loss, total_fees_paid, llm_provider, llm_model, estimated_cost_usd, actual_tokens_used, error_message, started_at, completed_at, created_at, updated_at, dry_signal_mode) FROM stdin;
+\.
+
+
+--
+-- Data for Name: equity_curve; Type: TABLE DATA; Schema: tester; Owner: -
+--
+
+COPY tester.equity_curve (id, backtest_run_id, candle_ts, realized_balance, mark_balance, trade_pnl, drawdown_pct) FROM stdin;
+\.
+
+
+--
+-- Data for Name: ohlcv_cache; Type: TABLE DATA; Schema: tester; Owner: -
+--
+
+COPY tester.ohlcv_cache (id, symbol, timeframe, exchange, candle_ts, open, high, low, close, volume, fetched_at) FROM stdin;
+\.
+
+
+--
+-- Data for Name: orders; Type: TABLE DATA; Schema: tester; Owner: -
+--
+
+COPY tester.orders (id, backtest_run_id, received_at, candle_timestamp, symbol, side, signal, order_type, size, price, leverage, margin_mode, tp_price, sl_price, platform, strategy_id, status, actual_fill_price, pnl, fee, raw_webhook, signal_source, updated_at) FROM stdin;
+\.
+
+
+--
+-- Data for Name: strategies; Type: TABLE DATA; Schema: tester; Owner: -
+--
+
+COPY tester.strategies (id, name, class, symbol, "interval", platform, enabled, type, config_yaml, config, webhook_secret, webhook_enabled, description, platform_override, max_daily_signals, max_position_size, max_leverage, signals_today, pnl_today, pnl_total, win_count, loss_count, last_signal_at, tags, account_id, pair_id, allow_quote_variants, allow_cross_charting, default_leverage, margin_mode, is_deleted, blofin_token, source_matp_id, created_at, updated_at, ai_config_defaulted, initial_allocation, allocation_peak) FROM stdin;
+\.
+
+
+--
+-- Data for Name: strategy_positions; Type: TABLE DATA; Schema: tester; Owner: -
+--
+
+COPY tester.strategy_positions (id, backtest_run_id, strategy_id, exchange, symbol, side, entry_price, current_price, closing_price, size, leverage, margin_mode, pnl_unrealized, pnl_realized, fee_open, fee_close, status, opening_order_id, closing_order_id, close_reason, opened_at, closed_at, created_at, updated_at) FROM stdin;
+\.
+
+
+--
+-- Name: ai_risk_config_audit_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
+--
+
+SELECT pg_catalog.setval('public.ai_risk_config_audit_id_seq', 1, false);
+
+
+--
+-- Name: ai_signal_log_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
+--
+
+SELECT pg_catalog.setval('public.ai_signal_log_id_seq', 8, true);
+
+
+--
+-- Name: assets_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
+--
+
+SELECT pg_catalog.setval('public.assets_id_seq', 6, true);
+
+
+--
+-- Name: dead_letter_orders_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
+--
+
+SELECT pg_catalog.setval('public.dead_letter_orders_id_seq', 1, false);
+
+
+--
+-- Name: order_events_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
+--
+
+SELECT pg_catalog.setval('public.order_events_id_seq', 1, false);
+
+
+--
+-- Name: order_execution_log_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
+--
+
+SELECT pg_catalog.setval('public.order_execution_log_id_seq', 4, true);
+
+
+--
+-- Name: signal_log_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
+--
+
+SELECT pg_catalog.setval('public.signal_log_id_seq', 5, true);
+
+
+--
+-- Name: strategy_performance_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
+--
+
+SELECT pg_catalog.setval('public.strategy_performance_id_seq', 1, false);
+
+
+--
+-- Name: strategy_stats_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
+--
+
+SELECT pg_catalog.setval('public.strategy_stats_id_seq', 1, false);
+
+
+--
+-- Name: strategy_webhook_calls_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
+--
+
+SELECT pg_catalog.setval('public.strategy_webhook_calls_id_seq', 4, true);
+
+
+--
+-- Name: trading_pairs_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
+--
+
+SELECT pg_catalog.setval('public.trading_pairs_id_seq', 2, true);
+
+
+--
+-- Name: ai_risk_config_id_seq; Type: SEQUENCE SET; Schema: tester; Owner: -
+--
+
+SELECT pg_catalog.setval('tester.ai_risk_config_id_seq', 1, false);
+
+
+--
+-- Name: ai_signal_log_id_seq; Type: SEQUENCE SET; Schema: tester; Owner: -
+--
+
+SELECT pg_catalog.setval('tester.ai_signal_log_id_seq', 1, false);
+
+
+--
+-- Name: ai_strategy_config_id_seq; Type: SEQUENCE SET; Schema: tester; Owner: -
+--
+
+SELECT pg_catalog.setval('tester.ai_strategy_config_id_seq', 1, false);
+
+
+--
+-- Name: equity_curve_id_seq; Type: SEQUENCE SET; Schema: tester; Owner: -
+--
+
+SELECT pg_catalog.setval('tester.equity_curve_id_seq', 1, false);
+
+
+--
+-- Name: ohlcv_cache_id_seq; Type: SEQUENCE SET; Schema: tester; Owner: -
+--
+
+SELECT pg_catalog.setval('tester.ohlcv_cache_id_seq', 1, false);
 
 
 --
@@ -2169,117 +2541,5 @@ ALTER TABLE ONLY tester.strategy_positions
 -- PostgreSQL database dump complete
 --
 
-\unrestrict e6dWmOaDigKvk6hPvKON45tFvVdzxDK3RvyLTedYXIm3txKQDhCQA2EMSgfmOah
-
-
--- ─── Reference / seed data ──────────────────────────────────
---
--- PostgreSQL database dump
---
-
-\restrict Z9IuPekIhfk7nljsTHJJBPmrB7WRgAoKzDkUFmsReo8l2dpRHAcPNpZAHatCiEj
-
--- Dumped from database version 16.14
--- Dumped by pg_dump version 16.14
-
-SET statement_timeout = 0;
-SET lock_timeout = 0;
-SET idle_in_transaction_session_timeout = 0;
-SET client_encoding = 'UTF8';
-SET standard_conforming_strings = on;
-SELECT pg_catalog.set_config('search_path', '', false);
-SET check_function_bodies = false;
-SET xmloption = content;
-SET client_min_messages = warning;
-SET row_security = off;
-
---
--- Data for Name: ai_prompt_templates; Type: TABLE DATA; Schema: public; Owner: -
---
-
-INSERT INTO public.ai_prompt_templates (id, name, description, system_prompt, created_at) VALUES ('trend_following', 'Trend Following', 'Identifies and trades sustained directional momentum using EMA crossovers and MACD confirmation.', 'You are a quantitative crypto analyst specializing in trend-following strategies on perpetual futures.
-Your primary signals are EMA crossovers (50/200), MACD histogram direction, and volume confirmation.
-You prefer high-confidence setups with clear directional bias. You avoid counter-trend trades.
-In ranging markets, output HOLD. Only recommend a trade when multiple indicators align.', '2026-06-08 20:00:12.217763+00');
-INSERT INTO public.ai_prompt_templates (id, name, description, system_prompt, created_at) VALUES ('mean_reversion', 'Mean Reversion', 'Identifies overextended price moves and trades the return to equilibrium.', 'You are a quantitative crypto analyst specializing in mean-reversion strategies on perpetual futures.
-Your primary signals are RSI extremes (oversold <30, overbought >70), Bollinger Band squeezes, and VWAP deviation.
-You trade against extended moves, expecting price to return toward the mean.
-You require confirmation that momentum is slowing before recommending entry. You use tight stop losses.', '2026-06-08 20:00:12.217763+00');
-INSERT INTO public.ai_prompt_templates (id, name, description, system_prompt, created_at) VALUES ('breakout', 'Breakout Hunter', 'Identifies and trades volume-confirmed breakouts above key structural levels.', 'You are a quantitative crypto analyst specializing in breakout strategies on perpetual futures.
-Your primary signals are price breaking above/below consolidation zones with volume confirmation (>150% average).
-You look for compression patterns (BB squeeze, low ATR) followed by expansion.
-You require the breakout candle to close convincingly beyond the level. False breakouts without volume are HOLD.', '2026-06-08 20:00:12.217763+00');
-INSERT INTO public.ai_prompt_templates (id, name, description, system_prompt, created_at) VALUES ('scalper', 'Scalper', 'High-frequency short-duration trades on lower timeframes with tight risk management.', 'You are a quantitative crypto analyst specializing in scalping strategies on perpetual futures.
-You trade on short timeframes (15m-1H). Your primary signals are VWAP positioning, order flow imbalance, and momentum bursts.
-You use very tight stop losses (0.3-0.8%). You close positions quickly — target hold time under 2 hours.
-You avoid entering during low-volume periods or major news events.', '2026-06-08 20:00:12.217763+00');
-INSERT INTO public.ai_prompt_templates (id, name, description, system_prompt, created_at) VALUES ('conservative', 'Conservative', 'Low-frequency, high-conviction trades only. Capital preservation priority.', 'You are a conservative quantitative crypto analyst specializing in low-frequency, high-conviction setups on perpetual futures.
-You require confluence of at least 4 independent signals before recommending a trade.
-You express confidence above 0.85 only when the setup is exceptional. You default to HOLD when uncertain.
-You give significant weight to macro conditions and sentiment data. Capital preservation always overrides opportunity.', '2026-06-08 20:00:12.217763+00');
-INSERT INTO public.ai_prompt_templates (id, name, description, system_prompt, created_at) VALUES ('range_rotation', 'Range Rotation', 'Trades range boundaries (fade highs, buy lows) while the range holds; stands aside or flips directional when the range breaks with confirmation.', 'You are a quantitative crypto analyst specializing in range-trading strategies on perpetual futures.
-
-PHASE 1 — RANGE IDENTIFICATION:
-A valid range requires: at least 2 touches of support and 2 touches of resistance, flat EMA 50 (no sustained slope), RSI oscillating between roughly 35-65 without pinning at extremes, and price contained within the Bollinger Bands. If no valid range exists, output HOLD.
-
-PHASE 2 — TRADING THE RANGE:
-Open SHORT near resistance when: price is within 1.5% of the range high, RSI > 60 and rolling over, and volume is declining on the approach (no breakout pressure).
-Open LONG near support when: price is within 1.5% of the range low, RSI < 40 and curling up, and volume is declining on the approach.
-Stop loss goes just beyond the range boundary (0.5-1.0% past it). Take profit targets the opposite side of the range or the midpoint (VWAP) for partial exits.
-NEVER enter in the middle of the range — the edge is only at the boundaries.
-
-PHASE 3 — BREAK DETECTION (overrides everything):
-The range is considered BROKEN when: a candle closes beyond the boundary by more than 0.5x ATR(14) with volume above 150% of average, OR two consecutive closes beyond the boundary.
-If holding a position when the range breaks AGAINST you: output close_long or close_short immediately. Do not average down. Do not wait for the stop.
-If flat when a confirmed break occurs: you may output a trade in the DIRECTION of the break (open_long on upside break, open_short on downside break), but only with volume confirmation and a retest holding the broken level as new support/resistance. A break without retest or volume is a trap — output HOLD.
-
-RISK POSTURE:
-Range trades are mean-probability, small-edge trades: confidence should rarely exceed 0.80 inside the range. Break-and-retest trades may score higher. Funding rate extremes or major scheduled news invalidate the range thesis — output HOLD.', '2026-06-09 20:31:58.132871+00');
-
-
---
--- Data for Name: assets; Type: TABLE DATA; Schema: public; Owner: -
---
-
-INSERT INTO public.assets (id, symbol, name) VALUES (1, 'BTC', 'Bitcoin');
-INSERT INTO public.assets (id, symbol, name) VALUES (2, 'ETH', 'Ethereum');
-INSERT INTO public.assets (id, symbol, name) VALUES (3, 'USDT', 'Tether');
-INSERT INTO public.assets (id, symbol, name) VALUES (4, 'SOL', 'Solana');
-
-
---
--- Data for Name: config; Type: TABLE DATA; Schema: public; Owner: -
---
-
-INSERT INTO public.config (key, value, updated_at) VALUES ('max_order_size_btc', '1.0', '2026-05-18 15:41:14.011312+00');
-INSERT INTO public.config (key, value, updated_at) VALUES ('max_order_size_eth', '10.0', '2026-05-18 15:41:14.011312+00');
-INSERT INTO public.config (key, value, updated_at) VALUES ('active_platform', 'hyperliquid', '2026-06-11 18:20:58.536961+00');
-
-
---
--- Data for Name: trading_pairs; Type: TABLE DATA; Schema: public; Owner: -
---
-
-INSERT INTO public.trading_pairs (id, base_asset_id, quote_asset_id, exchange_meta) VALUES (1, 1, 3, '{"blofin": {"instId": "BTC-USDT"}}');
-
-
---
--- Name: assets_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
---
-
-SELECT pg_catalog.setval('public.assets_id_seq', 6, true);
-
-
---
--- Name: trading_pairs_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
---
-
-SELECT pg_catalog.setval('public.trading_pairs_id_seq', 2, true);
-
-
---
--- PostgreSQL database dump complete
---
-
-\unrestrict Z9IuPekIhfk7nljsTHJJBPmrB7WRgAoKzDkUFmsReo8l2dpRHAcPNpZAHatCiEj
+\unrestrict KDsbdpFynvghw4Dfy9flvxUdO3I18Q9lyc9gQERSuTIRa89GzZOdytZ7dG1rmsK
 
