@@ -30,6 +30,8 @@ interface Strategy {
   pnl_fees?:            number;
   total_return?:        number;
   capital_allocation?:  number;
+  initial_allocation?:  number;
+  allocation_peak?:     number;
   margin_per_trade?:    number;
   max_drawdown_pct?:    number;
   uptime_label?:        string;
@@ -160,6 +162,7 @@ function StrategyCard({
   const closedCount = strategy.closed_positions_count ?? 0;
   const winRate     = strategy.win_rate    ?? 0;
   const allocated   = Number(strategy.capital_allocation ?? 0);
+  const committed   = Number(strategy.initial_allocation ?? strategy.capital_allocation ?? 0);
   const realizedPnl = Number(strategy.realized_pnl ?? 0);
   const pnlFees     = strategy.pnl_fees    ?? 0;
   const totalReturn = strategy.total_return ?? 0;
@@ -371,7 +374,7 @@ function StrategyCard({
               {winRate.toFixed(1)}%
             </span>
           </GridCell>
-          <GridCell label="Allocated" last>
+          <GridCell label="Allocation" last>
             <span style={{
               fontFamily:'JetBrains Mono, monospace', fontSize:'13px',
               fontWeight:600, color:'var(--text)',
@@ -382,11 +385,13 @@ function StrategyCard({
         </div>
         {/* Bottom row */}
         <div style={{ display:'flex', width:'100%' }}>
-          <GridCell label="Spare">
+          <GridCell label="Committed">
             <span style={{
               fontFamily:'JetBrains Mono, monospace', fontSize:'13px',
               fontWeight:600, color:'var(--text)',
-            }}>—</span>
+            }}>
+              {committed.toFixed(1)}
+            </span>
           </GridCell>
           <GridCell label="P&L (Realized)">
             <div style={{ display:'flex', alignItems:'baseline', gap:'4px' }}>
@@ -594,16 +599,31 @@ function StrategyCommonFields({
       )}
       <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:'10px', marginBottom:'14px' }}>
         <div>
-          <label style={labelStyle}>Capital ($)</label>
-          <input type="number" step="0.01" min="0"
-            value={form.capital_allocation}
-            onChange={e => setForm(f => ({ ...f, capital_allocation: e.target.value }))}
-            style={inputStyle} />
-          {originalCapitalAllocation !== undefined &&
-           parseFloat(form.capital_allocation ?? '0') !== originalCapitalAllocation && (
-            <p style={{ fontSize:'10px', color:'#d97706', marginTop:'4px' }}>
-              Changing capital allocation will reset the drawdown anchor.
-            </p>
+          {originalCapitalAllocation !== undefined ? (
+            <>
+              <label style={labelStyle}>Deposit / Withdraw ($)</label>
+              <input type="number" step="0.01"
+                value={form.allocation_delta ?? '0'}
+                onChange={e => setForm(f => ({ ...f, allocation_delta: e.target.value }))}
+                placeholder="0"
+                style={inputStyle} />
+              {parseFloat(form.allocation_delta ?? '0') !== 0 && (
+                <p style={{ fontSize:'10px', color:'var(--blue)', marginTop:'4px' }}>
+                  New allocation: ${(originalCapitalAllocation + parseFloat(form.allocation_delta ?? '0')).toFixed(2)}
+                </p>
+              )}
+              <p style={{ fontSize:'10px', color:'var(--dim)', marginTop:'4px' }}>
+                Deposits/withdrawals shift the high-water mark by the same amount; they do not reset the drawdown.
+              </p>
+            </>
+          ) : (
+            <>
+              <label style={labelStyle}>Capital ($)</label>
+              <input type="number" step="0.01" min="0"
+                value={form.capital_allocation}
+                onChange={e => setForm(f => ({ ...f, capital_allocation: e.target.value }))}
+                style={inputStyle} />
+            </>
           )}
         </div>
         <div>
@@ -955,6 +975,7 @@ export default function Strategies() {
       interval:                   String(strategy.interval ?? '1h'),
       max_daily_signals:          String(strategy.max_daily_signals ?? 500),
       capital_allocation:         String(strategy.capital_allocation ?? 100),
+      allocation_delta:           '0',
       margin_per_trade:           String(strategy.margin_per_trade ?? 5),
       max_drawdown_pct:           String(strategy.max_drawdown_pct ?? 50),
       allow_quote_variants:       strategy.allow_quote_variants ?? false,
@@ -1002,8 +1023,8 @@ export default function Strategies() {
 
   const handleEditSubmit = async () => {
     if (!editTarget) return;
-    if (parseFloat(editForm.capital_allocation ?? '0') <= 0 || parseFloat(editForm.margin_per_trade ?? '0') <= 0) {
-      setEditError('Capital allocation and margin per trade must be greater than 0');
+    if (parseFloat(editForm.margin_per_trade ?? '0') <= 0) {
+      setEditError('Margin per trade must be greater than 0');
       return;
     }
     setEditLoading(true);
@@ -1019,7 +1040,7 @@ export default function Strategies() {
             margin_mode:          editForm.margin_mode,
             default_leverage:     parseInt(editForm.default_leverage),
             max_leverage:         parseInt(editForm.max_leverage),
-            capital_allocation:   parseFloat(editForm.capital_allocation),
+            allocation_delta:     parseFloat(editForm.allocation_delta ?? '0'),
             margin_per_trade:     parseFloat(editForm.margin_per_trade),
             max_drawdown_pct:     parseFloat(editForm.max_drawdown_pct),
             allow_quote_variants: editForm.allow_quote_variants,
@@ -1064,7 +1085,7 @@ export default function Strategies() {
             default_leverage:   parseInt(editForm.default_leverage),
             max_leverage:       parseInt(editForm.max_leverage),
             max_daily_signals:  parseInt(editForm.max_daily_signals),
-            capital_allocation: parseFloat(editForm.capital_allocation),
+            allocation_delta:   parseFloat(editForm.allocation_delta ?? '0'),
             margin_per_trade:   parseFloat(editForm.margin_per_trade),
             max_drawdown_pct:   parseFloat(editForm.max_drawdown_pct),
           }),
@@ -1073,10 +1094,6 @@ export default function Strategies() {
         if (!res.ok) {
           setEditError(data.error || 'Failed to update strategy');
           return;
-        }
-        if (data.drawdown_anchor_reset) {
-          setToast('Drawdown anchor reset — tracking restarts from current equity.');
-          setTimeout(() => setToast(null), 5000);
         }
         setEditTarget(null);
         setWebhookInfo(null);

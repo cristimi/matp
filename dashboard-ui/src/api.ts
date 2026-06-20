@@ -108,6 +108,8 @@ export interface Strategy {
   win_rate: number;
   total_trades: number;
   capital_allocation: number;
+  initial_allocation?: number;
+  allocation_peak?: number;
   margin_per_trade: number;
   max_drawdown_pct: number;
   total_return?: number;
