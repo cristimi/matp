@@ -129,14 +129,14 @@ router.get('/', async (_req: Request, res: Response) => {
           1)::float
         END                AS win_rate,
         CASE
-          WHEN COALESCE(s.capital_allocation, 0) = 0 THEN 0::float
+          WHEN COALESCE(s.initial_allocation, s.capital_allocation, 0) = 0 THEN 0::float
           ELSE ROUND(
             COALESCE((
               SELECT SUM(sp.pnl_realized)
               FROM strategy_positions sp
               WHERE sp.strategy_id = s.id AND sp.status = 'closed'
             ), 0)::numeric /
-            NULLIF(s.capital_allocation, 0)::numeric * 100,
+            NULLIF(COALESCE(s.initial_allocation, s.capital_allocation), 0)::numeric * 100,
           2)::float
         END                AS total_return,
         aic.dry_run                AS ai_dry_run,
@@ -181,7 +181,7 @@ async function getAccountAvailableBalance(accountId: string): Promise<number> {
 // Helper: total capital_allocation already committed on this account (excluding one strategy id)
 async function getAllocatedOnAccount(accountId: string, excludeId: string | null): Promise<number> {
   const result = await getPool().query(
-    `SELECT COALESCE(SUM(capital_allocation), 0) AS total
+    `SELECT COALESCE(SUM(COALESCE(initial_allocation, capital_allocation)), 0) AS total
      FROM strategies
      WHERE account_id = $1
        AND enabled = true
@@ -279,7 +279,8 @@ router.post('/', async (req: Request, res: Response) => {
         webhook_secret, webhook_enabled,
         default_leverage, margin_mode,
         max_leverage, max_daily_signals,
-        capital_allocation, margin_per_trade, max_drawdown_pct,
+        capital_allocation, initial_allocation, allocation_peak,
+        margin_per_trade, max_drawdown_pct,
         allow_quote_variants, allow_cross_charting,
         strategy_source, enabled
       ) VALUES (
@@ -287,7 +288,8 @@ router.post('/', async (req: Request, res: Response) => {
         'webhook', '',
         $7, true,
         $8, $9, $10, $11,
-        $12, $13, $14,
+        $12, $12, $12,
+        $13, $14,
         $15, $16,
         $17, true
       )`,
@@ -513,7 +515,7 @@ router.put('/:id', async (req: Request, res: Response) => {
     allow_cross_charting,
     max_leverage,
     max_daily_signals,
-    capital_allocation,
+    allocation_delta,
     margin_per_trade,
     max_drawdown_pct,
     account_id,
@@ -551,28 +553,42 @@ router.put('/:id', async (req: Request, res: Response) => {
     }
   }
 
-  // Fund cap check when capital_allocation is being changed
-  const allocationChanging = capital_allocation !== undefined;
+  // Allocation deposit/withdraw delta checks
+  const allocationChanging = allocation_delta !== undefined && Number(allocation_delta) !== 0;
   if (allocationChanging) {
     try {
-      const acctRow = await getPool().query(
-        `SELECT account_id FROM strategies WHERE id = $1`, [req.params.id]
+      const rowFetch = await getPool().query(
+        `SELECT account_id, capital_allocation, margin_per_trade, initial_allocation
+         FROM strategies WHERE id = $1`,
+        [req.params.id]
       );
-      if ((acctRow.rowCount ?? 0) > 0) {
-        const acctId         = acctRow.rows[0].account_id;
-        const newAlloc       = Number(capital_allocation);
-        const alreadyAlloc   = await getAllocatedOnAccount(acctId, req.params.id);
-        const availableFunds = await getAccountAvailableBalance(acctId);
-        if (availableFunds < Infinity && alreadyAlloc + newAlloc > availableFunds) {
+      if ((rowFetch.rowCount ?? 0) > 0) {
+        const { account_id: acctId, capital_allocation: currentAlloc, margin_per_trade: mpt, initial_allocation: initAlloc } = rowFetch.rows[0];
+        const delta          = Number(allocation_delta);
+        const newAlloc       = Number(currentAlloc) + delta;
+        const marginPerTrade = Number(mpt);
+
+        if (newAlloc < marginPerTrade) {
           return res.status(422).json({
-            error: `Insufficient free funds on account: $${newAlloc} requested, ` +
-                   `$${(availableFunds - alreadyAlloc).toFixed(2)} available ` +
-                   `($${alreadyAlloc.toFixed(2)} already allocated of $${availableFunds.toFixed(2)} total).`,
+            error: `Withdrawal would drop allocation below margin_per_trade ($${marginPerTrade.toFixed(2)}).`,
           });
+        }
+
+        if (delta > 0) {
+          const newCommitted   = Number(initAlloc) + delta;
+          const alreadyAlloc   = await getAllocatedOnAccount(acctId, req.params.id);
+          const availableFunds = await getAccountAvailableBalance(acctId);
+          if (availableFunds < Infinity && alreadyAlloc + newCommitted > availableFunds) {
+            return res.status(422).json({
+              error: `Insufficient free funds on account: $${newCommitted.toFixed(2)} committed after deposit, ` +
+                     `$${(availableFunds - alreadyAlloc).toFixed(2)} available ` +
+                     `($${alreadyAlloc.toFixed(2)} already allocated of $${availableFunds.toFixed(2)} total).`,
+            });
+          }
         }
       }
     } catch (e: any) {
-      console.warn(`Fund cap check on update failed (non-fatal): ${e.message}`);
+      console.warn(`Allocation delta check failed (non-fatal): ${e.message}`);
     }
   }
 
@@ -590,18 +606,19 @@ router.put('/:id', async (req: Request, res: Response) => {
          allow_cross_charting       = COALESCE($9, allow_cross_charting),
          max_leverage               = COALESCE($10, max_leverage),
          max_daily_signals          = COALESCE($11, max_daily_signals),
-         capital_allocation         = COALESCE($13, capital_allocation),
+         capital_allocation         = capital_allocation + COALESCE($13, 0),
+         initial_allocation         = initial_allocation + COALESCE($13, 0),
+         allocation_peak            = allocation_peak    + COALESCE($13, 0),
          margin_per_trade           = COALESCE($14, margin_per_trade),
          max_drawdown_pct           = COALESCE($15, max_drawdown_pct),
          account_id                 = COALESCE($16, account_id),
-         drawdown_anchor_pnl        = CASE WHEN $13 IS NOT NULL THEN pnl_total ELSE drawdown_anchor_pnl END,
          updated_at                 = NOW()
        WHERE id = $12
        RETURNING id, name, symbol, interval, enabled, webhook_enabled,
                  default_leverage, margin_mode,
                  allow_quote_variants, allow_cross_charting, account_id,
-                 capital_allocation, margin_per_trade, max_drawdown_pct,
-                 drawdown_anchor_pnl, pnl_total`,
+                 capital_allocation, initial_allocation, allocation_peak,
+                 margin_per_trade, max_drawdown_pct, pnl_total`,
       [
         name ?? null,
         normalisedSymbol,
@@ -615,9 +632,9 @@ router.put('/:id', async (req: Request, res: Response) => {
         max_leverage ?? null,
         max_daily_signals ?? null,
         req.params.id,
-        capital_allocation !== undefined ? Number(capital_allocation) : null,
-        margin_per_trade   !== undefined ? Number(margin_per_trade)   : null,
-        max_drawdown_pct   !== undefined ? Number(max_drawdown_pct)   : null,
+        allocation_delta !== undefined ? Number(allocation_delta) : null,
+        margin_per_trade !== undefined ? Number(margin_per_trade) : null,
+        max_drawdown_pct !== undefined ? Number(max_drawdown_pct) : null,
         account_id ?? null,
       ]
     );
@@ -627,7 +644,7 @@ router.put('/:id', async (req: Request, res: Response) => {
     const row = result.rows[0];
     res.json({
       ...row,
-      drawdown_anchor_reset: allocationChanging,
+      allocation_delta_applied: allocationChanging ? Number(allocation_delta) : 0,
     });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
@@ -661,7 +678,9 @@ router.post('/:id/start', async (req: Request, res: Response) => {
   try {
     const result = await getPool().query(
       `UPDATE strategies
-       SET enabled = true, updated_at = NOW()
+       SET enabled = true,
+           allocation_peak = CASE WHEN enabled = false THEN capital_allocation ELSE allocation_peak END,
+           updated_at = NOW()
        WHERE id = $1
        RETURNING id, enabled`,
       [req.params.id]
@@ -787,7 +806,14 @@ router.post('/:id/max-daily-signals', async (req: Request, res: Response) => {
 
 router.post('/:id/enable', async (req: Request, res: Response) => {
   try {
-    await getPool().query('UPDATE strategies SET enabled = true WHERE id = $1', [req.params.id]);
+    await getPool().query(
+      `UPDATE strategies
+       SET enabled = true,
+           allocation_peak = CASE WHEN enabled = false THEN capital_allocation ELSE allocation_peak END,
+           updated_at = NOW()
+       WHERE id = $1`,
+      [req.params.id]
+    );
     notifyReconcile(req.params.id);
     res.json({ message: 'Strategy enabled' });
   } catch (err) {
