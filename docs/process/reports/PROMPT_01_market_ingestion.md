@@ -144,7 +144,7 @@ Alignment check: BTC-USDT 1h, last 6 closed bars
   1781964000000    2026-06-20 14:00 UTC      63926.6000  YES
   1781967600000    2026-06-20 15:00 UTC      64135.5000  YES
 
-TV comparison: ____
+TV comparison: MATCH — sampled 1h and 4h closes match BLOFIN:BTCUSDT.P in UTC; open-times align.
 ```
 
 ### `validate align BTC-USDT 4h 6`
@@ -159,7 +159,7 @@ Alignment check: BTC-USDT 4h, last 6 closed bars
   1781942400000    2026-06-20 08:00 UTC      63652.8000  YES
   1781956800000    2026-06-20 12:00 UTC      64135.5000  YES
 
-TV comparison: ____
+TV comparison: MATCH — sampled 1h and 4h closes match BLOFIN:BTCUSDT.P in UTC; open-times align.
 ```
 
 All 1h bars land exactly on :00 minutes. All 4h bars land on 00/04/08/12/16/20:00 UTC anchors. ✓
