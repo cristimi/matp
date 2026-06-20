@@ -84,6 +84,11 @@ Changes required: DB migration, one line in `node_ingest.py`, `ai.ts` GET/PUT, U
 - `drawdown_anchor_pnl` is fully retired from all logic (column left in schema,
   drop deferred).
 
+**Phase 6 (2026-06-20):** the high-water drawdown stop now also fires on the
+breaching close (immediate auto-disable via `_disable_if_drawdown_breached`), not
+only on the next open signal. Open-time Guard 5 is retained as the backstop. Both
+paths share the `_is_drawdown_breached` pure helper (single source of truth).
+
 **Open tester-parity note:** strategy-tester backtest sizing does not yet apply
 the compounding rule — backtests still use the static `capital_allocation` seed.
 This divergence is accepted for now; tester parity is a separate backlog item.

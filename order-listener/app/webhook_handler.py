@@ -84,6 +84,47 @@ async def _verify_token(token: str, secret: str) -> bool:
     return hmac.compare_digest(token.encode(), secret.encode())
 
 
+def _is_drawdown_breached(cap_alloc: float, peak: float, max_dd_pct: float) -> bool:
+    """True if the live allocation has fallen max_dd_pct below its high-water peak.
+    Single source of truth for the high-water drawdown stop — used by open-time Guard 5
+    and by the on-close check."""
+    if peak <= 0:
+        return False
+    floor = peak * (1.0 - max_dd_pct / 100.0)
+    return cap_alloc <= floor
+
+
+async def _disable_if_drawdown_breached(pool, strategy_id: str) -> None:
+    """After a close updates the allocation, auto-disable the strategy if it has breached
+    its high-water drawdown floor. Makes the stop fire on the breaching close rather than
+    waiting for the next signal; open-time Guard 5 remains the backstop. No open order
+    exists at this point, so there is nothing to cancel — we only flip enabled=false."""
+    try:
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT enabled, capital_allocation, allocation_peak, max_drawdown_pct "
+                "FROM strategies WHERE id = $1",
+                strategy_id,
+            )
+            if not row or not row["enabled"]:
+                return
+            _cap  = float(row["capital_allocation"] or 0)
+            _peak = float(row["allocation_peak"] or _cap)
+            _dd   = float(row["max_drawdown_pct"] or 50)
+            if _is_drawdown_breached(_cap, _peak, _dd):
+                _floor = _peak * (1.0 - _dd / 100.0)
+                await conn.execute(
+                    "UPDATE strategies SET enabled = false, updated_at = NOW() WHERE id = $1",
+                    strategy_id,
+                )
+                logger.warning(
+                    f"DRAWDOWN STOP (on close) strategy={strategy_id}: "
+                    f"alloc={_cap:.2f} peak={_peak:.2f} floor={_floor:.2f} — auto-disabled"
+                )
+    except Exception as _e:
+        logger.error(f"drawdown-on-close check failed for {strategy_id}: {_e}")
+
+
 async def _log_webhook_call(pool, strategy_id: str, http_status: int, error_message: str | None = None) -> None:
     """Log webhook call attempt to the database."""
     async with pool.acquire() as conn:
@@ -549,7 +590,7 @@ async def receive_webhook(
         _peak       = float(strategy.get("allocation_peak") or _cap_alloc)
         _max_dd_pct = float(strategy.get("max_drawdown_pct") or 50)
         _floor      = _peak * (1.0 - _max_dd_pct / 100.0)
-        if _peak > 0 and _cap_alloc <= _floor:
+        if _is_drawdown_breached(_cap_alloc, _peak, _max_dd_pct):
             try:
                 async with pool.acquire() as conn:
                     await conn.execute(
@@ -999,6 +1040,7 @@ async def _process_order(
                             strategy['id'],
                         )
                     logger.debug(f"Updated pnl_today/total for {strategy['id']}: delta={result_pnl}")
+                    await _disable_if_drawdown_breached(pool, strategy['id'])
                 except Exception as e:
                     logger.warning(f"Failed to update pnl_today/total for {strategy['id']}: {e}")
 
@@ -1066,6 +1108,7 @@ async def _process_order(
                             strategy['id'],
                         )
                     logger.debug(f"Updated pnl_today/total for {strategy['id']}: delta={result_pnl}")
+                    await _disable_if_drawdown_breached(pool, strategy['id'])
                 except Exception as e:
                     logger.warning(f"Failed to update pnl_today/total for {strategy['id']}: {e}")
             return
@@ -1187,6 +1230,7 @@ async def _process_order(
                         strategy['id'],
                     )
                 logger.debug(f"Updated pnl_today/total for {strategy['id']}: delta={result_pnl}")
+                await _disable_if_drawdown_breached(pool, strategy['id'])
             except Exception as e:
                 logger.warning(f"Failed to update pnl_today/total for {strategy['id']}: {e}")
 
