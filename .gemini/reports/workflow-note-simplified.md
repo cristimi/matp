@@ -69,3 +69,6 @@ All checks pass.
 
 ## Commit
 
+```
+94a18d1 docs(claude.md): replace branch/PR policy with simple work-on-main workflow
+```
