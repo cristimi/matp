@@ -233,3 +233,24 @@ services:
         condition: service_healthy
     networks: [matp_net]
     restart: unless-stopped
+
+  social-listener:
+    build: ./social-listener
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql://matp:matp@postgres:5432/matp}
+      TG_API_ID: ${TG_API_ID:-0}
+      TG_API_HASH: ${TG_API_HASH:-}
+      TG_SESSION: ${TG_SESSION:-}
+      TG_CHANNEL: ${TG_CHANNEL:-AstronomerZero}
+      BACKFILL_LIMIT: ${BACKFILL_LIMIT:-50}
+      EXTRACTOR_PROVIDER: ${EXTRACTOR_PROVIDER:-anthropic}
+      EXTRACTOR_MODEL: ${EXTRACTOR_MODEL:-claude-sonnet-4-6}
+      EXTRACTOR_TEMPERATURE: ${EXTRACTOR_TEMPERATURE:-0.0}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [matp_net]
+    restart: unless-stopped
