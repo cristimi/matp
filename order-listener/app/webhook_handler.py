@@ -85,9 +85,7 @@ async def _verify_token(token: str, secret: str) -> bool:
 
 
 def _is_drawdown_breached(cap_alloc: float, peak: float, max_dd_pct: float) -> bool:
-    """True if the live allocation has fallen max_dd_pct below its high-water peak.
-    Single source of truth for the high-water drawdown stop — used by open-time Guard 5
-    and by the on-close check."""
+    """True if the live allocation has fallen max_dd_pct below its high-water peak."""
     if peak <= 0:
         return False
     floor = peak * (1.0 - max_dd_pct / 100.0)
@@ -95,34 +93,79 @@ def _is_drawdown_breached(cap_alloc: float, peak: float, max_dd_pct: float) -> b
 
 
 async def _disable_if_drawdown_breached(pool, strategy_id: str) -> None:
-    """After a close updates the allocation, auto-disable the strategy if it has breached
-    its high-water drawdown floor. Makes the stop fire on the breaching close rather than
-    waiting for the next signal; open-time Guard 5 remains the backstop. No open order
-    exists at this point, so there is nothing to cancel — we only flip enabled=false."""
+    """After a close updates the allocation, flatten all open legs then auto-disable
+    the strategy if it has breached its high-water drawdown floor."""
     try:
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
-                "SELECT enabled, capital_allocation, allocation_peak, max_drawdown_pct "
-                "FROM strategies WHERE id = $1",
+                "SELECT id, enabled, capital_allocation, allocation_peak, max_drawdown_pct, "
+                "account_id FROM strategies WHERE id = $1",
                 strategy_id,
             )
-            if not row or not row["enabled"]:
-                return
-            _cap  = float(row["capital_allocation"] or 0)
-            _peak = float(row["allocation_peak"] or _cap)
-            _dd   = float(row["max_drawdown_pct"] or 50)
-            if _is_drawdown_breached(_cap, _peak, _dd):
-                _floor = _peak * (1.0 - _dd / 100.0)
+        if not row or not row["enabled"]:
+            return
+        strategy = dict(row)
+        _cap  = float(strategy["capital_allocation"] or 0)
+        _peak = float(strategy["allocation_peak"] or _cap)
+        _dd   = float(strategy["max_drawdown_pct"] or 50)
+        if _is_drawdown_breached(_cap, _peak, _dd):
+            _floor = _peak * (1.0 - _dd / 100.0)
+            await _flatten_strategy_positions(pool, strategy)
+            async with pool.acquire() as conn:
                 await conn.execute(
                     "UPDATE strategies SET enabled = false, updated_at = NOW() WHERE id = $1",
                     strategy_id,
                 )
-                logger.warning(
-                    f"DRAWDOWN STOP (on close) strategy={strategy_id}: "
-                    f"alloc={_cap:.2f} peak={_peak:.2f} floor={_floor:.2f} — auto-disabled"
-                )
+            logger.warning(
+                f"DRAWDOWN STOP (on close) strategy={strategy_id}: "
+                f"alloc={_cap:.2f} peak={_peak:.2f} floor={_floor:.2f} — auto-disabled + flattened"
+            )
     except Exception as _e:
         logger.error(f"drawdown-on-close check failed for {strategy_id}: {_e}")
+
+
+async def _book_realized_pnl(pool, strategy_id: str, pnl) -> None:
+    """Book one realized-PnL event into the strategy's compounding allocation, move the
+    high-water peak, and evaluate the drawdown stop. Call EXACTLY ONCE per position close,
+    gated by the caller on the pnl_realized NULL->value transition."""
+    if pnl is None:
+        return
+    try:
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE strategies
+                SET pnl_today          = pnl_today + $1,
+                    pnl_total          = pnl_total + $1,
+                    capital_allocation = capital_allocation + $1,
+                    allocation_peak    = GREATEST(COALESCE(allocation_peak, capital_allocation),
+                                                  capital_allocation + $1),
+                    updated_at         = NOW()
+                WHERE id = $2
+                """,
+                float(pnl), strategy_id,
+            )
+        await _disable_if_drawdown_breached(pool, strategy_id)
+    except Exception as e:
+        logger.warning(f"_book_realized_pnl failed for {strategy_id}: {e}")
+
+
+async def _flatten_strategy_positions(pool, strategy: dict) -> list[dict]:
+    """Close every open leg for the strategy via close_strategy_position (skip_exchange=False).
+    Returns a list of per-leg results."""
+    async with pool.acquire() as conn:
+        legs = await conn.fetch(
+            "SELECT symbol, side FROM strategy_positions WHERE strategy_id=$1 AND status='open'",
+            strategy['id'],
+        )
+    results = []
+    for leg in legs:
+        r = await close_strategy_position(
+            pool, strategy, symbol=leg['symbol'], side=leg['side'],
+            reason="flatten_on_disable",
+        )
+        results.append({"symbol": leg['symbol'], "side": leg['side'], **(r or {})})
+    return results
 
 
 async def _log_webhook_call(pool, strategy_id: str, http_status: int, error_message: str | None = None) -> None:
@@ -583,34 +626,6 @@ async def receive_webhook(
         await _finalize_signal_log(pool, signal_log_id, 429, "guard_rejected", detail, start_ms)
         raise HTTPException(status_code=429, detail=detail)
 
-    # Guard 5: High-water drawdown stop (opening signals only).
-    # Trip when the live compounding allocation falls max_drawdown_pct below its peak.
-    if payload.signal in ("open_long", "open_short"):
-        _cap_alloc  = float(strategy.get("capital_allocation") or 0)
-        _peak       = float(strategy.get("allocation_peak") or _cap_alloc)
-        _max_dd_pct = float(strategy.get("max_drawdown_pct") or 50)
-        _floor      = _peak * (1.0 - _max_dd_pct / 100.0)
-        if _is_drawdown_breached(_cap_alloc, _peak, _max_dd_pct):
-            try:
-                async with pool.acquire() as conn:
-                    await conn.execute(
-                        "UPDATE strategies SET enabled = false, updated_at = NOW() WHERE id = $1",
-                        strategy_id,
-                    )
-            except Exception as _e:
-                logger.error(f"Failed to auto-disable strategy {strategy_id} on drawdown stop: {_e}")
-            _detail = (
-                f"Drawdown stop hit for strategy {strategy_id}: "
-                f"allocation ${_cap_alloc:.2f} <= floor ${_floor:.2f} "
-                f"({_max_dd_pct:.0f}% below peak ${_peak:.2f}). Strategy auto-disabled."
-            )
-            logger.warning(
-                f"DRAWDOWN STOP strategy={strategy_id}: "
-                f"alloc={_cap_alloc:.2f} peak={_peak:.2f} floor={_floor:.2f}"
-            )
-            await _finalize_signal_log(pool, signal_log_id, 429, "drawdown_stop", _detail, start_ms)
-            raise HTTPException(status_code=429, detail=_detail)
-
     # Guard 3: Max leverage
     max_lev = int(strategy.get("max_leverage", 10) or 10)
     if effective_leverage > max_lev:
@@ -903,6 +918,9 @@ async def close_strategy_position(
         f"close_size={eff_close_size}, fill={fill_price_f}, pnl={realized_pnl_f}"
     )
 
+    if is_full and realized_pnl_f is not None:
+        await _book_realized_pnl(pool, strategy['id'], realized_pnl_f)
+
     ret: dict = {
         "success":           True,
         "status":            "filled",
@@ -1020,30 +1038,6 @@ async def _process_order(
                 strategy_id,
             )
 
-            # Update pnl_today + pnl_total
-            result_pnl = close_result.get("realized_pnl")
-            if result_pnl is not None:
-                try:
-                    async with pool.acquire() as conn:
-                        await conn.execute(
-                            """
-                            UPDATE strategies
-                            SET pnl_today          = pnl_today + $1,
-                                pnl_total          = pnl_total + $1,
-                                capital_allocation = capital_allocation + $1,
-                                allocation_peak    = GREATEST(COALESCE(allocation_peak, capital_allocation),
-                                                              capital_allocation + $1),
-                                updated_at         = NOW()
-                            WHERE id = $2
-                            """,
-                            float(result_pnl),
-                            strategy['id'],
-                        )
-                    logger.debug(f"Updated pnl_today/total for {strategy['id']}: delta={result_pnl}")
-                    await _disable_if_drawdown_breached(pool, strategy['id'])
-                except Exception as e:
-                    logger.warning(f"Failed to update pnl_today/total for {strategy['id']}: {e}")
-
             return
         # ── End flat signal handler ───────────────────────────────────────
 
@@ -1089,28 +1083,6 @@ async def _process_order(
                 "filled" if close_result.get("success") else "route_failed",
                 close_result.get("error_msg"), start_ms,
             )
-            result_pnl = close_result.get("realized_pnl")
-            if result_pnl is not None:
-                try:
-                    async with pool.acquire() as conn:
-                        await conn.execute(
-                            """
-                            UPDATE strategies
-                            SET pnl_today          = pnl_today + $1,
-                                pnl_total          = pnl_total + $1,
-                                capital_allocation = capital_allocation + $1,
-                                allocation_peak    = GREATEST(COALESCE(allocation_peak, capital_allocation),
-                                                              capital_allocation + $1),
-                                updated_at         = NOW()
-                            WHERE id = $2
-                            """,
-                            float(result_pnl),
-                            strategy['id'],
-                        )
-                    logger.debug(f"Updated pnl_today/total for {strategy['id']}: delta={result_pnl}")
-                    await _disable_if_drawdown_breached(pool, strategy['id'])
-                except Exception as e:
-                    logger.warning(f"Failed to update pnl_today/total for {strategy['id']}: {e}")
             return
         # ── End close handler ────────────────────────────────────────────────
 
@@ -1210,30 +1182,6 @@ async def _process_order(
             result.error_msg, start_ms,
         )
 
-        # ── Update pnl_today + pnl_total ─────────────────────────────────────
-        result_pnl = exec_result.get("pnl") or exec_result.get("realized_pnl")
-        if result_pnl is not None:
-            try:
-                async with pool.acquire() as conn:
-                    await conn.execute(
-                        """
-                        UPDATE strategies
-                        SET pnl_today          = pnl_today + $1,
-                            pnl_total          = pnl_total + $1,
-                            capital_allocation = capital_allocation + $1,
-                            allocation_peak    = GREATEST(COALESCE(allocation_peak, capital_allocation),
-                                                          capital_allocation + $1),
-                            updated_at         = NOW()
-                        WHERE id = $2
-                        """,
-                        float(result_pnl),
-                        strategy['id'],
-                    )
-                logger.debug(f"Updated pnl_today/total for {strategy['id']}: delta={result_pnl}")
-                await _disable_if_drawdown_breached(pool, strategy['id'])
-            except Exception as e:
-                logger.warning(f"Failed to update pnl_today/total for {strategy['id']}: {e}")
-
         logger.info(f"Order {order_id} processed for strategy {strategy['id']}: {final_status}")
 
         if result.success and payload.base_asset and payload.quote_asset and payload.size:
@@ -1289,6 +1237,40 @@ async def _process_order(
                             pool, payload, strategy, order_id, result,
                             effective_leverage, effective_margin_mode,
                             fill_size=fill_size,
+                        )
+
+                # ── Flip: if exchange netted an opposite position, close its DB leg ──
+                flip_pnl = exec_result.get("pnl") or exec_result.get("realized_pnl")
+                if flip_pnl is not None and float(flip_pnl) != 0:
+                    opposite_side = "short" if pos_side == "long" else "long"
+                    try:
+                        async with pool.acquire() as conn:
+                            opp_leg = await conn.fetchrow(
+                                """SELECT id FROM strategy_positions
+                                   WHERE strategy_id=$1 AND symbol=$2 AND side=$3
+                                     AND status='open'""",
+                                strategy['id'], pos_symbol, opposite_side,
+                            )
+                        if opp_leg:
+                            await close_strategy_position(
+                                pool, strategy,
+                                symbol=pos_symbol,
+                                side=opposite_side,
+                                skip_exchange=True,
+                                realized_pnl=flip_pnl,
+                                fill_price=result.actual_fill_price,
+                                reason="flip_close",
+                            )
+                        else:
+                            logger.warning(
+                                f"Flip PnL={flip_pnl} from executor but no opposite "
+                                f"{opposite_side} leg for strategy {strategy['id']} "
+                                f"{pos_symbol} — booking directly"
+                            )
+                            await _book_realized_pnl(pool, strategy['id'], flip_pnl)
+                    except Exception as _fe:
+                        logger.warning(
+                            f"Flip PnL handling failed for strategy {strategy['id']}: {_fe}"
                         )
 
     except Exception as e:

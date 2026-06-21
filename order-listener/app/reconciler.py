@@ -333,7 +333,7 @@ async def _recover_manual_close_pnl(pool) -> None:
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """
-            SELECT sp.id, sp.symbol, sp.side, sp.opened_at, s.account_id
+            SELECT sp.id, sp.strategy_id, sp.symbol, sp.side, sp.opened_at, s.account_id
             FROM strategy_positions sp
             JOIN strategies s ON sp.strategy_id = s.id
             WHERE sp.status = 'closed'
@@ -400,19 +400,25 @@ async def _recover_manual_close_pnl(pool) -> None:
         try:
             pnl_float = float(pnl_realized)
             async with pool.acquire() as conn:
-                await conn.execute(
+                updated_row = await conn.fetchrow(
                     """
                     UPDATE strategy_positions
                     SET pnl_realized = $1, updated_at = NOW()
                     WHERE id = $2 AND status = 'closed'
-                      AND (pnl_realized IS NULL OR pnl_realized = 0)
+                      AND pnl_realized IS NULL
+                    RETURNING id, strategy_id, pnl_realized
                     """,
                     pnl_float,
                     pos_id,
                 )
-            logger.info(
-                f"reconciler: history fallback set pnl_realized={pnl_float}"
-                f" for {pos_id} ({symbol} {side})"
-            )
+            if updated_row:
+                logger.info(
+                    f"reconciler: history fallback set pnl_realized={pnl_float}"
+                    f" for {pos_id} ({symbol} {side})"
+                )
+                from app.webhook_handler import _book_realized_pnl
+                await _book_realized_pnl(
+                    pool, str(updated_row['strategy_id']), updated_row['pnl_realized']
+                )
         except Exception as e:
             logger.error(f"reconciler: pnl recovery update failed for {pos_id}: {e}")
