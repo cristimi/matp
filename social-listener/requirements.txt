@@ -1,0 +1,8 @@
+telethon>=1.36
+asyncpg
+pydantic>=2.0
+pydantic-settings
+langchain-anthropic
+langchain-openai
+langchain-google-genai
+python-dotenv
