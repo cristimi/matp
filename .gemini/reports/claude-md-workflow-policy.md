@@ -102,4 +102,7 @@ index 2aaf72e..4348ad4 100644
 
 ## Final commit + push (tail appended after push)
 
-<!-- populated below -->
+```
+4bba30f docs(claude.md): add branch policy + report-publish rule
+## chore/claude-md-workflow-policy...origin/chore/claude-md-workflow-policy
+```
