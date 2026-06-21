@@ -89,3 +89,11 @@ No other files were modified.
 ---
 
 ## Commit and push
+
+```
+$ git log --oneline -1
+d09ab25 fix: tz-aware UTC in ai-engine dispatcher (preserve Z wire format)
+
+$ git status -sb
+## fix/utcnow-tzaware...origin/fix/utcnow-tzaware
+```
