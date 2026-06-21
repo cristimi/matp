@@ -2,7 +2,7 @@ import hmac
 import hashlib
 import json
 import requests
-from datetime import datetime
+from datetime import datetime, timezone
 
 SECRET = 'deadbeef1234567890abcdef1234567890abcdef1234567890abcdef12345678'
 PAYLOAD = {
@@ -15,7 +15,7 @@ PAYLOAD = {
     "marginMode": "isolated",
     "platform": "test",
     "strategyId": "test-strategy",
-    "timestamp": datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
+    "timestamp": datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
 }
 
 payload_str = json.dumps(PAYLOAD, separators=(',', ':'))

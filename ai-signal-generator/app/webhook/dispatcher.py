@@ -1,5 +1,5 @@
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 
 import httpx
 
@@ -39,7 +39,7 @@ async def build_payload(state: AgentState) -> dict:
         'sl_price':    str(state['resolved_sl_price']) if state.get('resolved_sl_price') else None,
         'tp_price':    str(state['resolved_tp_price']) if state.get('resolved_tp_price') else None,
         'signal':      sig,
-        'timestamp':   datetime.utcnow().isoformat() + 'Z',
+        'timestamp':   datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
         'token':       sc.get('webhook_secret', ''),
         'signal_source': 'ai_engine',
         'signal_metadata': {
