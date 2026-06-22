@@ -105,8 +105,7 @@ export function PromoteSheet({ strategyId, onClose, onDone }: PromoteSheetProps)
               <div style={{ background: 'var(--failed-color-a)', border: '1px solid var(--failed-color-b)', borderRadius: 'var(--pill-r)', padding: '8px 12px' }}>
                 <p style={{ fontSize: '11px', fontWeight: 600, color: 'var(--failed-color)', margin: 0 }}>⚠ Creates a DISABLED strategy in the live system</p>
                 <p style={{ fontSize: '10px', color: 'var(--failed-color)', margin: '3px 0 0', lineHeight: 1.4 }}>
-                  The promoted strategy starts with <code style={{ fontSize: '10px' }}>enabled = false</code> and{' '}
-                  <code style={{ fontSize: '10px' }}>webhook_enabled = false</code>. You must manually activate it in the dashboard after reviewing the config.
+                  Created stopped (<code style={{ fontSize: '10px' }}>enabled = false</code>). Review the config, then Start it from the dashboard.
                 </p>
               </div>
               <Field label="Account ID">

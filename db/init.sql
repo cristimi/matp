@@ -496,7 +496,6 @@ CREATE TABLE public.strategies (
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
     webhook_secret character varying(255) NOT NULL,
-    webhook_enabled boolean DEFAULT true,
     description text,
     platform_override character varying(20),
     max_daily_signals integer DEFAULT 500,
@@ -1349,10 +1348,10 @@ COPY public.signal_log (id, received_at, source_ip, strategy_id, http_status, ou
 -- Data for Name: strategies; Type: TABLE DATA; Schema: public; Owner: -
 --
 
-COPY public.strategies (id, name, class, symbol, "interval", platform, enabled, config_yaml, created_at, updated_at, webhook_secret, webhook_enabled, description, platform_override, max_daily_signals, blofin_token, max_leverage, signals_today, pnl_today, pnl_total, win_count, loss_count, last_signal_at, tags, type, pair_id, account_id, allow_quote_variants, allow_cross_charting, default_leverage, is_deleted, config, margin_mode, strategy_source, capital_allocation, margin_per_trade, max_drawdown_pct, drawdown_anchor_pnl, initial_allocation, allocation_peak) FROM stdin;
-tv-btc-test-hl-94e1	TV BTC Test HL	webhook	BTC-USDT	1h	auto	t		2026-06-19 13:30:15.758677+00	2026-06-20 10:15:18.74637+00	a18117c6aab67a60347d295ec47baafa	t		\N	500	\N	40	1	0	0	0	0	2026-06-19 13:31:50.580053+00	{}	internal	\N	hyperliquid-hyperliquid-hqdy	t	f	20	f	{}	isolated	tradingview	100	5	50	0	100	100
-hype-test-7db4	HYPE Test	webhook	HYPE-USDT	4h	auto	t		2026-06-19 07:39:00.475144+00	2026-06-20 10:15:18.74637+00	a358dde02769b0482d121843e1a2cd94	t		\N	500	\N	10	3	0	0	0	0	2026-06-19 13:37:16.547791+00	{}	internal	\N	blofin-blofin-demo-v5vr	t	f	10	f	{}	isolated	tradingview	200	20	75	0	200	200
-ai-btc-6f8c	AI BTC	webhook	BTC-USDT	1h	auto	t		2026-06-19 07:37:22.895888+00	2026-06-20 10:15:18.74637+00	50be8bd56dd338cec7292aec27919e92	t		\N	500	\N	40	0	0	0	0	0	\N	{}	internal	\N	hyperliquid-hyperliquid-hqdy	t	f	10	f	{}	isolated	ai_engine	100	10	50	0	100	100
+COPY public.strategies (id, name, class, symbol, "interval", platform, enabled, config_yaml, created_at, updated_at, webhook_secret, description, platform_override, max_daily_signals, blofin_token, max_leverage, signals_today, pnl_today, pnl_total, win_count, loss_count, last_signal_at, tags, type, pair_id, account_id, allow_quote_variants, allow_cross_charting, default_leverage, is_deleted, config, margin_mode, strategy_source, capital_allocation, margin_per_trade, max_drawdown_pct, drawdown_anchor_pnl, initial_allocation, allocation_peak) FROM stdin;
+tv-btc-test-hl-94e1	TV BTC Test HL	webhook	BTC-USDT	1h	auto	t		2026-06-19 13:30:15.758677+00	2026-06-20 10:15:18.74637+00	a18117c6aab67a60347d295ec47baafa		\N	500	\N	40	1	0	0	0	0	2026-06-19 13:31:50.580053+00	{}	internal	\N	hyperliquid-hyperliquid-hqdy	t	f	20	f	{}	isolated	tradingview	100	5	50	0	100	100
+hype-test-7db4	HYPE Test	webhook	HYPE-USDT	4h	auto	t		2026-06-19 07:39:00.475144+00	2026-06-20 10:15:18.74637+00	a358dde02769b0482d121843e1a2cd94		\N	500	\N	10	3	0	0	0	0	2026-06-19 13:37:16.547791+00	{}	internal	\N	blofin-blofin-demo-v5vr	t	f	10	f	{}	isolated	tradingview	200	20	75	0	200	200
+ai-btc-6f8c	AI BTC	webhook	BTC-USDT	1h	auto	t		2026-06-19 07:37:22.895888+00	2026-06-20 10:15:18.74637+00	50be8bd56dd338cec7292aec27919e92		\N	500	\N	40	0	0	0	0	0	\N	{}	internal	\N	hyperliquid-hyperliquid-hqdy	t	f	10	f	{}	isolated	ai_engine	100	10	50	0	100	100
 \.
 
 
@@ -1986,7 +1985,6 @@ CREATE INDEX idx_strat_stats_strategy_date ON public.strategy_stats USING btree 
 -- Name: idx_strategies_enabled; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX idx_strategies_enabled ON public.strategies USING btree (webhook_enabled);
 
 
 --

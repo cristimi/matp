@@ -200,14 +200,13 @@ async def test_excessive_leverage_returns_422():
         assert "leverage" in resp.json().get("detail", "").lower()
 
 
-# ── Disabled strategy ────────────────────────────────────────────────
+# ── Stopped strategy ─────────────────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_disabled_strategy_returns_403():
-    """A strategy with webhook_enabled=False must reject signals."""
+async def test_stopped_strategy_returns_403():
+    """A strategy with enabled=False must reject signals with 403 Strategy stopped."""
     from app.main import app
-    # In webhook_handler, it checks strategy['webhook_enabled']
-    pool, _ = make_mock_db({"webhook_enabled": False})
+    pool, _ = make_mock_db({"enabled": False})
 
     with patch("app.webhook_handler.get_pool", return_value=pool):
         async with AsyncClient(
@@ -217,4 +216,4 @@ async def test_disabled_strategy_returns_403():
                 f"/webhook/{STRATEGY_ID}", json=BASE_PAYLOAD
             )
         assert resp.status_code == 403
-        assert "disabled" in resp.json().get("detail", "").lower()
+        assert "stopped" in resp.json().get("detail", "").lower()

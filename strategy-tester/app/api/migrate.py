@@ -7,7 +7,6 @@ Strategy migration endpoints.
 R2 invariant: the ONLY sanctioned write to public.* is in to_matp().
 R2a constraints (enforced unconditionally):
   - enabled=False  — never auto-started
-  - webhook_enabled=False
   - single transaction — rolls back entirely on any error
   - account_id from request — never invented or defaulted
   - no start/enable endpoint called
@@ -73,7 +72,7 @@ async def from_matp(body: FromMaTPRequest):
         pub = await conn.fetchrow(
             """
             SELECT id, name, class, symbol, interval, platform,
-                   config_yaml, config, webhook_secret, webhook_enabled,
+                   config_yaml, config, webhook_secret,
                    description, platform_override, max_daily_signals,
                    max_position_size, max_leverage,
                    tags, type, margin_mode,
@@ -260,7 +259,6 @@ async def to_matp(strategy_id: str, body: ToMaTPRequest):
 
     R2a INVARIANTS (enforced below — do not relax):
       • enabled = False        — strategy is NEVER auto-started
-      • webhook_enabled = False — no incoming webhook accepted
       • account_id from request — never invented or defaulted
       • single transaction     — rolls back if any insert fails
       • no start/enable call   — this endpoint only writes rows; caller must
@@ -302,13 +300,13 @@ async def to_matp(strategy_id: str, body: ToMaTPRequest):
         account_id        = body.account_id   # R2a: from request, never defaulted
 
         async with conn.transaction():
-            # 2. Insert public.strategies — R2a: enabled=False, webhook_enabled=False
+            # 2. Insert public.strategies — R2a: enabled=False
             await conn.execute(
                 """
                 INSERT INTO public.strategies (
                     id, name, class, symbol, interval, platform,
                     enabled, config_yaml, config,
-                    webhook_secret, webhook_enabled,
+                    webhook_secret,
                     description,
                     max_daily_signals, max_position_size, max_leverage,
                     tags, type, margin_mode, default_leverage, blofin_token,
@@ -316,7 +314,7 @@ async def to_matp(strategy_id: str, body: ToMaTPRequest):
                 ) VALUES (
                     $1,$2,$3,$4,$5,$6,
                     FALSE,$7,$8,
-                    $9,FALSE,
+                    $9,
                     $10,
                     $11,$12,$13,
                     $14,$15,$16,$17,$18,
@@ -422,8 +420,8 @@ async def to_matp(strategy_id: str, body: ToMaTPRequest):
     # R2a: LOUD logging — source tester id / new public id / account
     logger.warning(
         "TO-MATP PROMOTION: tester_strategy_id='%s' → public_strategy_id='%s' "
-        "account_id='%s' | enabled=False webhook_enabled=False | "
-        "To activate: manually set enabled=true in dashboard after review.",
+        "account_id='%s' | enabled=False | "
+        "To activate: Start it from the dashboard after reviewing the config.",
         strategy_id, new_public_id, account_id,
     )
 
@@ -432,5 +430,4 @@ async def to_matp(strategy_id: str, body: ToMaTPRequest):
         "public_strategy_id": new_public_id,
         "account_id":         account_id,
         "enabled":            False,   # R2a confirmation — always False
-        "webhook_enabled":    False,
     }

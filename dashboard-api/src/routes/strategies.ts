@@ -277,7 +277,7 @@ router.post('/', async (req: Request, res: Response) => {
       `INSERT INTO strategies (
         id, name, symbol, account_id, interval, description,
         class, config_yaml,
-        webhook_secret, webhook_enabled,
+        webhook_secret,
         default_leverage, margin_mode,
         max_leverage, max_daily_signals,
         capital_allocation, initial_allocation, allocation_peak,
@@ -287,7 +287,7 @@ router.post('/', async (req: Request, res: Response) => {
       ) VALUES (
         $1, $2, $3, $4, $5, $6,
         'webhook', '',
-        $7, true,
+        $7,
         $8, $9, $10, $11,
         $12, $12, $12,
         $13, $14,
@@ -369,7 +369,7 @@ router.get('/comparison', async (req: Request, res: Response) => {
 router.get('/:id/webhook-info', async (req: Request, res: Response) => {
   try {
     const result = await getPool().query(
-      `SELECT id, name, symbol, webhook_secret, webhook_enabled
+      `SELECT id, name, symbol, webhook_secret
        FROM strategies WHERE id = $1`,
       [req.params.id]
     );
@@ -390,9 +390,8 @@ router.get('/:id/webhook-info', async (req: Request, res: Response) => {
       strategy_id:     s.id,
       strategy_name:   s.name,
       symbol:          s.symbol,
-      webhook_url:     webhookUrl,
-      webhook_secret:  s.webhook_secret,
-      webhook_enabled: s.webhook_enabled,
+      webhook_url:    webhookUrl,
+      webhook_secret: s.webhook_secret,
     });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
