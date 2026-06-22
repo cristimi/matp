@@ -323,9 +323,10 @@ async def _handle_full_external_close(
 
 async def _recover_manual_close_pnl(pool) -> None:
     """
-    Fallback PnL recovery for closed positions with pnl_realized=0/NULL and no
-    attributable close orders (manual UI closes, executor-only closes, etc.).
-    Calls /positions/history and applies the stale-history guard.
+    Fallback PnL recovery for closed positions with pnl_realized=NULL (not yet booked)
+    and no attributable close orders (manual UI closes, native-SL, liquidation, etc.).
+    Calls /positions/history and applies the stale-history guard. Books via
+    _book_realized_pnl on the NULL→value transition (idempotent).
     """
     from app.executor_client import get_position_history
     from datetime import datetime, timezone
@@ -337,7 +338,7 @@ async def _recover_manual_close_pnl(pool) -> None:
             FROM strategy_positions sp
             JOIN strategies s ON sp.strategy_id = s.id
             WHERE sp.status = 'closed'
-              AND (sp.pnl_realized IS NULL OR sp.pnl_realized = 0)
+              AND sp.pnl_realized IS NULL
               AND sp.closed_at >= NOW() - INTERVAL '7 days'
               AND COALESCE(s.is_deleted, false) = false
               AND NOT EXISTS (
@@ -366,7 +367,7 @@ async def _recover_manual_close_pnl(pool) -> None:
             logger.warning(f"reconciler: history fetch failed for {pos_id} ({symbol}): {e}")
             continue
 
-        if not history or not history.get("pnl_realized"):
+        if not history or history.get("pnl_realized") is None:
             logger.debug(
                 f"reconciler: pnl_unconfirmed for {pos_id} ({symbol} {side}) — no history PnL"
             )

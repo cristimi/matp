@@ -602,7 +602,7 @@ CREATE TABLE public.strategy_positions (
     leverage integer,
     margin_mode character varying(20),
     pnl_unrealized numeric,
-    pnl_realized numeric DEFAULT 0,
+    pnl_realized numeric,
     status character varying(20) DEFAULT 'open'::character varying,
     opening_order_id uuid,
     closing_order_id uuid,
