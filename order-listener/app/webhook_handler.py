@@ -935,28 +935,46 @@ async def close_strategy_position(
 
 
 async def sync_position_pnl(pool) -> None:
-    """
-    Propagate realized PnL from closing orders to positions.
-    Runs after every reconcile pass. Partial-safe: sums all close orders per position.
-    """
+    """Propagate realized PnL from closing orders to positions, and book the strategy's
+    allocation on the pnl_realized NULL->value transition (the external-close booking point).
+    Idempotent: a row is booked once, when it first goes NULL -> value."""
     async with pool.acquire() as conn:
+        # (1) First attribution (NULL -> value): set AND book.
+        newly = await conn.fetch(
+            """
+            UPDATE strategy_positions sp
+            SET pnl_realized = sub.total,
+                updated_at   = NOW()
+            FROM (
+                SELECT closes_position_id AS pid, COALESCE(SUM(pnl), 0) AS total
+                FROM orders
+                WHERE closes_position_id IS NOT NULL AND pnl IS NOT NULL
+                GROUP BY closes_position_id
+            ) sub
+            WHERE sp.id = sub.pid
+              AND sp.pnl_realized IS NULL
+            RETURNING sp.id, sp.strategy_id, sp.pnl_realized
+            """
+        )
+        # (2) Corrections (already-booked, value changed): update only, do NOT re-book.
         await conn.execute(
             """
             UPDATE strategy_positions sp
             SET pnl_realized = sub.total,
                 updated_at   = NOW()
             FROM (
-                SELECT closes_position_id AS pid,
-                       COALESCE(SUM(pnl), 0) AS total
+                SELECT closes_position_id AS pid, COALESCE(SUM(pnl), 0) AS total
                 FROM orders
-                WHERE closes_position_id IS NOT NULL
-                  AND pnl IS NOT NULL
+                WHERE closes_position_id IS NOT NULL AND pnl IS NOT NULL
                 GROUP BY closes_position_id
             ) sub
             WHERE sp.id = sub.pid
+              AND sp.pnl_realized IS NOT NULL
               AND sp.pnl_realized IS DISTINCT FROM sub.total
             """
         )
+    for r in newly:
+        await _book_realized_pnl(pool, str(r['strategy_id']), r['pnl_realized'])
 
 
 async def _process_order(
