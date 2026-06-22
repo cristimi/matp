@@ -97,6 +97,36 @@ async def health():
     return {"status": "ok", "service": "order-listener"}
 
 
+@app.post("/strategies/{strategy_id}/stop")
+async def stop_strategy(strategy_id: str):
+    """Flatten all open legs then disable the strategy. Disables only if all closes succeed."""
+    from fastapi import HTTPException
+    from app.webhook_handler import _flatten_strategy_positions
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT id, account_id, enabled FROM strategies WHERE id = $1",
+            strategy_id,
+        )
+    if not row:
+        raise HTTPException(status_code=404, detail=f"Strategy not found: {strategy_id}")
+    strategy = dict(row)
+    results = await _flatten_strategy_positions(pool, strategy)
+    errors = [r for r in results if not r.get("success")]
+    if not errors:
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE strategies SET enabled = false, updated_at = NOW() WHERE id = $1",
+                strategy_id,
+            )
+    return {
+        "stopped":     strategy_id,
+        "enabled":     False if not errors else bool(row["enabled"]),
+        "legs_closed": len(results) - len(errors),
+        "errors":      errors,
+    }
+
+
 @app.post("/reconcile")
 async def trigger_reconcile():
     """Run one reconciliation pass on demand."""

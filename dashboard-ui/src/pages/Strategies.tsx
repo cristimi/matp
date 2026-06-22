@@ -923,20 +923,11 @@ export default function Strategies() {
     setStopError(null);
   };
 
-  const confirmStop = async (closePositions: boolean) => {
+  const confirmStop = async () => {
     if (!stopTarget) return;
     setStopping(true);
     setStopError(null);
     try {
-      if (closePositions && (stopTarget.open_positions_count ?? 0) > 0) {
-        const closeRes  = await fetch(`/api/dashboard/positions?strategy_id=${stopTarget.id}`);
-        const closeData = await closeRes.json();
-        const openPositions = (closeData.items ?? closeData ?? [])
-          .filter((p: any) => p.status === 'open');
-        for (const pos of openPositions) {
-          await fetch(`/api/dashboard/positions/${pos.id}/close`, { method: 'POST' });
-        }
-      }
       const res = await fetch(`/api/dashboard/strategies/${stopTarget.id}/stop`, { method: 'POST' });
       if (!res.ok) {
         const err = await res.json();
@@ -2039,83 +2030,46 @@ export default function Strategies() {
               Stop Strategy
             </h2>
 
-            {(stopTarget.open_positions_count ?? 0) > 0 ? (
-              <>
-                <div style={{
-                  background:'var(--failed-color-a)',
-                  border:'1px solid var(--failed-color-b)',
-                  borderRadius:'8px', padding:'12px 14px', marginBottom:'16px',
-                }}>
-                  <p style={{ fontSize:'13px', color:'var(--failed-color)',
-                               fontWeight:600, margin:0 }}>
-                    ⚠ This strategy has {stopTarget.open_positions_count} open position(s).
-                  </p>
-                </div>
-                <p style={{ fontSize:'13px', color:'var(--dim)', marginBottom:'20px' }}>
-                  Do you want to close the open positions before stopping?
+            {(stopTarget.open_positions_count ?? 0) > 0 && (
+              <div style={{
+                background:'var(--failed-color-a)',
+                border:'1px solid var(--failed-color-b)',
+                borderRadius:'8px', padding:'12px 14px', marginBottom:'16px',
+              }}>
+                <p style={{ fontSize:'13px', color:'var(--failed-color)',
+                             fontWeight:600, margin:0 }}>
+                  ⚠ This strategy has {stopTarget.open_positions_count} open position(s).
+                  Stopping will close them at market price.
                 </p>
-                {stopError && (
-                  <p style={{ color:'var(--red)', fontSize:'13px',
-                              marginBottom:'12px' }}>{stopError}</p>
-                )}
-                <div style={{ display:'flex', flexDirection:'column', gap:'8px' }}>
-                  <button onClick={() => confirmStop(true)} disabled={stopping}
-                    style={{
-                      padding:'10px', border:'none', borderRadius:'8px',
-                      background:'var(--red)', color:'#fff',
-                      fontSize:'13px', fontWeight:700, cursor:'pointer',
-                      opacity: stopping ? 0.7 : 1,
-                    }}>
-                    {stopping ? 'Closing & Stopping...' : 'Close Positions & Stop'}
-                  </button>
-                  <button onClick={() => confirmStop(false)} disabled={stopping}
-                    style={{
-                      padding:'10px', border:'1px solid var(--border)',
-                      borderRadius:'8px', background:'var(--bg3)',
-                      color:'var(--muted)', fontSize:'13px', fontWeight:600, cursor:'pointer',
-                    }}>
-                    Stop Without Closing
-                  </button>
-                  <button onClick={() => setStopTarget(null)} disabled={stopping}
-                    style={{
-                      padding:'10px', border:'1px solid var(--border)',
-                      borderRadius:'8px', background:'var(--bg3)',
-                      color:'var(--muted)', fontSize:'13px', fontWeight:600, cursor:'pointer',
-                    }}>
-                    Cancel
-                  </button>
-                </div>
-              </>
-            ) : (
-              <>
-                <p style={{ fontSize:'13px', color:'var(--dim)', marginBottom:'20px' }}>
-                  Stop <strong style={{ color:'var(--text)' }}>{stopTarget.name}</strong>?
-                  No open positions will be affected.
-                </p>
-                {stopError && (
-                  <p style={{ color:'var(--red)', fontSize:'13px',
-                              marginBottom:'12px' }}>{stopError}</p>
-                )}
-                <div style={{ display:'flex', gap:'10px' }}>
-                  <button onClick={() => setStopTarget(null)}
-                    style={{
-                      flex:1, padding:'10px',
-                      border:'1px solid var(--border)', borderRadius:'8px',
-                      background:'var(--bg3)', fontSize:'13px', fontWeight:600,
-                      cursor:'pointer', color:'var(--muted)',
-                    }}>Cancel</button>
-                  <button onClick={() => confirmStop(false)} disabled={stopping}
-                    style={{
-                      flex:1, padding:'10px', border:'none', borderRadius:'8px',
-                      background:'var(--red)', color:'#fff',
-                      fontSize:'13px', fontWeight:700, cursor:'pointer',
-                      opacity: stopping ? 0.7 : 1,
-                    }}>
-                    {stopping ? 'Stopping...' : 'Stop Strategy'}
-                  </button>
-                </div>
-              </>
+              </div>
             )}
+            <p style={{ fontSize:'13px', color:'var(--dim)', marginBottom:'20px' }}>
+              Stop <strong style={{ color:'var(--text)' }}>{stopTarget.name}</strong>?
+            </p>
+            {stopError && (
+              <p style={{ color:'var(--red)', fontSize:'13px',
+                          marginBottom:'12px' }}>{stopError}</p>
+            )}
+            <div style={{ display:'flex', gap:'10px' }}>
+              <button onClick={() => setStopTarget(null)} disabled={stopping}
+                style={{
+                  flex:1, padding:'10px',
+                  border:'1px solid var(--border)', borderRadius:'8px',
+                  background:'var(--bg3)', fontSize:'13px', fontWeight:600,
+                  cursor:'pointer', color:'var(--muted)',
+                }}>Cancel</button>
+              <button onClick={confirmStop} disabled={stopping}
+                style={{
+                  flex:1, padding:'10px', border:'none', borderRadius:'8px',
+                  background:'var(--red)', color:'#fff',
+                  fontSize:'13px', fontWeight:700, cursor:'pointer',
+                  opacity: stopping ? 0.7 : 1,
+                }}>
+                {stopping
+                  ? ((stopTarget.open_positions_count ?? 0) > 0 ? 'Closing & Stopping…' : 'Stopping…')
+                  : 'Stop Strategy'}
+              </button>
+            </div>
           </div>
         </div>
       )}

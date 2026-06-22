@@ -4,8 +4,9 @@ import { getPool } from '../db';
 
 const router = Router();
 
-const EXECUTOR_URL = process.env.EXECUTOR_URL || 'http://order-executor:8004';
-const AI_URL = process.env.AI_SIGNAL_GENERATOR_URL || 'http://ai-signal-generator:8005';
+const EXECUTOR_URL  = process.env.EXECUTOR_URL || 'http://order-executor:8004';
+const AI_URL        = process.env.AI_SIGNAL_GENERATOR_URL || 'http://ai-signal-generator:8005';
+const LISTENER_URL  = process.env.ORDER_LISTENER_URL || 'http://order-listener:8001';
 
 // Fire-and-forget: tell ai-signal-generator to reconcile this strategy's scheduler
 // against its current DB state (start / reload / teardown). No-op for non-AI strategies.
@@ -507,8 +508,6 @@ router.put('/:id', async (req: Request, res: Response) => {
     name,
     symbol,
     interval,
-    enabled,
-    webhook_enabled,
     default_leverage,
     margin_mode,
     allow_quote_variants,
@@ -598,23 +597,21 @@ router.put('/:id', async (req: Request, res: Response) => {
          name                       = COALESCE($1, name),
          symbol                     = COALESCE($2, symbol),
          interval                   = COALESCE($3, interval),
-         enabled                    = COALESCE($4, enabled),
-         webhook_enabled            = COALESCE($5, webhook_enabled),
-         default_leverage           = COALESCE($6, default_leverage),
-         margin_mode                = COALESCE($7, margin_mode),
-         allow_quote_variants       = COALESCE($8, allow_quote_variants),
-         allow_cross_charting       = COALESCE($9, allow_cross_charting),
-         max_leverage               = COALESCE($10, max_leverage),
-         max_daily_signals          = COALESCE($11, max_daily_signals),
-         capital_allocation         = capital_allocation + COALESCE($13, 0),
-         initial_allocation         = initial_allocation + COALESCE($13, 0),
-         allocation_peak            = allocation_peak    + COALESCE($13, 0),
-         margin_per_trade           = COALESCE($14, margin_per_trade),
-         max_drawdown_pct           = COALESCE($15, max_drawdown_pct),
-         account_id                 = COALESCE($16, account_id),
+         default_leverage           = COALESCE($4, default_leverage),
+         margin_mode                = COALESCE($5, margin_mode),
+         allow_quote_variants       = COALESCE($6, allow_quote_variants),
+         allow_cross_charting       = COALESCE($7, allow_cross_charting),
+         max_leverage               = COALESCE($8, max_leverage),
+         max_daily_signals          = COALESCE($9, max_daily_signals),
+         capital_allocation         = capital_allocation + COALESCE($11, 0),
+         initial_allocation         = initial_allocation + COALESCE($11, 0),
+         allocation_peak            = allocation_peak    + COALESCE($11, 0),
+         margin_per_trade           = COALESCE($12, margin_per_trade),
+         max_drawdown_pct           = COALESCE($13, max_drawdown_pct),
+         account_id                 = COALESCE($14, account_id),
          updated_at                 = NOW()
-       WHERE id = $12
-       RETURNING id, name, symbol, interval, enabled, webhook_enabled,
+       WHERE id = $10
+       RETURNING id, name, symbol, interval, enabled,
                  default_leverage, margin_mode,
                  allow_quote_variants, allow_cross_charting, account_id,
                  capital_allocation, initial_allocation, allocation_peak,
@@ -623,8 +620,6 @@ router.put('/:id', async (req: Request, res: Response) => {
         name ?? null,
         normalisedSymbol,
         interval ?? null,
-        enabled ?? null,
-        webhook_enabled ?? null,
         default_leverage ?? null,
         margin_mode ?? null,
         allow_quote_variants ?? null,
@@ -652,22 +647,18 @@ router.put('/:id', async (req: Request, res: Response) => {
 });
 
 // POST /strategies/:id/stop
-// Disables the strategy. If it has open positions, caller must handle
-// closing them first (checked by the UI before calling this).
+// Proxies to order-listener: flattens all open legs then disables the strategy.
 router.post('/:id/stop', async (req: Request, res: Response) => {
   try {
-    const result = await getPool().query(
-      `UPDATE strategies
-       SET enabled = false, updated_at = NOW()
-       WHERE id = $1
-       RETURNING id, enabled`,
-      [req.params.id]
-    );
-    if (result.rowCount === 0) {
-      return res.status(404).json({ error: `Strategy not found: ${req.params.id}` });
+    const listenerRes = await fetch(`${LISTENER_URL}/strategies/${req.params.id}/stop`, {
+      method: 'POST',
+    });
+    const data = await listenerRes.json() as any;
+    if (!listenerRes.ok) {
+      return res.status(listenerRes.status).json(data);
     }
     notifyReconcile(req.params.id);
-    res.json({ stopped: req.params.id, enabled: false });
+    res.json(data);
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
@@ -784,15 +775,6 @@ router.get('/:id/webhook-calls', async (req: Request, res: Response) => {
   }
 });
 
-router.post('/:id/webhook-enabled', async (req: Request, res: Response) => {
-  try {
-    await getPool().query('UPDATE strategies SET webhook_enabled = $1 WHERE id = $2', [req.body.enabled, req.params.id]);
-    res.json({ message: 'Status updated' });
-  } catch (err) {
-    console.error('Error updating webhook status:', err);
-    res.status(500).json({ error: 'Database error' });
-  }
-});
 
 router.post('/:id/max-daily-signals', async (req: Request, res: Response) => {
   try {
@@ -804,34 +786,6 @@ router.post('/:id/max-daily-signals', async (req: Request, res: Response) => {
   }
 });
 
-router.post('/:id/enable', async (req: Request, res: Response) => {
-  try {
-    await getPool().query(
-      `UPDATE strategies
-       SET enabled = true,
-           allocation_peak = CASE WHEN enabled = false THEN capital_allocation ELSE allocation_peak END,
-           updated_at = NOW()
-       WHERE id = $1`,
-      [req.params.id]
-    );
-    notifyReconcile(req.params.id);
-    res.json({ message: 'Strategy enabled' });
-  } catch (err) {
-    console.error('Error enabling strategy:', err);
-    res.status(500).json({ error: 'Database error' });
-  }
-});
-
-router.post('/:id/disable', async (req: Request, res: Response) => {
-  try {
-    await getPool().query('UPDATE strategies SET enabled = false WHERE id = $1', [req.params.id]);
-    notifyReconcile(req.params.id);
-    res.json({ message: 'Strategy disabled' });
-  } catch (err) {
-    console.error('Error disabling strategy:', err);
-    res.status(500).json({ error: 'Database error' });
-  }
-});
 
 router.get('/:id/stats', async (req: Request, res: Response) => {
   const period = (req.query.period as string) || '7d';
