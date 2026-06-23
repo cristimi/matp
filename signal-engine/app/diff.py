@@ -197,20 +197,39 @@ async def cmd_replay(strategy_id: str, since_iso: str) -> None:
     print(f"Summary: {matched} matched / {total} total, {total - matched} mismatches")
 
 
-async def cmd_live(strategy_id: str) -> None:
+async def _resolve_since(conn, strategy_id: str, since_iso: str | None):
+    """Return the cutover datetime: explicit --since if given, else the first TV order for this
+    strategy. Returns None if no TV orders exist yet."""
+    if since_iso:
+        dt = datetime.fromisoformat(since_iso.replace("Z", "+00:00"))
+        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    row = await conn.fetchrow(
+        "SELECT min(received_at) AS t FROM public.orders WHERE strategy_id=$1", strategy_id)
+    return row["t"]  # datetime or None
+
+
+async def cmd_live(strategy_id: str, since_iso: str | None = None) -> None:
     """Match existing shadow_signals rows against orders (tv_test) and write verdict back."""
     tf_ms = _TIMEFRAME_MS["1h"]
     conn  = await asyncpg.connect(settings.database_url)
     try:
+        since = await _resolve_since(conn, strategy_id, since_iso)
+        if since is None:
+            print("No TV orders for this strategy yet — nothing to compare.")
+            return
+        print(f"Comparing entries since cutover: {since.isoformat()}")
+
         shadow_rows = await conn.fetch(
             """
             SELECT id, signal, side, signal_bar_time
             FROM public.shadow_signals
             WHERE strategy_id = $1
               AND signal IN ('open_long', 'open_short')
+              AND signal_bar_time >= $2
             ORDER BY signal_bar_time
             """,
             strategy_id,
+            since,
         )
 
         rows_out: list[dict] = []
@@ -293,24 +312,34 @@ def _print_exit_table(rows_out: list[dict], extra_tv: list) -> None:
             print(f"  {ts_str:<24}  {tv['signal']}")
 
 
-async def cmd_exits(strategy_id: str, window_min: int = 15) -> None:
+async def cmd_exits(strategy_id: str, window_min: int = 15, since_iso: str | None = None) -> None:
     """Match shadow close signals against TV close orders within a +/- window. Writes verdict back."""
     window_ms = window_min * 60_000
     conn = await asyncpg.connect(settings.database_url)
     try:
+        since = await _resolve_since(conn, strategy_id, since_iso)
+        if since is None:
+            print("No TV orders for this strategy yet — nothing to compare.")
+            return
+        print(f"Comparing exits since cutover: {since.isoformat()}")
+
         shadow_rows = await conn.fetch(
             """SELECT id, signal, signal_bar_time, exit_reason, size_pct
                FROM public.shadow_signals
                WHERE strategy_id=$1 AND signal IN ('close_long','close_short')
+                 AND signal_bar_time >= $2
                ORDER BY signal_bar_time""",
             strategy_id,
+            since,
         )
         tv_rows = await conn.fetch(
             """SELECT id, signal, received_at
                FROM public.orders
                WHERE strategy_id=$1 AND signal IN ('close_long','close_short')
+                 AND received_at >= $2
                ORDER BY received_at""",
             strategy_id,
+            since,
         )
 
         tv_used: set = set()
@@ -379,12 +408,18 @@ async def cmd_exits(strategy_id: str, window_min: int = 15) -> None:
 if __name__ == "__main__":
     if len(sys.argv) < 3:
         print("Usage: python -m app.diff replay <strategy_id> <since_iso>")
-        print("       python -m app.diff live   <strategy_id>")
-        print("       python -m app.diff exits  <strategy_id> [window_min]")
+        print("       python -m app.diff live   <strategy_id> [--since <iso>]")
+        print("       python -m app.diff exits  <strategy_id> [window_min] [--since <iso>]")
         sys.exit(1)
 
     cmd = sys.argv[1]
     sid = sys.argv[2]
+
+    def _opt_since(argv: list[str]) -> str | None:
+        if "--since" in argv:
+            i = argv.index("--since")
+            return argv[i + 1] if i + 1 < len(argv) else None
+        return None
 
     if cmd == "replay":
         if len(sys.argv) < 4:
@@ -392,10 +427,10 @@ if __name__ == "__main__":
             sys.exit(1)
         asyncio.run(cmd_replay(sid, sys.argv[3]))
     elif cmd == "live":
-        asyncio.run(cmd_live(sid))
+        asyncio.run(cmd_live(sid, _opt_since(sys.argv)))
     elif cmd == "exits":
-        win = int(sys.argv[3]) if len(sys.argv) > 3 else 15
-        asyncio.run(cmd_exits(sid, win))
+        win = next((int(a) for a in sys.argv[3:] if a.isdigit()), 15)
+        asyncio.run(cmd_exits(sid, win, _opt_since(sys.argv)))
     else:
         print(f"Unknown command: {cmd}")
         sys.exit(1)
