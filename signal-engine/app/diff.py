@@ -1,10 +1,11 @@
 """
-Entry shadow-diff harness.
+Entry/exit shadow-diff harness.
 Usage:
   python -m app.diff replay <strategy_id> <since_iso>
   python -m app.diff live   <strategy_id>
+  python -m app.diff exits  <strategy_id> [window_min]
 
-Ground truth = public.orders for the given strategy_id (open_long/open_short).
+Ground truth = public.orders for the given strategy_id.
 """
 import asyncio
 import logging
@@ -275,10 +276,111 @@ async def cmd_live(strategy_id: str) -> None:
         await conn.close()
 
 
+def _print_exit_table(rows_out: list[dict], extra_tv: list) -> None:
+    header = f"{'BAR (UTC)':<22}  {'side':<14}  {'reason':<10}  {'verdict':<20}  note"
+    print(header)
+    print("-" * 95)
+    for r in rows_out:
+        bar_str = _ms_to_dt(r["bar_ms"]).strftime("%Y-%m-%d %H:%M") if r["bar_ms"] else "?"
+        print(f"{bar_str:<22}  {r['side']:<14}  {r['reason']:<10}  {r['verdict']:<20}  {r.get('note', '')}")
+    if extra_tv:
+        print()
+        print("TV-ONLY CLOSES (exits TradingView made that the engine did not):")
+        print(f"  {'received_at (UTC)':<24}  signal")
+        print(f"  {'-' * 40}")
+        for tv in extra_tv:
+            ts_str = tv["received_at"].strftime("%Y-%m-%d %H:%M:%S")
+            print(f"  {ts_str:<24}  {tv['signal']}")
+
+
+async def cmd_exits(strategy_id: str, window_min: int = 15) -> None:
+    """Match shadow close signals against TV close orders within a +/- window. Writes verdict back."""
+    window_ms = window_min * 60_000
+    conn = await asyncpg.connect(settings.database_url)
+    try:
+        shadow_rows = await conn.fetch(
+            """SELECT id, signal, signal_bar_time, exit_reason, size_pct
+               FROM public.shadow_signals
+               WHERE strategy_id=$1 AND signal IN ('close_long','close_short')
+               ORDER BY signal_bar_time""",
+            strategy_id,
+        )
+        tv_rows = await conn.fetch(
+            """SELECT id, signal, received_at
+               FROM public.orders
+               WHERE strategy_id=$1 AND signal IN ('close_long','close_short')
+               ORDER BY received_at""",
+            strategy_id,
+        )
+
+        tv_used: set = set()
+        rows_out: list[dict] = []
+        matched = 0
+
+        for sr in shadow_rows:
+            s_ms   = _dt_to_ms(sr["signal_bar_time"])
+            s_sig  = sr["signal"]
+            reason = sr["exit_reason"] or "flip"
+
+            # nearest unused TV close of the same side within the window
+            best, best_delta = None, None
+            for tv in tv_rows:
+                if tv["id"] in tv_used or tv["signal"] != s_sig:
+                    continue
+                d = abs(_dt_to_ms(tv["received_at"]) - s_ms)
+                if d <= window_ms and (best_delta is None or d < best_delta):
+                    best, best_delta = tv, d
+
+            if best:
+                verdict  = VERDICT_MATCHED
+                order_id = best["id"]
+                note     = f"reason={reason} dt={best_delta // 1000}s"
+                tv_used.add(best["id"])
+                matched += 1
+            else:
+                opp = next(
+                    (tv for tv in tv_rows
+                     if tv["id"] not in tv_used and tv["signal"] != s_sig
+                     and abs(_dt_to_ms(tv["received_at"]) - s_ms) <= window_ms),
+                    None,
+                )
+                verdict  = VERDICT_SIDE_MISMATCH if opp else VERDICT_MISSING_IN_TV
+                order_id = opp["id"] if opp else None
+                note     = f"reason={reason} " + (
+                    "opposite-side tv close" if opp
+                    else f"no tv close within {window_min}m"
+                )
+
+            await conn.execute(
+                """UPDATE public.shadow_signals
+                   SET match_status=$1, matched_order_id=$2, diff_notes=$3 WHERE id=$4""",
+                verdict, order_id, note, sr["id"],
+            )
+            rows_out.append({
+                "bar_ms":  s_ms,
+                "reason":  reason,
+                "side":    s_sig,
+                "verdict": verdict,
+                "note":    note,
+            })
+
+        extra_tv = [tv for tv in tv_rows if tv["id"] not in tv_used]
+
+        _print_exit_table(rows_out, extra_tv)
+        print()
+        print(
+            f"Summary: {matched} matched / {len(shadow_rows)} shadow closes, "
+            f"{len(shadow_rows) - matched} unmatched; {len(extra_tv)} tv-only closes"
+        )
+    finally:
+        await conn.close()
+
+
 if __name__ == "__main__":
     if len(sys.argv) < 3:
         print("Usage: python -m app.diff replay <strategy_id> <since_iso>")
         print("       python -m app.diff live   <strategy_id>")
+        print("       python -m app.diff exits  <strategy_id> [window_min]")
         sys.exit(1)
 
     cmd = sys.argv[1]
@@ -291,6 +393,9 @@ if __name__ == "__main__":
         asyncio.run(cmd_replay(sid, sys.argv[3]))
     elif cmd == "live":
         asyncio.run(cmd_live(sid))
+    elif cmd == "exits":
+        win = int(sys.argv[3]) if len(sys.argv) > 3 else 15
+        asyncio.run(cmd_exits(sid, win))
     else:
         print(f"Unknown command: {cmd}")
         sys.exit(1)
