@@ -153,7 +153,7 @@ async def run_strategy_stream(
     tf       = strategy.timeframe
 
     # Shared bracket state (engine-side; asyncio single-thread = no lock needed)
-    bh: dict = {"bracket": None, "side": None}
+    bh: dict = {"bracket": None, "side": None, "entry_bar_time": None}
 
     # --- Warmup: replay stream history to rebuild position + bracket state ---
     candles = await read_stream_history(
@@ -171,9 +171,11 @@ async def run_strategy_stream(
                     side = "long" if sig.signal == "open_long" else "short"
                     bh["bracket"] = BracketState(sig.bracket_spec, sig.bar_close_price)
                     bh["side"] = side
+                    bh["entry_bar_time"] = sig.signal_bar_time
                 elif sig.signal in ("close_long", "close_short"):
                     bh["bracket"] = None
                     bh["side"] = None
+                    bh["entry_bar_time"] = None
         logger.info(
             "engine: warmup complete strategy=%s bars=%d position=%s bracket=%s",
             strategy.strategy_id, len(candles), strategy._position_side,
@@ -181,6 +183,39 @@ async def run_strategy_stream(
         )
     else:
         logger.warning("engine: no warmup data for strategy=%s %s %s", strategy.strategy_id, symbol, tf)
+
+    # --- Catch-up replay: replay 1m bars from entry forward through any open bracket ---
+    # Skips RSI condition-modify (no aligned 1h RSI history); un-tightened stop is the
+    # conservative choice; condition-modify resumes on the next live 1h close if still open.
+    if bh["bracket"] is not None and not bh["bracket"].closed and bh["entry_bar_time"] is not None:
+        tf_ms = _TIMEFRAME_MS.get(tf, 3_600_000)
+        start_from = bh["entry_bar_time"] + tf_ms  # position open only after the entry bar closes
+        m1 = await read_stream_history(redis_client, exchange, symbol, "1m", count=2000)
+        replayed = [c for c in m1 if c["t"] >= start_from]
+        if replayed and replayed[0]["t"] > start_from:
+            logger.warning(
+                "engine: catch-up partial — earliest 1m bar t=%d is after entry+1bar t=%d"
+                " strategy=%s (bounded data limitation)",
+                replayed[0]["t"], start_from, strategy.strategy_id,
+            )
+        logger.info(
+            "engine: catch-up replaying %d 1m bars strategy=%s from t=%d",
+            len(replayed), strategy.strategy_id, start_from,
+        )
+        for bar in replayed:
+            if bh["bracket"] is None or bh["bracket"].closed:
+                break
+            legs = bh["bracket"].update(high=bar["h"], low=bar["l"])
+            for leg in legs:
+                await _store_exit_leg(pool, strategy, mode, bh, leg, bar["t"], bar["c"])
+                logger.info(
+                    "engine: catch-up exit strategy=%s reason=%s at bar_t=%d price=%.4f",
+                    strategy.strategy_id, leg["exit_reason"], bar["t"], bar["c"],
+                )
+            if bh["bracket"].closed:
+                strategy.mark_flat()
+                bh["bracket"] = None
+                bh["side"] = None
 
     logger.info("engine: entering live subscription strategy=%s %s %s", strategy.strategy_id, symbol, tf)
 
@@ -222,9 +257,11 @@ async def run_strategy_stream(
                     side = "long" if sig.signal == "open_long" else "short"
                     bh["bracket"] = BracketState(sig.bracket_spec, sig.bar_close_price)
                     bh["side"] = side
+                    bh["entry_bar_time"] = sig.signal_bar_time
                 elif sig.signal in ("close_long", "close_short"):
                     bh["bracket"] = None
                     bh["side"] = None
+                    bh["entry_bar_time"] = None
                     strategy.mark_flat()
 
     tasks = [
