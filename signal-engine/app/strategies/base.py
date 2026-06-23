@@ -11,6 +11,8 @@ class Signal:
     signal_bar_time: int  # ms epoch of the closed bar's open-time
     bar_close_price: float
     bracket_spec: dict = field(default_factory=dict)
+    exit_reason: str | None = None   # tp1 | tp2 | stop | be_stop | trail; None for entries
+    size_pct: float | None = None    # fraction of position exited on this leg; None for entries
 
 
 class Strategy(Protocol):

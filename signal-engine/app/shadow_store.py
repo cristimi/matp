@@ -30,9 +30,11 @@ async def store_shadow_signal(
             """
             INSERT INTO public.shadow_signals
                 (strategy_id, signal_source, symbol, side, signal,
-                 signal_bar_time, bar_close_price, bracket_spec, mode)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9)
-            ON CONFLICT (strategy_id, signal, signal_bar_time) DO NOTHING
+                 signal_bar_time, bar_close_price, bracket_spec, mode,
+                 exit_reason, size_pct)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11)
+            ON CONFLICT (strategy_id, signal, signal_bar_time, COALESCE(exit_reason, ''))
+            DO NOTHING
             """,
             strategy_id,
             signal_source,
@@ -43,6 +45,8 @@ async def store_shadow_signal(
             sig.bar_close_price,
             bracket_json,
             mode,
+            sig.exit_reason,
+            sig.size_pct,
         )
     logger.debug(
         "shadow_store: %s %s bar=%s close=%.2f",

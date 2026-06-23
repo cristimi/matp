@@ -22,6 +22,32 @@ def _closed_channel(exchange: str, symbol: str, timeframe: str) -> str:
     return f"candles:closed:{exchange}:{symbol}:{timeframe}"
 
 
+def _forming_key(exchange: str, symbol: str, timeframe: str) -> str:
+    return f"candle:forming:{exchange}:{symbol}:{timeframe}"
+
+
+async def read_forming_candle(
+    redis: aioredis.Redis,
+    exchange: str,
+    symbol: str,
+    timeframe: str,
+) -> dict | None:
+    """Return the current forming (incomplete) candle from Redis, or None if not present."""
+    import json
+    raw = await redis.get(_forming_key(exchange, symbol, timeframe))
+    if not raw:
+        return None
+    d = json.loads(raw)
+    return {
+        "t": int(d["t"]),
+        "o": float(d["o"]),
+        "h": float(d["h"]),
+        "l": float(d["l"]),
+        "c": float(d["c"]),
+        "v": float(d["v"]),
+    }
+
+
 def _parse_fields(fields: dict) -> dict:
     return {
         "t": int(fields["t"]),

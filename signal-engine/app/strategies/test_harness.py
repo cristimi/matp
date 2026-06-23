@@ -60,6 +60,11 @@ class TestHarnessStrategy:
     # Engine resets this on startup; it is not persisted.
     def __init__(self):
         self._position_side: str | None = None  # "long" | "short" | None
+        self.last_rsi: float | None = None
+
+    def mark_flat(self) -> None:
+        """Clear synthetic position (called by engine when bracket exits the position)."""
+        self._position_side = None
 
     def evaluate(self, closed_candles: list[dict]) -> list[Signal]:
         if len(closed_candles) < WARMUP_BARS + 1:
@@ -69,7 +74,10 @@ class TestHarnessStrategy:
         rsi = compute_rsi(close, length=RSI_LENGTH)
 
         if rsi is None or rsi.isna().all():
+            self.last_rsi = None
             return []
+
+        self.last_rsi = float(rsi.iloc[-1])
 
         last_bar = closed_candles[-1]
         bar_time = last_bar["t"]
