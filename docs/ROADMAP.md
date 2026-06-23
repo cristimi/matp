@@ -61,6 +61,26 @@ Changes required: DB migration, one line in `node_ingest.py`, `ai.ts` GET/PUT, U
   - Needs `is_system` (or `created_by`) flag to distinguish/protect seeded rows; CRUD endpoints; a "N strategies use this" warning before destructive actions.
   - `ai_prompt_templates` is a single canonical table in `public` — tester reads it, has no duplicate — so no schema-sync needed.
   - Display side is **already done** (committed): the config modal shows `system_prompt` + active data sources read-only via the `TemplatePreview` component in `Strategies.tsx`.
+- **Flip live-path validation**: the one-way exchange flip path (an `open_long` that nets/closes an
+  existing short, with the exchange returning realized PnL in the open order's `exec_result`) is wired
+  — the opposite leg is closed via `close_strategy_position(skip_exchange=True, realized_pnl=...)`,
+  booked once, with the new leg flattened if the flip breaches drawdown. But it was only verified via
+  SQL fixtures (Phase 1.5 C5/C6), never driven through a real exchange flip. Validate on BloFin demo:
+  confirm `exec_result` actually carries the realized PnL on the flip, allocation compounds once, the
+  opposite leg closes with no stale `open` row, and a breaching flip ends `enabled=false` with zero
+  open legs.
+- **Delta-booking on multi-order partial external reductions**: `sync_position_pnl` books allocation
+  on the `pnl_realized` NULL→value transition (first attribution). Its correction branch (part 2)
+  updates `pnl_realized` when an already-booked position's closing-order sum later changes, but does
+  **not** book the increment into `capital_allocation`. A native SL / liquidation is a single
+  full-close order so the common path is covered; staged *partial* external reductions that accumulate
+  across multiple closing orders would under-book the later increments. Design: on correction, book the
+  delta `(new_sum − previous pnl_realized)` via `_book_realized_pnl`.
+- **HYPE historical unbooked PnL row**: a pre-existing closed position carries a non-NULL `pnl_realized`
+  whose realized PnL was never compounded into its strategy's `capital_allocation` (predates the
+  booking fix; migration 026's `0→NULL` backfill only touched 0-rows, so non-NULL unbooked rows were
+  left as-is). One-off data correction: identify closed positions whose `pnl_realized` is non-NULL but
+  was never reflected in `capital_allocation`/`allocation_peak`, and reconcile the allocation.
 ### Dynamic strategy allocation (realized-PnL-compounding base)
 
 **Status:** COMPLETE — implemented 2026-06-20 across 5 phases.
@@ -92,3 +112,11 @@ paths share the `_is_drawdown_breached` pure helper (single source of truth).
 **Open tester-parity note:** strategy-tester backtest sizing does not yet apply
 the compounding rule — backtests still use the static `capital_allocation` seed.
 This divergence is accepted for now; tester parity is a separate backlog item.
+
+**Superseded by the disable-invariant arc (Phase 1–2.1):**
+- **Guard 5** (drawdown-on-open) was **removed** — drawdown auto-disable now fires on the close path
+  for every close (signal, manual, native-SL/reconciler, flip), not on the open attempt.
+- Allocation booking was **consolidated** out of the three `handle_webhook` close blocks into a single
+  `_book_realized_pnl`, invoked on the `pnl_realized` NULL→value transition (close-time,
+  `sync_position_pnl`, and `_recover_manual_close_pnl`).
+- The disabled⇒flat invariant is now enforced: disabling closes open legs first (`_flatten_strategy_positions`).
