@@ -9,15 +9,12 @@ from app.graph.state import AgentState
 
 logger = logging.getLogger(__name__)
 
-_EXCHANGE_MAP = {'blofin': 'blofin', 'hyperliquid': 'hyperliquid'}
-
 
 async def node_ingest(state: AgentState) -> AgentState:
     sc     = state['strategy_config']
     errors = list(state.get('data_fetch_errors') or [])
 
-    raw_exchange = sc.get('platform') or sc.get('exchange', 'binance')
-    exchange_id  = _EXCHANGE_MAP.get(raw_exchange, 'binance')
+    exchange_id = sc['exchange_id']
 
     base_asset   = sc.get('base_asset', 'BTC')
     quote_asset  = sc.get('quote_asset', 'USDT')

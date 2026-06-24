@@ -11,7 +11,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
 from app.config import settings
-from app.database import init_db, get_pool
+from app.database import init_db, get_pool, resolve_exchange_id
 from app.graph.graph import build_graph
 from app.prompt.builder import build_prompt, get_estimated_tokens
 from app.scheduler import start_all_schedulers, stop_all_schedulers, AdaptiveScheduler
@@ -192,9 +192,14 @@ async def internal_trigger(body: TriggerRequest):
             """,
             strategy_id,
         )
+        try:
+            exchange_id = await resolve_exchange_id(conn, strategy["account_id"])
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
 
     # ── Build strategy_config dict ────────────────────────────────────────
     sc = _row_to_dict(strategy)
+    sc['exchange_id'] = exchange_id
 
     # Parse symbol → base_asset / quote_asset
     symbol = sc.get('symbol', 'BTC-USDT')

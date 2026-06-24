@@ -28,6 +28,32 @@ def _make_exchange(exchange_id: str):
     return cls({'enableRateLimit': True})
 
 
+def resolve_ccxt_symbol(exchange, symbol: str) -> str:
+    """Return the symbol as listed in this exchange's loaded markets.
+
+    Resolution order:
+      1. Exact spot match (BASE/QUOTE)
+      2. Linear perp with same settle currency (BASE/QUOTE:QUOTE)
+      3. Any swap/future with matching base asset (for exchanges whose settle differs, e.g. HL BTC/USDC:USDC)
+    Raises ValueError if nothing is found.
+    """
+    if symbol in exchange.markets:
+        return symbol
+    parts = symbol.split('/')
+    if len(parts) == 2:
+        base, quote = parts
+        linear = f"{base}/{quote}:{quote}"
+        if linear in exchange.markets:
+            return linear
+        candidates = sorted(
+            s for s, m in exchange.markets.items()
+            if m.get('base') == base and m.get('type') in ('swap', 'future')
+        )
+        if candidates:
+            return candidates[0]
+    raise ValueError(f"{exchange.id} does not have market symbol {symbol!r}")
+
+
 async def fetch_ohlcv(
     exchange_id: str,
     symbol: str,
@@ -46,6 +72,7 @@ async def fetch_ohlcv(
     try:
         exchange = _make_exchange(exchange_id)
         await exchange.load_markets()
+        symbol = resolve_ccxt_symbol(exchange, symbol)
 
         # Request enough candles for all indicators (EMA200 needs 200+).
         # Do NOT pass `since` — exchanges cap limit (Binance: 1000) so a

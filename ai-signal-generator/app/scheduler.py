@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 import httpx
 
 from app.config import settings
+from app.database import resolve_exchange_id
 
 logger = logging.getLogger(__name__)
 
@@ -142,6 +143,8 @@ class AdaptiveScheduler:
             if not strategy:
                 raise ValueError(f"Strategy {self.strategy_id} not found or disabled")
 
+            exchange_id = await resolve_exchange_id(conn, strategy["account_id"])
+
             position = await conn.fetchrow(
                 """
                 SELECT *
@@ -164,6 +167,7 @@ class AdaptiveScheduler:
             )
 
         sc  = _row_to_dict(strategy)
+        sc['exchange_id'] = exchange_id
         pos = _row_to_dict(position) if position else None
 
         if pos and sc.get('account_id') and sc.get('symbol'):

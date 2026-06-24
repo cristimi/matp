@@ -9,6 +9,8 @@ import logging
 import httpx
 import ccxt.async_support as ccxt_async
 
+from app.data.ohlcv import resolve_ccxt_symbol
+
 logger = logging.getLogger(__name__)
 
 
@@ -50,6 +52,7 @@ async def fetch_funding_rate(exchange_id: str, symbol: str) -> dict | None:
             raise ValueError(f"Unknown exchange: {exchange_id}")
         exchange = cls({'enableRateLimit': True})
         await exchange.load_markets()
+        symbol = resolve_ccxt_symbol(exchange, symbol)
 
         data = await exchange.fetch_funding_rate(symbol)
         rate = float(data.get('fundingRate', 0) or 0)
@@ -80,6 +83,7 @@ async def fetch_open_interest(exchange_id: str, symbol: str) -> dict | None:
             raise ValueError(f"Unknown exchange: {exchange_id}")
         exchange = cls({'enableRateLimit': True})
         await exchange.load_markets()
+        symbol = resolve_ccxt_symbol(exchange, symbol)
 
         oi = await exchange.fetch_open_interest(symbol)
         oi_usd = float(

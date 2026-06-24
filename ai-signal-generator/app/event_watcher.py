@@ -5,9 +5,9 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from app.scheduler import AdaptiveScheduler
 
-logger = logging.getLogger(__name__)
+from app.database import resolve_exchange_id
 
-_EXCHANGE_MAP = {'blofin': 'blofin', 'hyperliquid': 'hyperliquid'}
+logger = logging.getLogger(__name__)
 
 
 async def event_watcher_loop(
@@ -99,15 +99,19 @@ async def _check_volume_spike(strategy_id: str, db_pool, config: dict) -> bool:
     try:
         async with db_pool.acquire() as conn:
             row = await conn.fetchrow(
-                "SELECT symbol, platform FROM strategies WHERE id = $1",
+                "SELECT symbol, account_id FROM strategies WHERE id = $1",
                 strategy_id,
             )
         if not row:
             return False
 
-        raw_symbol  = row['symbol']
-        platform    = row['platform'] or 'binance'
-        exchange_id = _EXCHANGE_MAP.get(platform, 'binance')
+        raw_symbol = row['symbol']
+        try:
+            async with db_pool.acquire() as conn:
+                exchange_id = await resolve_exchange_id(conn, row['account_id'])
+        except ValueError as exc:
+            logger.warning("_check_volume_spike: exchange resolution failed strategy=%s: %s", strategy_id, exc)
+            return False
 
         if '-' in raw_symbol:
             base, quote = raw_symbol.split('-', 1)
@@ -145,15 +149,19 @@ async def _check_funding_spike(strategy_id: str, db_pool, config: dict) -> bool:
     try:
         async with db_pool.acquire() as conn:
             row = await conn.fetchrow(
-                "SELECT symbol, platform FROM strategies WHERE id = $1",
+                "SELECT symbol, account_id FROM strategies WHERE id = $1",
                 strategy_id,
             )
         if not row:
             return False
 
-        raw_symbol  = row['symbol']
-        platform    = row['platform'] or 'blofin'
-        exchange_id = _EXCHANGE_MAP.get(platform, 'blofin')
+        raw_symbol = row['symbol']
+        try:
+            async with db_pool.acquire() as conn:
+                exchange_id = await resolve_exchange_id(conn, row['account_id'])
+        except ValueError as exc:
+            logger.warning("_check_funding_spike: exchange resolution failed strategy=%s: %s", strategy_id, exc)
+            return False
 
         if '-' in raw_symbol:
             base, quote = raw_symbol.split('-', 1)
