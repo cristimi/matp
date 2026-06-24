@@ -194,3 +194,72 @@ ORDER BY triggered_at DESC LIMIT 2;
 
 - `platform = 'auto'` on `hype-breakout-da2e` is now irrelevant for data routing. The account (`blofin-blofin-demo-v5vr`) resolves to `blofin` via `exchange_accounts.exchange`. No row update needed.
 - `fetchOpenInterest` on blofin is not supported in ccxt — `open_interest` will remain `None` for blofin strategies until ccxt adds support.
+
+---
+
+## Re-verify (2026-06-24)
+
+**Goal:** confirm a complete cycle — data → LLM → decision — with non-null `context_tokens`.
+
+### Trigger attempts (4 total)
+
+```
+curl -s -X POST http://localhost:8005/internal/trigger \
+  -H 'Content-Type: application/json' \
+  -d '{"strategy_id":"hype-breakout-da2e","trigger_reason":"reverify_exchange_fix"}'
+
+Attempt 1: {"signal_log_id":79,"gate_rejection_reason":"llm_failed","data_fetch_errors":[]}
+Attempt 2: {"signal_log_id":80,"gate_rejection_reason":"llm_failed","data_fetch_errors":[]}
+Attempt 3: {"signal_log_id":81,"gate_rejection_reason":"llm_failed","data_fetch_errors":[]}
+Attempt 4: {"signal_log_id":82,"gate_rejection_reason":"llm_failed","data_fetch_errors":[]}
+```
+
+`data_fetch_errors: []` on every attempt — the data pipeline is clean.
+
+### LLM error (from logs)
+
+```
+[ERROR] node_analyze: node_analyze error: Error calling model 'gemini-flash-latest'
+(RESOURCE_EXHAUSTED): 429 RESOURCE_EXHAUSTED.
+{'error': {'code': 429, 'message': 'Your prepayment credits are depleted. Please go to
+AI Studio at https://ai.studio/projects to manage your project and billing.',
+'status': 'RESOURCE_EXHAUSTED'}}
+```
+
+This is a **billing blocker** (Gemini prepayment credits depleted), not a transient 503 and not a code defect. Every cycle reaches the LLM call with correctly fetched data and fails only at the API credit check.
+
+### Log slice for attempt 4 (representative)
+
+```
+2026-06-24 18:31:59 [WARNING] fetch_open_interest error [blofin HYPE/USDT:USDT]: blofin fetchOpenInterest() is not supported yet
+2026-06-24 18:32:05 [ERROR]   node_analyze error: ... 429 RESOURCE_EXHAUSTED (credits depleted)
+2026-06-24 18:32:05 [INFO]    node_dispatch: strategy=hype-breakout-da2e action=None gate=False reason=llm_failed
+```
+
+- Exchange: **blofin** ✅
+- Symbol: **HYPE/USDT:USDT** ✅
+- No `does not have market symbol` error ✅
+- `data_fetch_errors` empty ✅
+
+### DB rows
+
+```sql
+SELECT triggered_at, trigger_reason, proposed_action, confidence,
+       context_tokens, gate_passed, gate_rejection_reason,
+       left(reasoning, 200) AS reasoning_head
+FROM ai_signal_log
+WHERE strategy_id = 'hype-breakout-da2e'
+  AND trigger_reason = 'reverify_exchange_fix'
+ORDER BY triggered_at DESC LIMIT 4;
+
+         triggered_at          |    trigger_reason     | proposed_action | confidence | context_tokens | gate_passed | gate_rejection_reason | reasoning_head
+-------------------------------+-----------------------+-----------------+------------+----------------+-------------+-----------------------+----------------
+ 2026-06-24 18:31:51+00        | reverify_exchange_fix |                 |            |                | f           | llm_failed            |
+ 2026-06-24 18:30:46+00        | reverify_exchange_fix |                 |            |                | f           | llm_failed            |
+ 2026-06-24 18:29:50+00        | reverify_exchange_fix |                 |            |                | f           | llm_failed            |
+ 2026-06-24 18:26:14+00        | reverify_exchange_fix |                 |            |                | f           | llm_failed            |
+```
+
+**Verdict: data-pipeline verified, LLM completion pending Gemini credit top-up.**
+
+`context_tokens` remains null because the model call is rejected before the response is parsed. Once credits are restored, the next scheduled or triggered cycle will complete without any code change — the data pipeline is confirmed working end-to-end up to the LLM boundary.

@@ -81,6 +81,14 @@ Changes required: DB migration, one line in `node_ingest.py`, `ai.ts` GET/PUT, U
   booking fix; migration 026's `0→NULL` backfill only touched 0-rows, so non-NULL unbooked rows were
   left as-is). One-off data correction: identify closed positions whose `pnl_realized` is non-NULL but
   was never reflected in `capital_allocation`/`allocation_peak`, and reconcile the allocation.
+- **Persist data-fetch health into `ai_signal_log`**: today the log stores `data_sources_used`
+  (derived purely from config flags), so a cycle looks identical whether fetches succeeded or
+  failed. Add a nullable column (e.g. `data_fetch_errors JSONB`, and/or a boolean like
+  `had_technical_data`) populated from the graph state's `data_fetch_errors` /
+  `technical_indicators` in `node_dispatch`. New numbered migration (next free number, currently
+  029), never edit an existing one, self-verifying `DO $$ ... RAISE EXCEPTION` block, zero-padded.
+  Rationale: the 2026-06-24 exchange-resolution fix could only be proven from container logs, not
+  from the DB — this closes that gap for future data-routing changes.
 ### Dynamic strategy allocation (realized-PnL-compounding base)
 
 **Status:** COMPLETE — implemented 2026-06-20 across 5 phases.
