@@ -25,5 +25,15 @@ class Settings(BaseSettings):
     source_tag: str = "telegram:AstronomerZero"
     asset_whitelist: str = "BTC,ETH"
 
+    # Phase 2a — Redis / mark price
+    redis_url: str = "redis://redis:6379"
+    ingestion_exchange: str = "blofin"
+
+    # Phase 2a — state machine / gates / staleness
+    execution_mode: str = "shadow"          # shadow | live  (live is a LATER prompt)
+    confidence_floor: float = 0.5
+    staleness_pct: float = 0.01             # skip priced entry if mark already moved >1% the signal's way
+    entry_on_missing_price: str = "market"  # priceless signal -> enter at market
+
 
 settings = Settings()

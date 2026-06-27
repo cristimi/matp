@@ -253,6 +253,7 @@ services:
     build: ./social-listener
     environment:
       DATABASE_URL: ${DATABASE_URL:-postgresql://matp:matp@postgres:5432/matp}
+      REDIS_URL: redis://redis:6379
       TG_API_ID: ${TG_API_ID:-0}
       TG_API_HASH: ${TG_API_HASH:-}
       TG_SESSION: ${TG_SESSION:-}
@@ -266,6 +267,8 @@ services:
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
     depends_on:
       postgres:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     networks: [matp_net]
     restart: unless-stopped
