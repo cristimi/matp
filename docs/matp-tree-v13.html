@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>MATP — strategy tree (concept A · v3)</title>
+<style>
+  :root{
+    --bg:#f5f6f8; --card:#ffffff; --line:#e4e7eb; --line2:#eef0f3;
+    --ink:#1c2430; --muted:#737d8c; --faint:#9aa3b0;
+    --pos:#15803d; --neg:#c0392b; --accent:#2b59c3;
+    --rail1:#5f86d4; --rail2:#88a6df;
+    --mono:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    --sans:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0}
+  body{background:var(--bg); color:var(--ink); font-family:var(--sans); font-size:14px; line-height:1.4;
+       -webkit-tap-highlight-color:transparent;}
+  .wrap{max-width:460px; margin:0 auto; padding:14px 10px 70px}
+  .legend{font-size:11px; color:var(--muted); background:var(--card); border:1px solid var(--line);
+          border-radius:10px; padding:9px 11px; margin-bottom:12px}
+  .legend b{color:var(--ink); font-weight:600}
+  .num{font-family:var(--mono); font-variant-numeric:tabular-nums}
+  .pos{color:var(--pos)} .neg{color:var(--neg)}
+
+  /* ---- strategy card (top level) ---- */
+  .node{background:var(--card); border:1px solid var(--line); border-radius:11px; margin-bottom:11px; overflow:hidden}
+  .strat{position:relative; box-shadow:0 1px 2px rgba(20,30,50,.04)}
+  .sbar{position:absolute; left:0; top:0; bottom:0; width:4px; z-index:1; border-radius:11px 0 0 11px}
+  .sbar.active{background:var(--accent)}
+  .sbar.stopped{background:#c4c9d1}
+  .stopchip{font-family:var(--mono); font-size:10px; font-weight:600; letter-spacing:.02em;
+            padding:2px 7px; border-radius:6px; border:1px solid; white-space:nowrap; line-height:1}
+  .title-push{margin-left:auto}
+  .stop-user{color:#6b7280; background:#f3f4f6; border-color:#e1e4e8}
+  .stop-drawdown{color:#9a5b00; background:#fdf6e8; border-color:#f0dcb8}
+  .stop-error{color:#c0392b; background:#fdf2f2; border-color:#f0d2d2}
+  .is-stopped .sname{color:var(--muted)}
+  .hdr{display:flex; align-items:stretch; min-height:48px; position:relative}
+  .hdr-actions{position:absolute; top:0; right:2px; display:flex; align-items:flex-start; z-index:2}
+  .strat .title{padding-right:118px}
+
+  .lbl{flex:1; text-align:left; padding:9px 6px 9px 12px; cursor:pointer;
+       display:flex; flex-direction:column; gap:2px; justify-content:center;
+       user-select:none; -webkit-user-select:none; -webkit-touch-callout:none}
+  .lbl:active{background:var(--line2)}
+  .lbl:focus-visible{outline:2px solid var(--accent); outline-offset:-2px}
+  .title{font-weight:600; display:flex; align-items:center; gap:7px; flex-wrap:wrap}
+  .meta{font-size:11.5px; color:var(--muted); display:flex; align-items:center; gap:9px; flex-wrap:wrap}
+  .caret{font-size:10px; color:var(--faint); transition:transform .15s; display:inline-block}
+  .lbl.kopen .caret{transform:rotate(90deg); color:var(--accent)}
+  .dot{width:7px; height:7px; border-radius:50%; background:var(--pos); flex:0 0 auto;
+       box-shadow:0 0 0 2px rgba(21,128,61,.16)}
+
+  .info{flex:0 0 auto; align-self:flex-start; margin:6px 9px; width:30px; height:30px; border-radius:50%;
+        border:1px solid var(--line); background:#fafbfc; color:var(--muted); font-size:13px; font-weight:600;
+        cursor:pointer; display:flex; align-items:center; justify-content:center}
+  .info:active{background:var(--line2)}
+  .info.on{color:var(--accent); border-color:#cdd9f3; background:#f1f5fd}
+  .act-ic{flex:0 0 auto; align-self:flex-start; margin:6px 5px; width:30px; height:30px; border-radius:50%;
+          border:1px solid var(--line); background:#fafbfc; color:var(--muted); font-size:11px;
+          line-height:1; cursor:pointer; display:flex; align-items:center; justify-content:center}
+  .act-ic:active{background:var(--line2)}
+  .pause-ic{color:#9a5b00; border-color:#f0dcb8; background:#fdf6e8}
+  .pause-ic.resume{color:var(--pos); border-color:#cfe8d6; background:#eef8f1}
+  .collapse-ic{font-size:9px}
+  .edit{display:none; margin:6px 0 6px 0}
+  .editfull{display:block; width:100%; margin-top:11px; padding:9px; font:inherit; font-size:12.5px;
+            color:var(--accent); background:#eef3fd; border:1px solid #d3e0f7; border-radius:8px; cursor:pointer}
+  .editfull:active{background:#e2ecfb}
+
+  .panel{display:none; padding:0 12px 11px 12px; border-top:1px solid var(--line2)}
+  .panel.open{display:block}
+  .panel .ph{font-size:10px; letter-spacing:.06em; text-transform:uppercase; color:var(--faint); margin:10px 0 5px}
+  .kv{display:flex; justify-content:space-between; gap:12px; padding:3px 0; font-size:12.5px}
+  .kv .k{color:var(--muted)} .kv .v{font-family:var(--mono); text-align:right}
+
+  /* ---- nested tracks (emphasised) ---- */
+  .track{display:none; margin:2px 9px 11px 13px; padding:2px 4px 6px; background:none; border-left:none}
+  .track.open{display:block}
+  .sub{font-size:10px; letter-spacing:.06em; text-transform:uppercase; color:var(--faint); padding:7px 4px 3px}
+  .closedwrap{display:none} .closedwrap.open{display:block}
+
+  .btnrow{display:flex; gap:8px; margin:8px 2px 2px}
+  .loadmore{flex:1; padding:8px; font:inherit; font-size:12px; color:var(--accent);
+            background:#e9f0fd; border:1px solid #d3e0f7; border-radius:8px; cursor:pointer}
+  .loadmore:active{background:#dde8fb}
+  .collapsebtn{flex:0 0 auto; padding:8px 14px; font:inherit; font-size:12px; color:var(--muted);
+               background:#fff; border:1px solid var(--line); border-radius:8px; cursor:pointer}
+  .collapsebtn.solo{flex:1}
+  .collapsebtn:active{background:var(--line2)}
+
+  /* position card sits on the track */
+  .node.pos-node{border-radius:9px; margin-bottom:8px; box-shadow:0 1px 1px rgba(20,30,50,.03)}
+  .node.pos-node:last-child{margin-bottom:2px}
+  /* orders track inside a position (deeper, lighter) */
+  .pos-node .track{margin:0 8px 9px 11px; background:#f4f7fd; border-left:2px solid var(--rail2); padding:5px 7px 6px}
+  .node.ord-node{border-radius:8px; border-color:var(--line2); margin-bottom:6px; background:#fff}
+  .node.ord-node:last-child{margin-bottom:2px}
+  .ord-node .hdr{min-height:42px}
+
+  .chip{font-size:10.5px; padding:1px 7px; border-radius:20px; border:1px solid var(--line);
+        color:var(--muted); background:#fafbfc; white-space:nowrap}
+  .chip.acct{color:var(--accent); border-color:#cdd9f3; background:#f1f5fd}
+  .chip.diff{color:#9a5b00; border-color:#f0dcb8; background:#fdf6e8}
+  .bal{font-family:var(--mono); font-weight:600}
+  .sname{font-weight:700; letter-spacing:-.01em}
+  .row-acct{display:flex; align-items:center; gap:8px; margin-top:6px}
+  .pill-sym{font-family:var(--mono); font-size:10px; font-weight:700; letter-spacing:.04em;
+            padding:2px 6px; border-radius:6px; border:1px solid var(--line);
+            background:#f3f4f6; color:#4b5563; white-space:nowrap; line-height:1}
+  .meta2{display:flex; align-items:flex-start; gap:18px; margin-top:6px}
+  .scell{display:flex; flex-direction:column; gap:2px}
+  .slab{font-size:9px; font-weight:600; letter-spacing:.10em; text-transform:uppercase; color:var(--faint)}
+  .sval{font-family:var(--mono); font-size:13px; font-weight:700; color:var(--ink); line-height:1}
+  .sval.w6{font-weight:600}
+  .sval.pos{color:var(--pos)} .sval.neg{color:var(--neg)}
+  .agg{font-family:var(--mono); font-weight:600}
+  .side-L{color:var(--pos); font-weight:600} .side-S{color:var(--neg); font-weight:600}
+  .pill{flex:0 0 auto; align-self:center; border:1px solid var(--line); color:var(--muted); background:none;
+        font:inherit; font-size:11px; padding:3px 9px; border-radius:7px; margin:6px 10px; cursor:pointer}
+  .pill:active{background:var(--line2)}
+  .pill.on{color:var(--accent); border-color:#cdd9f3; background:#f1f5fd}
+  .close-ic{flex:0 0 auto; align-self:center; margin:6px 9px 6px 0; width:30px; height:30px; border-radius:50%;
+            border:1px solid #f0d2d2; background:#fdf3f3; color:#c0392b; font-size:10px; font-weight:400;
+            line-height:1; cursor:pointer; display:flex; align-items:center; justify-content:center}
+  .close-ic:active{background:#fae5e5}
+  .btn-ic{margin-right:7px; font-size:.92em}
+  .closebtn{display:block; width:100%; margin-top:8px; padding:9px; font:inherit; font-size:12.5px;
+            color:#c0392b; background:#fdf2f2; border:1px solid #f0d2d2; border-radius:8px; cursor:pointer}
+  .closebtn:active{background:#f8e3e3}
+  .muted{color:var(--muted)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="legend">
+    <b>Concept A · v13.</b> Strategy header: row 1 = <b>symbol</b> (bold) + name; row 2 = account (left) +
+    stop reason (right); row 3 = Allocation / Total Return / Open PnL. Left bar blue=active, gray=stopped.
+    Row-1 icons: <b>⏸</b> pause, <b>ⓘ</b> details (+ ✎). <b>Tap name</b>: collapsed → live → all (bottom Collapse).
+    <b>Tap a position</b>: details → details + orders. Open positions: red <b>✕</b> + Close button.
+  </div>
+  <div id="root"></div>
+</div>
+
+<script>
+const INIT_CLOSED=3, STEP=3, HOLD_MS=500;
+
+function closedPos(side,sym,size,pnl,acct,entry,exit,reason,when){
+  return { side, sym, size, pnl, status:"closed", account:acct,
+    details:[["Entry",entry],["Exit",exit],["Realized",pnl],["Close reason",reason],["Closed",when]],
+    orders:[ { time:when, type:"Close", fill:exit, delta:"−"+size,
+      key:[["Avg fill",exit],["Realized",pnl],["Status","filled"]],
+      full:{origin:[["Source","tradingview webhook"],["Signal",reason]],
+            just:[["reason",reason]], exec:[["Exch order","—"],["placed→filled","~200ms"]]} } ] };
+}
+
+const data = [
+  {
+    name:"MATP-BTC-RSI", account:"blofin-demo", symbol:"BTC-USDT", allocation:"1,240.5", totalReturn:14.72,
+    details:[["Source","tradingview"],["Symbol","BTC-USDT · 1h"],["Win rate","61% (14/23)"],
+             ["Realized PnL","+182.40"],["Today","+12.90"],["Drawdown","8% of 50% cap"],["Leverage","5x · isolated"]],
+    positions:[
+      { side:"L", sym:"BTC", size:"0.12", pnl:"+80.40", status:"open",
+        details:[["Entry","64,210"],["Current","64,880"],["Liq","58,900"],["Leverage","5x"],["Opened","09:14"]],
+        orders:[
+          { time:"09:14", type:"Entry", fill:"64,212", delta:"+0.12",
+            key:[["Avg fill","64,212"],["Slippage","+2"],["Fee","0.46"],["Status","filled"]],
+            full:{origin:[["Source","tradingview webhook"],["Signal","rsi_cross_up"]],
+                  just:[["rsi","49.2 → 50.8"],["indicator_price","64,205"]],
+                  exec:[["Requested","64,210"],["Avg fill","64,212"],["Exch order","88213"],["placed→filled","240ms"]]} },
+          { time:"11:02", type:"TP1 (partial)", fill:"65,100", delta:"−0.06",
+            key:[["Avg fill","65,100"],["Realized","+53.40"],["Fee","0.39"],["Status","filled"]],
+            full:{origin:[["Source","tradingview webhook"],["Signal","tp1"]],
+                  just:[["target","+1.4%"],["indicator_price","65,090"]],
+                  exec:[["Requested","65,100"],["Avg fill","65,100"],["Exch order","88461"],["placed→filled","180ms"]]} },
+          { time:"13:40", type:"SL → breakeven", fill:"—", delta:"0",
+            key:[["New SL","64,210"],["Status","accepted"]],
+            full:{origin:[["Source","tradingview webhook"],["Signal","modify_sl"]],
+                  just:[["reason","TP1 hit → protect"]],
+                  exec:[["Exch order","88905"],["Status","working"]]} },
+          { time:"15:20", type:"TP2 (partial)", fill:"65,640", delta:"−0.03",
+            key:[["Avg fill","65,640"],["Realized","+42.90"],["Fee","0.20"],["Status","filled"]],
+            full:{origin:[["Source","tradingview webhook"],["Signal","tp2"]],
+                  just:[["target","+2.2%"],["indicator_price","65,630"]],
+                  exec:[["Requested","65,640"],["Avg fill","65,640"],["Exch order","89233"],["placed→filled","170ms"]]} },
+          { time:"16:05", type:"SL → trail", fill:"—", delta:"0",
+            key:[["New SL","64,900"],["Status","accepted"]],
+            full:{origin:[["Source","tradingview webhook"],["Signal","modify_sl"]],
+                  just:[["reason","trail under structure"]],
+                  exec:[["Exch order","89401"],["Status","working"]]} }
+        ] },
+      { side:"S", sym:"ETH", size:"0.50", pnl:"−12.10", status:"open",
+        details:[["Entry","3,402"],["Current","3,426"],["Liq","3,810"],["Leverage","5x"],["Opened","12:01"]],
+        orders:[
+          { time:"12:01", type:"Entry", fill:"3,402", delta:"+0.50",
+            key:[["Avg fill","3,402"],["Slippage","−1"],["Fee","0.28"],["Status","filled"]],
+            full:{origin:[["Source","tradingview webhook"],["Signal","rsi_cross_down"]],
+                  just:[["rsi","50.6 → 49.1"]],
+                  exec:[["Requested","3,403"],["Avg fill","3,402"],["Exch order","89110"],["placed→filled","210ms"]]} },
+          { time:"12:48", type:"Add (scale-in)", fill:"3,418", delta:"+0.20",
+            key:[["Avg fill","3,418"],["Fee","0.11"],["Status","filled"]],
+            full:{origin:[["Source","tradingview webhook"],["Signal","add_short"]],
+                  just:[["reason","rejection at 3,420"]],
+                  exec:[["Requested","3,418"],["Avg fill","3,418"],["Exch order","89255"],["placed→filled","160ms"]]} },
+          { time:"14:30", type:"SL set", fill:"—", delta:"0",
+            key:[["New SL","3,470"],["Status","accepted"]],
+            full:{origin:[["Source","tradingview webhook"],["Signal","modify_sl"]],
+                  just:[["reason","cap risk above range"]],
+                  exec:[["Exch order","89602"],["Status","working"]]} }
+        ] },
+      closedPos("L","BTC","0.10","+24.60","blofin-demo","61,900","63,200","tp2","Jun 24"),
+      closedPos("S","BTC","0.08","+18.10","blofin-live","66,800","66,100","condition_close","Jun 18"),
+      closedPos("L","BTC","0.15","−9.30","blofin-live","60,100","59,500","stop_loss","Jun 15"),
+      closedPos("L","ETH","0.40","+11.20","blofin-live","3,150","3,210","tp1","Jun 12"),
+      closedPos("S","BTC","0.06","+5.40","blofin-live","67,300","66,900","tp1","Jun 09")
+    ]
+  },
+  {
+    name:"MATP-ETH-AI", account:"hyperliquid-test", symbol:"ETH-USD", allocation:"500.0", totalReturn:-4.30,
+    status:"stopped", stopReason:"drawdown", stopText:"drawdown −12%",
+    details:[["Source","ai_engine"],["Symbol","ETH-USD · 4h"],["Win rate","50% (1/2)"],
+             ["Realized PnL","+6.20"],["Today","0.00"],["Drawdown","2% of 50% cap"],["Leverage","3x · cross"]],
+    positions:[
+      closedPos("L","ETH","0.30","+6.20","hyperliquid-test","3,300","3,320","tp1","Jun 22"),
+      closedPos("S","ETH","0.20","−3.10","hyperliquid-test","3,360","3,375","stop_loss","Jun 19")
+    ]
+  },
+  {
+    name:"SOCIAL-COPY", account:"blofin-demo", symbol:"SOL-USDT", allocation:"250.0", totalReturn:0.00,
+    details:[["Source","social (@astronomer_zero)"],["Symbol","SOL-USDT"],["Win rate","—"],
+             ["Realized PnL","0.00"],["Today","0.00"],["Drawdown","0%"],["Leverage","2x · isolated"]],
+    positions:[
+      { side:"L", sym:"SOL", size:"5", pnl:"+3.20", status:"open",
+        details:[["Entry","148.20"],["Current","148.84"],["Liq","120.00"],["Leverage","2x"],["Opened","08:30"]],
+        orders:[
+          { time:"08:30", type:"Entry", fill:"148.20", delta:"+5",
+            key:[["Avg fill","148.20"],["Status","filled"]],
+            full:{origin:[["Source","telegram parse"],["Signal","long SOL"]],
+                  just:[["parsed_text","\"long SOL here\""],["confidence","0.71"]],
+                  exec:[["Requested","market"],["Avg fill","148.20"],["Exch order","90551"]]} },
+          { time:"09:10", type:"TP1 (partial)", fill:"150.40", delta:"−2",
+            key:[["Avg fill","150.40"],["Realized","+4.40"],["Status","filled"]],
+            full:{origin:[["Source","telegram parse"],["Signal","tp1"]],
+                  just:[["parsed_text","\"take some off\""]],
+                  exec:[["Requested","market"],["Avg fill","150.40"],["Exch order","90712"]]} },
+          { time:"09:55", type:"SL → breakeven", fill:"—", delta:"0",
+            key:[["New SL","148.20"],["Status","accepted"]],
+            full:{origin:[["Source","telegram parse"],["Signal","modify_sl"]],
+                  just:[["reason","secure entry"]],
+                  exec:[["Exch order","90820"],["Status","working"]]} }
+        ] }
+    ]
+  },
+  {
+    name:"MOMENTUM-V2", account:"blofin-live", symbol:"BTC-USDT", allocation:"800.0", totalReturn:7.10,
+    status:"stopped", stopReason:"user", stopText:"stopped by user",
+    details:[["Source","tradingview"],["Symbol","BTC-USDT · 15m"],["Win rate","58% (7/12)"],
+             ["Realized PnL","+56.80"],["Today","0.00"],["Drawdown","5% of 50% cap"],["Leverage","4x · isolated"]],
+    positions:[
+      closedPos("L","BTC","0.12","+22.40","blofin-live","62,400","64,250","tp2","Jun 20"),
+      closedPos("S","BTC","0.09","−7.10","blofin-live","65,800","66,300","stop_loss","Jun 16")
+    ]
+  }
+];
+
+let uid=0; const id=()=>"n"+(++uid);
+const el=(t,c,h)=>{const e=document.createElement(t); if(c)e.className=c; if(h!=null)e.innerHTML=h; return e;};
+const toNum=v=>parseFloat(String(v).replace(/[,+]/g,'').replace('−','-'))||0;
+const fmtPnl=n=>(n<0?'−':'+')+Math.abs(n).toFixed(2);
+const pnlSpan=v=>`<span class="num ${toNum(v)<0?'neg':'pos'}">${v}</span>`;
+const kvPanel=rows=>rows.map(([k,v])=>`<div class="kv"><span class="k">${k}</span><span class="v">${v}</span></div>`).join('');
+
+function keepFocus(node,lbl){
+  try{ lbl.focus({preventScroll:true}); }catch(e){ try{lbl.focus();}catch(_){} }
+  node.scrollIntoView({behavior:'smooth', block:'nearest'});
+}
+
+function bindName(elm, onTap, onHold){
+  let timer=null, held=false;
+  const start=()=>{ held=false; timer=setTimeout(()=>{held=true; onHold();}, HOLD_MS); };
+  const end=fire=>{ if(timer){clearTimeout(timer); timer=null;} if(fire && !held) onTap(); };
+  elm.addEventListener('pointerdown',e=>{ if(e.button!=null && e.button!==0) return; start(); });
+  elm.addEventListener('pointerup',()=>end(true));
+  elm.addEventListener('pointerleave',()=>end(false));
+  elm.addEventListener('pointercancel',()=>end(false));
+  elm.addEventListener('contextmenu',e=>e.preventDefault());
+  elm.addEventListener('keydown',e=>{ if(e.key==='Enter'||e.key===' '){e.preventDefault(); onTap();} });
+}
+
+/* ---------- ORDER ---------- */
+function renderOrder(o){
+  const node=el('div','node ord-node');
+  const hdr=el('div','hdr');
+  const lbl=el('div','lbl'); lbl.tabIndex=0; lbl.setAttribute('role','button');
+  lbl.innerHTML=`<span class="title"><span class="caret">▸</span>${o.time} · ${o.type}</span>
+    <span class="meta">fill <span class="num">${o.fill}</span> · Δ <span class="num">${o.delta}</span></span>`;
+  const pill=el('button','pill'); pill.textContent='full info';
+  hdr.append(lbl,pill);
+  const keyP=el('div','panel'); keyP.innerHTML=`<div class="ph">Key details</div>${kvPanel(o.key)}`;
+  const fullP=el('div','panel');
+  fullP.innerHTML=`<div class="ph">Origin</div>${kvPanel(o.full.origin)}
+       <div class="ph">Justification</div>${kvPanel(o.full.just)}
+       <div class="ph">Execution</div>${kvPanel(o.full.exec)}`;
+  bindName(lbl, ()=>{ const open=keyP.classList.toggle('open'); lbl.classList.toggle('kopen',open);
+                      if(!open) keepFocus(node,lbl); },
+                 ()=>{ keyP.classList.remove('open'); fullP.classList.remove('open');
+                       lbl.classList.remove('kopen'); pill.classList.remove('on'); keepFocus(node,lbl); });
+  pill.addEventListener('click',()=>{ const on=fullP.classList.toggle('open'); pill.classList.toggle('on',on); });
+  node.append(hdr,keyP,fullP);
+  return node;
+}
+
+/* ---------- POSITION (simple expand of its orders) ---------- */
+function renderPosition(p, stratAccount){
+  const node=el('div','node pos-node');
+  const hdr=el('div','hdr');
+  const sideCls=p.side==='L'?'side-L':'side-S', sideTxt=p.side==='L'?'LONG':'SHORT';
+  const diff=(p.account && p.account!==stratAccount)?`<span class="chip diff">${p.ac
