@@ -188,4 +188,75 @@ docker compose exec -T dashboard-ui grep -c 'strategies/tree' /usr/share/nginx/h
 
 ---
 
-_Phase 2B (expansion mechanics) and 2C (ⓘ panel + deploy) pending human confirmation._
+## Phase 2B — Expansion mechanics
+
+### Deployed bundle
+
+```
+Asset hash: index-D94a2hDg.js  (was index-DzZZFKaq.js)
+```
+
+String verification in served bundle:
+```
+strategies/tree  → 1
+Open Positions   → 1
+Closed Positions → 1
+Load more        → 1
+full info        → 1
+pointerType      → 2   (long-press handler)
+```
+
+### Real curl: GET /strategies/hype-test-7db4/positions?scope=all (truncated)
+
+```json
+[
+  { "id": "5862c610-...", "side": "long", "base_asset": "HYPE", "status": "open",
+    "size": 3.2, "entry_price": 62.134, "mark_price": 62.134,
+    "unrealized_pnl": null, "realized_pnl": null, "liquidation_price": null,
+    "leverage": 10, "opened_at": "2026-06-23T19:42:25.344Z", ... },
+  { "id": "93918e49-...", "side": "long", "status": "closed",
+    "realized_pnl": -3.3002, "close_reason": "flatten_on_disable",
+    "closed_at": "2026-06-22T19:00:31.444Z", ... },
+  ...
+]
+```
+
+### Real curl: GET /positions/5862c610-.../orders
+
+```json
+[{
+  "id": "4705b35b-...", "time": "2026-06-23T19:42:20.914Z",
+  "type": "entry", "fill": 62.134, "delta": 3.21900501, "status": "filled",
+  "key": { "avg_fill": 62.134, "realized": 0, "fee": 0 }
+}]
+```
+
+### Real curl: GET /orders/4705b35b-.../detail (null AI/exec fields)
+
+```json
+{
+  "origin": { "signal_source": "tradingview", "raw_webhook": {...} },
+  "justification": { "indicator_price": null, "ai_reasoning": null, "ai_confidence": null },
+  "execution": {
+    "requested_price": null, "exchange_fee": 0,
+    "exchange_order_id": "1000130850028",
+    "placed_at": "2026-06-23T19:42:21.222Z",
+    "filled_at": "2026-06-23T19:42:24.496Z",
+    "actual_fill_price": 62.134, "events": []
+  }
+}
+```
+
+### What Phase 2B delivers
+
+- **Strategy 3-state tap cycle**: collapsed → open (fetches `scope=open`) → all (fetches `scope=all`) → collapsed. Long-press (500ms, pointer events) → collapsed from any state.
+- **Collapsed positions paging**: closed positions capped at 3; "Load more" adds 3 from already-fetched data. "Collapse" button goes back to collapsed state.
+- **Position 3-state tap cycle**: header → details → details+orders (lazy fetch) → header.
+- **Order expand**: tap header toggles key details (avg_fill/realized/fee/status). "full info" button lazy-fetches `/orders/:id/detail`, toggleable.
+- **Null-safe rendering**: all `null` fields render as `—` throughout (justification.ai_reasoning, execution.requested_price, etc.).
+- **Account diff chip**: shown on position only when account_label or account_exchange differs from strategy's.
+- **Inert controls**: ✕ close icon (open position header) + "Close position" button (order track, open only) are present for layout fidelity but `disabled` with no write calls.
+
+---
+
+_Phase 2C (ⓘ detail panel + final redeploy) pending human confirmation._
