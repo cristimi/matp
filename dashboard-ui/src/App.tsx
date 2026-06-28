@@ -9,9 +9,11 @@ import StrategyDetail from './pages/StrategyDetail';
 import SettingsPage from './pages/Settings';
 import SignalLogPage from './pages/SignalLog';
 import AiSignalLog from './pages/AiSignalLog';
+import StrategyTreePage from './pages/StrategyTree';
 import { useNavCounts } from './hooks/useNavCounts';
 
 const NAV = [
+  { to: '/tree',       label: 'Tree',       icon: '🌳' },
   { to: '/strategies', label: 'Strategies', icon: '⚙️' },
   { to: '/accounts',   label: 'Accounts',   icon: '🔑' },
   { to: '/positions',  label: 'Positions',  icon: '📈' },
@@ -193,6 +195,7 @@ export default function App() {
           <Route path="/signals"    element={<SignalLogPage />} />
           <Route path="/ai-signals" element={<AiSignalLog />} />
           <Route path="/strategy/:id" element={<StrategyDetail />} />
+          <Route path="/tree"       element={<StrategyTreePage />} />
           <Route path="/settings"   element={<SettingsPage />} />
         </Routes>
       </main>

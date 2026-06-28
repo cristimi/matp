@@ -167,3 +167,98 @@ export async function fetchStrategyPositions(id: string): Promise<Position[]> {
 export async function fetchStrategyComparison(period: string): Promise<StrategyComparison[]> {
   return api.get<StrategyComparison[]>(`/strategies/comparison?period=${period}`);
 }
+
+// ---- Strategy Tree (Phase 2) ----
+
+export interface StrategyTreeItem {
+  id: string;
+  name: string;
+  symbol: string;
+  account_label: string;
+  account_exchange: string;
+  account_mode: string;
+  enabled: boolean;
+  stop_reason: string | null;
+  capital_allocation: number;
+  total_return: number;
+  open_positions_count: number;
+  open_pnl: number;
+}
+
+export interface TreePosition {
+  id: string;
+  side: string;
+  base_asset: string;
+  quote_asset: string;
+  size: number;
+  entry_price: number;
+  mark_price: number;
+  unrealized_pnl: number | null;
+  realized_pnl: number | null;
+  liquidation_price: number | null;
+  leverage: number;
+  opened_at: string;
+  closed_at: string | null;
+  close_reason: string | null;
+  status: 'open' | 'closed';
+  account_label: string;
+  account_exchange: string;
+  order_count: number;
+}
+
+export interface TreeOrderKey {
+  avg_fill: number | null;
+  realized: number | null;
+  fee: number | null;
+}
+
+export interface TreeOrder {
+  id: string;
+  time: string;
+  type: string;
+  fill: number | null;
+  delta: number | null;
+  status: string;
+  key: TreeOrderKey;
+}
+
+export interface OrderDetail {
+  origin: {
+    signal_source: string | null;
+    raw_webhook: Record<string, unknown> | null;
+  };
+  justification: {
+    signal_metadata: Record<string, unknown> | null;
+    indicator_price: number | null;
+    ai_reasoning: string | null;
+    ai_confidence: number | null;
+  };
+  execution: {
+    requested_price: number | null;
+    exchange_fee: number | null;
+    exchange_order_id: string | null;
+    placed_at: string | null;
+    filled_at: string | null;
+    actual_fill_price: number | null;
+    events: unknown[];
+  } | null;
+}
+
+export async function fetchStrategyTree(): Promise<StrategyTreeItem[]> {
+  return api.get<StrategyTreeItem[]>('/strategies/tree');
+}
+
+export async function fetchTreePositions(
+  strategyId: string,
+  scope: 'open' | 'all',
+): Promise<TreePosition[]> {
+  return api.get<TreePosition[]>(`/strategies/${strategyId}/positions?scope=${scope}`);
+}
+
+export async function fetchPositionOrders(positionId: string): Promise<TreeOrder[]> {
+  return api.get<TreeOrder[]>(`/positions/${positionId}/orders`);
+}
+
+export async function fetchOrderDetail(orderId: string): Promise<OrderDetail> {
+  return api.get<OrderDetail>(`/orders/${orderId}/detail`);
+}
