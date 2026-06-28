@@ -19,8 +19,6 @@ interface Strategy {
   open_positions_count?:  number;
   closed_positions_count?: number;
   realized_pnl?:          number;
-  max_daily_signals?:          number;
-  signals_today:        number;
   pnl_total:            string;
   open_positions?:      number;
   win_positions?:       number;
@@ -798,7 +796,6 @@ const TV_FORM_DEFAULTS = {
   name: '', symbol: '', account_id: '', interval: '1h',
   default_leverage: '1',
   max_leverage: '10',
-  max_daily_signals: '500',
   capital_allocation: '100', margin_per_trade: '5', max_drawdown_pct: '50',
   allow_quote_variants: false, allow_cross_charting: false,
 };
@@ -964,7 +961,6 @@ export default function Strategies() {
       default_leverage:           String(strategy.default_leverage ?? 1),
       max_leverage:               String(strategy.max_leverage ?? 10),
       interval:                   String(strategy.interval ?? '1h'),
-      max_daily_signals:          String(strategy.max_daily_signals ?? 500),
       capital_allocation:         String(strategy.capital_allocation ?? 100),
       allocation_delta:           '0',
       margin_per_trade:           String(strategy.margin_per_trade ?? 5),
@@ -1075,7 +1071,6 @@ export default function Strategies() {
             ...editForm,
             default_leverage:   parseInt(editForm.default_leverage),
             max_leverage:       parseInt(editForm.max_leverage),
-            max_daily_signals:  parseInt(editForm.max_daily_signals),
             allocation_delta:   parseFloat(editForm.allocation_delta ?? '0'),
             margin_per_trade:   parseFloat(editForm.margin_per_trade),
             max_drawdown_pct:   parseFloat(editForm.max_drawdown_pct),
@@ -1143,7 +1138,6 @@ export default function Strategies() {
             strategy_source:    'tradingview',
             default_leverage:   parseInt(addForm.default_leverage),
             max_leverage:       parseInt(addForm.max_leverage),
-            max_daily_signals:  parseInt(addForm.max_daily_signals),
             capital_allocation: parseFloat(addForm.capital_allocation),
             margin_per_trade:   parseFloat(addForm.margin_per_trade),
             max_drawdown_pct:   parseFloat(addForm.max_drawdown_pct),
@@ -1466,12 +1460,6 @@ export default function Strategies() {
                       <option key={i} value={i}>{i}</option>
                     ))}
                   </select>
-                </FieldRow>
-                <FieldRow label="Max Daily Signals">
-                  <input type="number"
-                    value={addForm.max_daily_signals}
-                    onChange={e => setAddForm(f => ({ ...f, max_daily_signals: e.target.value }))}
-                    style={inputStyle} />
                 </FieldRow>
               </>
             )}
@@ -1894,13 +1882,6 @@ export default function Strategies() {
                     ))}
                   </select>
                 </FieldRow>
-                <FieldRow label="Daily Signals">
-                  <input type="number"
-                    value={editForm.max_daily_signals}
-                    onChange={e => setEditForm((f:any) => ({ ...f, max_daily_signals: e.target.value }))}
-                    style={inputStyle} />
-                </FieldRow>
-
                 {webhookInfo && (
                   <div style={{
                     background:'var(--bg3)', borderRadius:'8px',

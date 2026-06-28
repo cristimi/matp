@@ -204,7 +204,6 @@ router.post('/', async (req: Request, res: Response) => {
     default_leverage           = 1,
     margin_mode                = 'isolated',
     max_leverage               = 10,
-    max_daily_signals          = 500,
     capital_allocation         = 100,
     margin_per_trade           = 5,
     max_drawdown_pct           = 50,
@@ -279,7 +278,7 @@ router.post('/', async (req: Request, res: Response) => {
         class, config_yaml,
         webhook_secret,
         default_leverage, margin_mode,
-        max_leverage, max_daily_signals,
+        max_leverage,
         capital_allocation, initial_allocation, allocation_peak,
         margin_per_trade, max_drawdown_pct,
         allow_quote_variants, allow_cross_charting,
@@ -288,17 +287,17 @@ router.post('/', async (req: Request, res: Response) => {
         $1, $2, $3, $4, $5, $6,
         'webhook', '',
         $7,
-        $8, $9, $10, $11,
-        $12, $12, $12,
-        $13, $14,
-        $15, $16,
-        $17, true
+        $8, $9, $10,
+        $11, $11, $11,
+        $12, $13,
+        $14, $15,
+        $16, true
       )`,
       [
         id, name, normalisedSymbol, account_id, interval, description,
         webhookSecret,
         default_leverage, margin_mode,
-        max_leverage, max_daily_signals,
+        max_leverage,
         Number(capital_allocation), Number(margin_per_trade), Number(max_drawdown_pct),
         allow_quote_variants, allow_cross_charting,
         strategy_source,
@@ -512,7 +511,6 @@ router.put('/:id', async (req: Request, res: Response) => {
     allow_quote_variants,
     allow_cross_charting,
     max_leverage,
-    max_daily_signals,
     allocation_delta,
     margin_per_trade,
     max_drawdown_pct,
@@ -601,15 +599,14 @@ router.put('/:id', async (req: Request, res: Response) => {
          allow_quote_variants       = COALESCE($6, allow_quote_variants),
          allow_cross_charting       = COALESCE($7, allow_cross_charting),
          max_leverage               = COALESCE($8, max_leverage),
-         max_daily_signals          = COALESCE($9, max_daily_signals),
-         capital_allocation         = capital_allocation + COALESCE($11, 0),
-         initial_allocation         = initial_allocation + COALESCE($11, 0),
-         allocation_peak            = allocation_peak    + COALESCE($11, 0),
-         margin_per_trade           = COALESCE($12, margin_per_trade),
-         max_drawdown_pct           = COALESCE($13, max_drawdown_pct),
-         account_id                 = COALESCE($14, account_id),
+         capital_allocation         = capital_allocation + COALESCE($10, 0),
+         initial_allocation         = initial_allocation + COALESCE($10, 0),
+         allocation_peak            = allocation_peak    + COALESCE($10, 0),
+         margin_per_trade           = COALESCE($11, margin_per_trade),
+         max_drawdown_pct           = COALESCE($12, max_drawdown_pct),
+         account_id                 = COALESCE($13, account_id),
          updated_at                 = NOW()
-       WHERE id = $10
+       WHERE id = $9
        RETURNING id, name, symbol, interval, enabled,
                  default_leverage, margin_mode,
                  allow_quote_variants, allow_cross_charting, account_id,
@@ -624,7 +621,6 @@ router.put('/:id', async (req: Request, res: Response) => {
         allow_quote_variants ?? null,
         allow_cross_charting ?? null,
         max_leverage ?? null,
-        max_daily_signals ?? null,
         req.params.id,
         allocation_delta !== undefined ? Number(allocation_delta) : null,
         margin_per_trade !== undefined ? Number(margin_per_trade) : null,
@@ -774,16 +770,6 @@ router.get('/:id/webhook-calls', async (req: Request, res: Response) => {
   }
 });
 
-
-router.post('/:id/max-daily-signals', async (req: Request, res: Response) => {
-  try {
-    await getPool().query('UPDATE strategies SET max_daily_signals = $1 WHERE id = $2', [req.body.max_daily_signals, req.params.id]);
-    res.json({ message: 'Limit updated' });
-  } catch (err) {
-    console.error('Error updating max daily signals:', err);
-    res.status(500).json({ error: 'Database error' });
-  }
-});
 
 
 router.get('/:id/stats', async (req: Request, res: Response) => {

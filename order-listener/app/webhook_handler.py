@@ -9,7 +9,7 @@ import logging
 import time
 import uuid
 import asyncio
-from datetime import datetime, timezone, date
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Optional
 
@@ -221,21 +221,6 @@ async def _get_strategy(pool, strategy_id: str):
 
     return None
 
-
-async def _check_rate_limit(pool, strategy_id: str, max_signals: int) -> bool:
-    """Check if the strategy has exceeded its daily signal limit."""
-    async with pool.acquire() as conn:
-        count = await conn.fetchval(
-            """
-            SELECT COUNT(*) FROM strategy_webhook_calls 
-            WHERE strategy_id = $1 
-            AND http_status = 200 
-            AND received_at >= $2
-            """,
-            strategy_id,
-            datetime.combine(date.today(), datetime.min.time(), tzinfo=timezone.utc)
-        )
-        return count < max_signals
 
 
 async def _insert_signal_log(
@@ -608,19 +593,7 @@ async def receive_webhook(
 
     # ── Risk Management Guards ────────────────────────────────────────
 
-    # Guard 1: Daily signal cap
-    signals_today = strategy.get("signals_today", 0) or 0
-    max_daily     = strategy.get("max_daily_signals", 500) or 500
-    if signals_today >= max_daily:
-        detail = (
-            f"Daily signal limit reached for strategy {strategy_id}. "
-            f"Limit: {max_daily}. Signals today: {signals_today}."
-        )
-        logger.warning(f"Strategy {strategy_id} daily signal cap reached ({signals_today}/{max_daily})")
-        await _finalize_signal_log(pool, signal_log_id, 429, "guard_rejected", detail, start_ms)
-        raise HTTPException(status_code=429, detail=detail)
-
-    # Guard 3: Max leverage
+    # Guard: Max leverage
     max_lev = int(strategy.get("max_leverage", 10) or 10)
     if effective_leverage > max_lev:
         detail = (
@@ -978,20 +951,15 @@ async def _process_order(
     account_id: str = "", account_label: str = "", strategy_id: str = "",
 ):
     try:
-        # Increment daily signal counter (best-effort, non-blocking)
+        # Record last signal timestamp (best-effort, non-blocking)
         try:
             async with pool.acquire() as conn:
                 await conn.execute(
-                    """
-                    UPDATE strategies
-                    SET signals_today = signals_today + 1,
-                        last_signal_at = NOW()
-                    WHERE id = $1
-                    """,
+                    "UPDATE strategies SET last_signal_at = NOW() WHERE id = $1",
                     strategy['id'],
                 )
         except Exception as e:
-            logger.warning(f"Failed to increment signals_today for {strategy['id']}: {e}")
+            logger.warning(f"Failed to update last_signal_at for {strategy['id']}: {e}")
 
         # ── Handle target_position = "flat" ──────────────────────────────
         if payload.target_position == "flat":
