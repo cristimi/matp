@@ -363,6 +363,66 @@ router.get('/comparison', async (req: Request, res: Response) => {
   }
 });
 
+// GET /strategies/tree — L1 tree list: strategies + open-position peek
+// MUST stay before /:id to prevent Express capturing "tree" as an id.
+router.get('/tree', async (_req: Request, res: Response) => {
+  try {
+    const { rows } = await getPool().query(`
+      SELECT
+        s.id,
+        s.name,
+        s.symbol,
+        ea.label        AS account_label,
+        ea.exchange     AS account_exchange,
+        ea.mode         AS account_mode,
+        s.enabled,
+        s.capital_allocation,
+        CASE
+          WHEN COALESCE(s.initial_allocation, s.capital_allocation, 0) = 0 THEN 0::float
+          ELSE ROUND(
+            COALESCE((
+              SELECT SUM(sp.pnl_realized)
+              FROM strategy_positions sp
+              WHERE sp.strategy_id = s.id AND sp.status = 'closed'
+            ), 0)::numeric /
+            NULLIF(COALESCE(s.initial_allocation, s.capital_allocation), 0)::numeric * 100,
+          2)::float
+        END AS total_return,
+        COALESCE((
+          SELECT COUNT(*)
+          FROM strategy_positions sp
+          WHERE sp.strategy_id = s.id AND sp.status = 'open'
+        ), 0)::int AS open_positions_count,
+        COALESCE((
+          SELECT SUM(sp.pnl_unrealized)
+          FROM strategy_positions sp
+          WHERE sp.strategy_id = s.id AND sp.status = 'open'
+        ), 0)::numeric AS open_pnl
+      FROM strategies s
+      LEFT JOIN exchange_accounts ea ON ea.id = s.account_id
+      WHERE COALESCE(s.is_deleted, false) = false
+      ORDER BY s.created_at DESC
+    `);
+    res.json(rows.map(r => ({
+      id:                   r.id,
+      name:                 r.name,
+      symbol:               r.symbol,
+      account_label:        r.account_label,
+      account_exchange:     r.account_exchange,
+      account_mode:         r.account_mode,
+      enabled:              r.enabled,
+      stop_reason:          null,
+      capital_allocation:   Number(r.capital_allocation),
+      total_return:         Number(r.total_return),
+      open_positions_count: r.open_positions_count,
+      open_pnl:             Number(r.open_pnl),
+    })));
+  } catch (err) {
+    console.error('Error fetching strategy tree:', err);
+    res.status(500).json({ error: 'Database error fetching strategy tree' });
+  }
+});
+
 // GET /strategies/:id/webhook-info — returns webhook URL and secret
 // Used by the edit page to display the TradingView configuration
 router.get('/:id/webhook-info', async (req: Request, res: Response) => {
@@ -822,31 +882,82 @@ router.get('/:id/stats', async (req: Request, res: Response) => {
   }
 });
 
+// GET /strategies/:id/positions?scope=open|all — L2 position list (lazy)
+// Account is derived from the opening order (not the strategy's current account_id)
+// to correctly label historical positions after a strategy account change.
 router.get('/:id/positions', async (req: Request, res: Response) => {
   try {
-    const query = `
-      SELECT 
-        sp.*,
-        b.symbol as base_asset, 
-        q.symbol as quote_asset
+    const scope  = (req.query.scope  as string) || 'open';
+    const limit  = Math.min(parseInt((req.query.limit  as string) || '50'), 200);
+    const offset = Math.max(parseInt((req.query.offset as string) || '0'),   0);
+    const scopeFilter = scope === 'open' ? "AND sp.status = 'open'" : '';
+
+    const { rows } = await getPool().query(`
+      SELECT
+        sp.id,
+        sp.side,
+        COALESCE(b.symbol, SPLIT_PART(sp.symbol, '-', 1)) AS base_asset,
+        COALESCE(q.symbol, SPLIT_PART(sp.symbol, '-', 2)) AS quote_asset,
+        sp.size,
+        sp.entry_price,
+        sp.entry_price AS mark_price,
+        sp.pnl_unrealized AS unrealized_pnl,
+        sp.pnl_realized   AS realized_pnl,
+        sp.liquidation_price,
+        sp.leverage,
+        sp.opened_at,
+        sp.closed_at,
+        sp.close_reason,
+        sp.status,
+        COALESCE(o_open.account_id, oel.account_id, s.account_id) AS account_id,
+        COALESCE(ea_open.label,    ea_oel.label,    ea_s.label)    AS account_label,
+        COALESCE(ea_open.exchange, ea_oel.exchange, ea_s.exchange) AS account_exchange,
+        (
+          SELECT COUNT(*) FROM orders o
+          WHERE o.id = sp.opening_order_id
+             OR o.closes_position_id = sp.id
+        )::int AS order_count
       FROM strategy_positions sp
-      JOIN trading_pairs tp ON sp.pair_id = tp.id
-      JOIN assets b ON tp.base_asset_id = b.id
-      JOIN assets q ON tp.quote_asset_id = q.id
-      WHERE sp.strategy_id = $1 AND sp.status = 'open'
-    `;
-    const { rows } = await getPool().query(query, [req.params.id]);
-    const positions = rows.map(r => ({
-      ...r,
-      pair: { base: r.base_asset, quote: r.quote_asset, label: `${r.base_asset}/${r.quote_asset}` },
-      entryPx: r.entry_price,
-      markPx: r.current_price,
-      unrealizedPnl: r.pnl_unrealized
-    }));
-    res.json(positions);
+      JOIN strategies s ON s.id = sp.strategy_id
+      LEFT JOIN trading_pairs tp ON tp.id = sp.pair_id
+      LEFT JOIN assets b  ON b.id  = tp.base_asset_id
+      LEFT JOIN assets q  ON q.id  = tp.quote_asset_id
+      LEFT JOIN orders o_open ON o_open.id = sp.opening_order_id
+      LEFT JOIN order_execution_log oel
+        ON oel.exchange_order_id = o_open.exchange_order_id
+        AND o_open.exchange_order_id IS NOT NULL
+      LEFT JOIN exchange_accounts ea_open ON ea_open.id = o_open.account_id
+      LEFT JOIN exchange_accounts ea_oel  ON ea_oel.id  = oel.account_id
+      LEFT JOIN exchange_accounts ea_s    ON ea_s.id    = s.account_id
+      WHERE sp.strategy_id = $1
+        ${scopeFilter}
+      ORDER BY sp.opened_at DESC
+      LIMIT $2 OFFSET $3
+    `, [req.params.id, limit, offset]);
+
+    res.json(rows.map(r => ({
+      id:                r.id,
+      side:              r.side,
+      base_asset:        r.base_asset,
+      quote_asset:       r.quote_asset,
+      size:              Number(r.size),
+      entry_price:       Number(r.entry_price),
+      mark_price:        Number(r.mark_price),
+      unrealized_pnl:    r.unrealized_pnl    != null ? Number(r.unrealized_pnl)    : null,
+      realized_pnl:      r.realized_pnl      != null ? Number(r.realized_pnl)      : null,
+      liquidation_price: r.liquidation_price != null ? Number(r.liquidation_price) : null,
+      leverage:          r.leverage,
+      opened_at:         r.opened_at,
+      closed_at:         r.closed_at,
+      close_reason:      r.close_reason,
+      status:            r.status,
+      account_label:     r.account_label,
+      account_exchange:  r.account_exchange,
+      order_count:       r.order_count,
+    })));
   } catch (err) {
     console.error(`Error fetching positions for strategy ${req.params.id}:`, err);
-    res.status(500).json({ error: 'Database error' });
+    res.status(500).json({ error: 'Database error fetching positions' });
   }
 });
 

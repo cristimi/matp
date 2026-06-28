@@ -150,4 +150,61 @@ router.post('/:id/refresh', async (req: Request, res: Response) => {
   res.json({ success: true, message: 'Refresh triggered' });
 });
 
+// GET /positions/:id/orders — L3 lazy order timeline for a position
+// Returns entry order + all close orders ordered by time, with OEL fee when available.
+router.get('/:id/orders', async (req: Request, res: Response) => {
+  try {
+    const { rows } = await getPool().query(`
+      SELECT
+        o.id,
+        o.received_at AS time,
+        CASE
+          WHEN o.id = sp.opening_order_id                               THEN 'entry'
+          WHEN o.signal_source IN ('stop_loss', 'sl', 'stop-loss')      THEN 'stop-loss'
+          WHEN o.signal_source IN ('take_profit', 'tp', 'take-profit')   THEN 'take-profit'
+          ELSE 'partial-close'
+        END AS type,
+        o.actual_fill_price AS fill,
+        o.size AS delta,
+        o.status,
+        o.actual_fill_price AS avg_fill,
+        o.pnl AS realized,
+        oel.exchange_fee AS fee
+      FROM strategy_positions sp, orders o
+      LEFT JOIN order_execution_log oel
+        ON oel.exchange_order_id = o.exchange_order_id
+        AND o.exchange_order_id IS NOT NULL
+      WHERE sp.id = $1
+        AND (o.id = sp.opening_order_id OR o.closes_position_id = sp.id)
+      ORDER BY o.received_at ASC
+    `, [req.params.id]);
+
+    if (rows.length === 0) {
+      const check = await getPool().query(
+        'SELECT id FROM strategy_positions WHERE id = $1', [req.params.id]
+      );
+      if (check.rowCount === 0) {
+        return res.status(404).json({ error: `Position not found: ${req.params.id}` });
+      }
+    }
+
+    res.json(rows.map(r => ({
+      id:     r.id,
+      time:   r.time,
+      type:   r.type,
+      fill:   r.fill    != null ? Number(r.fill)    : null,
+      delta:  r.delta   != null ? Number(r.delta)   : null,
+      status: r.status,
+      key: {
+        avg_fill: r.avg_fill  != null ? Number(r.avg_fill)  : null,
+        realized: r.realized  != null ? Number(r.realized)  : null,
+        fee:      r.fee       != null ? Number(r.fee)        : null,
+      },
+    })));
+  } catch (err) {
+    console.error(`Error fetching orders for position ${req.params.id}:`, err);
+    res.status(500).json({ error: 'Database error fetching position orders' });
+  }
+});
+
 export default router;
