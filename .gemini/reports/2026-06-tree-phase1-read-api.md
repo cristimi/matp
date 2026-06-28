@@ -241,8 +241,75 @@ OEL and AI join null for partial-close as expected. ✓
 
 ---
 
-## Phase 1C — Cleanups (pending gate)
+---
 
-- C1: `close_price` typo in positions.ts
-- C2: drop `strategy_positions.current_price` + migration 031
-- C3: remove `win_count`/`loss_count` from Strategy interface in dashboard-ui/src/api.ts
+## Phase 1C — Cleanups
+
+### C1 — `close_price` typo in positions.ts
+
+Removed bogus `dbPos.close_price` fallback (column never existed in DB):
+```
+- close_price: Number(dbPos.closing_price || dbPos.close_price || 0),
++ close_price: Number(dbPos.closing_price || 0),
+```
+
+### C2 — Drop `strategy_positions.current_price`
+
+**Zero readers grep (all live services, excl tester/tester-ui/migrations):**
+```
+grep -rn "current_price" dashboard-api/src/ dashboard-ui/src/ order-listener/ order-executor/ order-generator/
+(none)
+```
+
+Files updated before migration:
+- `dashboard-api/src/routes/positions.ts`: `dbPos.current_price` → `dbPos.entry_price` for mark_price fallback
+- `dashboard-api/src/routes/strategies.ts` `/:id/positions`: already fixed in Phase 1B (uses `entry_price` as mark_price)
+- `order-listener/app/webhook_handler.py`: removed `current_price` from INSERT column list (was a writer, not reader)
+
+**Migration 031 applied:**
+```
+BEGIN
+ALTER TABLE
+COMMIT
+NOTICE:  Migration 031 verified OK
+DO
+```
+
+**`\d public.strategy_positions` after migration — `current_price` absent:**
+```
+         Column          |           Type           | Nullable | Default
+-------------------------+--------------------------+----------+---------------------------
+ id                      | uuid                     | not null | gen_random_uuid()
+ strategy_id             | character varying(100)   | not null |
+ exchange                | character varying(20)    | not null |
+ symbol                  | character varying(50)    | not null |
+ side                    | character varying(10)    | not null |
+ entry_price             | numeric                  | not null |
+ size                    | numeric                  | not null |
+ leverage                | integer                  |          |
+ margin_mode             | character varying(20)    |          |
+ pnl_unrealized          | numeric                  |          |
+ pnl_realized            | numeric                  |          |
+ status                  | character varying(20)    |          | 'open'
+ opening_order_id        | uuid                     |          |
+ closing_order_id        | uuid                     |          |
+ opened_at               | timestamp with time zone | not null | now()
+ closed_at               | timestamp with time zone |          |
+ ...
+ closing_price           | numeric                  |          |
+ liquidation_price       | numeric                  |          |
+ ...
+(current_price NOT present) ✓
+```
+
+Both dashboard-api and order-listener redeployed healthy after the migration.
+
+### C3 — Strip stale `win_count`/`loss_count` from Strategy interface
+
+Removed from `dashboard-ui/src/api.ts` Strategy interface (Stats interface untouched):
+```typescript
+- win_count: number;
+- loss_count: number;
+```
+
+dashboard-ui rebuilt and redeployed. Live asset: `index-Co-kfOzQ.js`.

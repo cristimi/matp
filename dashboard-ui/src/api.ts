@@ -102,8 +102,6 @@ export interface Strategy {
   allow_cross_charting: boolean;
   pnl_today: number;
   pnl_total: number;
-  win_count: number;
-  loss_count: number;
   last_signal_at: string | null;
   win_rate: number;
   total_trades: number;

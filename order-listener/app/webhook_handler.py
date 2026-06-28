@@ -744,10 +744,10 @@ async def _create_strategy_position(pool, payload: WebhookPayload, strategy: dic
         await conn.execute(
             """
             INSERT INTO strategy_positions (
-                strategy_id, exchange, symbol, pair_id, side, entry_price, current_price, size,
+                strategy_id, exchange, symbol, pair_id, side, entry_price, size,
                 leverage, margin_mode, opening_order_id, status, opened_at
             ) VALUES (
-                $1, $2, $3, $4, $5, $6, $6, $7,
+                $1, $2, $3, $4, $5, $6, $7,
                 $8, $9, $10, 'open', NOW()
             )
             """,
