@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { DataGrid, HeaderPill } from '../components/shared';
+import { HeaderPill } from '../components/shared';
 import { formatPct, formatPnl, pnlColor } from '../utils/pnl';
 import { fetchStrategyTree } from '../api';
 import type { StrategyTreeItem } from '../api';
@@ -42,11 +42,28 @@ export default function StrategyTreePage() {
   );
 }
 
+function Metric({ label, value, color }: { label: string; value: string; color?: string }) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+      <span style={{
+        fontSize: 9, fontWeight: 600, letterSpacing: '0.10em',
+        textTransform: 'uppercase', color: 'var(--dim)',
+      }}>
+        {label}
+      </span>
+      <span style={{
+        fontFamily: MONO, fontSize: 13, fontWeight: 700,
+        lineHeight: 1, color: color ?? 'var(--text)',
+      }}>
+        {value}
+      </span>
+    </div>
+  );
+}
+
 function StrategyCard({ strategy: s }: { strategy: StrategyTreeItem }) {
   const hasOpen = s.open_positions_count > 0;
   const isStopped = !s.enabled;
-
-  const gridCells = buildGridCells(s, hasOpen);
 
   return (
     <div
@@ -121,16 +138,14 @@ function StrategyCard({ strategy: s }: { strategy: StrategyTreeItem }) {
         </button>
       </div>
 
-      {/* Rows 1 + 2 — tap target (expansion wired in Phase 2B) */}
+      {/* Rows 1 + 2 + 3 — tap target (expansion wired in Phase 2B) */}
       <div
         role="button"
         tabIndex={0}
         aria-label={`Expand ${s.name}`}
         style={{
-          paddingLeft: 14,
+          padding: '9px 6px 9px 12px',
           paddingRight: 84,
-          paddingTop: 9,
-          paddingBottom: 6,
           cursor: 'pointer',
           userSelect: 'none',
           WebkitUserSelect: 'none',
@@ -166,7 +181,7 @@ function StrategyCard({ strategy: s }: { strategy: StrategyTreeItem }) {
         </div>
 
         {/* Row 2: account chip + stop chip */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 5, flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 6, flexWrap: 'wrap' }}>
           <span
             style={{
               fontSize: 10.5,
@@ -196,44 +211,14 @@ function StrategyCard({ strategy: s }: { strategy: StrategyTreeItem }) {
             </span>
           )}
         </div>
-      </div>
 
-      {/* Row 3: Allocation / Total Return / Open PnL */}
-      <DataGrid rows={[gridCells]} />
+        {/* Row 3: borderless inline cluster (.meta2/.scell) */}
+        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 18, marginTop: 6, flexWrap: 'nowrap' }}>
+          <Metric label="Allocation" value={Number(s.capital_allocation).toFixed(0)} />
+          <Metric label="Total Return" value={formatPct(s.total_return)} color={pnlColor(s.total_return)} />
+          {hasOpen && <Metric label="Open PnL" value={formatPnl(s.open_pnl)} color={pnlColor(s.open_pnl)} />}
+        </div>
+      </div>
     </div>
   );
-}
-
-function buildGridCells(s: StrategyTreeItem, hasOpen: boolean) {
-  const alloc = {
-    label: 'Allocation',
-    value: (
-      <span style={{ fontFamily: MONO, fontWeight: 700, fontSize: 13, color: 'var(--text)' }}>
-        {Number(s.capital_allocation).toFixed(0)}
-      </span>
-    ),
-  };
-  const ret = {
-    label: 'Total Return',
-    value: (
-      <span style={{ fontFamily: MONO, fontWeight: 700, fontSize: 13, color: pnlColor(s.total_return) }}>
-        {formatPct(s.total_return)}
-      </span>
-    ),
-  };
-  if (hasOpen) {
-    return [
-      alloc,
-      ret,
-      {
-        label: 'Open PnL',
-        value: (
-          <span style={{ fontFamily: MONO, fontWeight: 700, fontSize: 13, color: pnlColor(s.open_pnl) }}>
-            {formatPnl(s.open_pnl)}
-          </span>
-        ),
-      },
-    ];
-  }
-  return [alloc, ret];
 }
