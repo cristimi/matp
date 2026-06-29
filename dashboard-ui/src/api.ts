@@ -183,6 +183,9 @@ export interface StrategyTreeItem {
   total_return: number;
   open_positions_count: number;
   open_pnl: number;
+  strategy_source: string;
+  last_position_opened_at: string | null;
+  last_activity_at: string | null;
 }
 
 export interface TreePosition {

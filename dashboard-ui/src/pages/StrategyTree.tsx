@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback, CSSProperties } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo, CSSProperties } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { HeaderPill } from '../components/shared';
 import { formatPct, formatPnl, pnlColor } from '../utils/pnl';
@@ -90,6 +90,35 @@ function Spinner() {
   return <div style={{ color: 'var(--muted)', fontSize: 12, padding: '6px 4px', textAlign: 'center' }}>Loading…</div>;
 }
 
+// ---- filter/sort helpers ----
+
+type SortKey = 'symbol' | 'last_opened' | 'activity';
+type SortDir = 'asc' | 'desc';
+
+const SS_SYMBOL   = 'matp_tree_symbol';
+const SS_STATUS   = 'matp_tree_status';
+const SS_OPENPOS  = 'matp_tree_openpos';
+const SS_TYPE     = 'matp_tree_type';
+const SS_SORT_KEY = 'matp_tree_sortkey';
+const SS_SORT_DIR = 'matp_tree_sortdir';
+
+const DEFAULT_SORT_KEY: SortKey = 'activity';
+const DEFAULT_SORT_DIR: SortDir = 'desc';
+
+function ssGet(key: string, fallback: string): string {
+  try { return sessionStorage.getItem(key) ?? fallback; } catch { return fallback; }
+}
+function ssSet(key: string, val: string) {
+  try { sessionStorage.setItem(key, val); } catch {}
+}
+
+function nullSafeCompare(a: number | null, b: number | null, dir: SortDir): number {
+  if (a === null && b === null) return 0;
+  if (a === null) return 1;
+  if (b === null) return -1;
+  return dir === 'asc' ? a - b : b - a;
+}
+
 // ---- page ----
 
 export default function StrategyTreePage() {
@@ -97,6 +126,21 @@ export default function StrategyTreePage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const livePnl = useLivePnl();
+
+  // filter state — persisted in sessionStorage
+  const [filterSymbol,  setFilterSymbolRaw]  = useState<string>(() => ssGet(SS_SYMBOL,   'all'));
+  const [filterStatus,  setFilterStatusRaw]  = useState<string>(() => ssGet(SS_STATUS,   'all'));
+  const [filterOpenPos, setFilterOpenPosRaw] = useState<string>(() => ssGet(SS_OPENPOS,  'all'));
+  const [filterType,    setFilterTypeRaw]    = useState<string>(() => ssGet(SS_TYPE,     'all'));
+  const [sortKey,       setSortKeyRaw]       = useState<SortKey>(() => ssGet(SS_SORT_KEY, DEFAULT_SORT_KEY) as SortKey);
+  const [sortDir,       setSortDirRaw]       = useState<SortDir>(() => ssGet(SS_SORT_DIR, DEFAULT_SORT_DIR) as SortDir);
+
+  const setFilterSymbol  = (v: string)  => { ssSet(SS_SYMBOL,   v); setFilterSymbolRaw(v);  };
+  const setFilterStatus  = (v: string)  => { ssSet(SS_STATUS,   v); setFilterStatusRaw(v);  };
+  const setFilterOpenPos = (v: string)  => { ssSet(SS_OPENPOS,  v); setFilterOpenPosRaw(v); };
+  const setFilterType    = (v: string)  => { ssSet(SS_TYPE,     v); setFilterTypeRaw(v);    };
+  const setSortKey       = (v: SortKey) => { ssSet(SS_SORT_KEY, v); setSortKeyRaw(v);       };
+  const setSortDir       = (v: SortDir) => { ssSet(SS_SORT_DIR, v); setSortDirRaw(v);       };
 
   const loadStrategies = useCallback(() => {
     return fetchStrategyTree()
@@ -107,14 +151,159 @@ export default function StrategyTreePage() {
 
   useEffect(() => { loadStrategies(); }, [loadStrategies]);
 
+  const uniqueSymbols = useMemo(
+    () => [...new Set(strategies.map(s => s.symbol))].sort(),
+    [strategies],
+  );
+
+  const filtered = useMemo(() => strategies.filter(s => {
+    if (filterSymbol !== 'all' && s.symbol !== filterSymbol) return false;
+    if (filterStatus !== 'all') {
+      if (filterStatus === 'active'   && !s.enabled) return false;
+      if (filterStatus === 'inactive' &&  s.enabled) return false;
+    }
+    if (filterOpenPos === 'hasopen') {
+      const livePids = livePnl?.strategies[s.id]?.position_ids;
+      const hasOpen = livePids ? livePids.length > 0 : s.open_positions_count > 0;
+      if (!hasOpen) return false;
+    }
+    if (filterType !== 'all') {
+      const src = s.strategy_source ?? 'tradingview';
+      if (filterType === 'tradingview' && src !== 'tradingview') return false;
+      if (filterType === 'ai'          && src !== 'ai_engine')   return false;
+      if (filterType === 'social'      && src !== 'social')      return false;
+      if (filterType === 'internal'    && src !== 'internal')    return false;
+    }
+    return true;
+  }), [strategies, filterSymbol, filterStatus, filterOpenPos, filterType, livePnl]);
+
+  const sorted = useMemo(() => [...filtered].sort((a, b) => {
+    if (sortKey === 'symbol') {
+      const cmp = a.symbol.localeCompare(b.symbol);
+      return sortDir === 'asc' ? cmp : -cmp;
+    }
+    const aT = sortKey === 'last_opened'
+      ? (a.last_position_opened_at ? new Date(a.last_position_opened_at).getTime() : null)
+      : (a.last_activity_at        ? new Date(a.last_activity_at).getTime()        : null);
+    const bT = sortKey === 'last_opened'
+      ? (b.last_position_opened_at ? new Date(b.last_position_opened_at).getTime() : null)
+      : (b.last_activity_at        ? new Date(b.last_activity_at).getTime()        : null);
+    return nullSafeCompare(aT, bT, sortDir);
+  }), [filtered, sortKey, sortDir]);
+
+  const handleSort = useCallback((key: SortKey) => {
+    if (sortKey === key) {
+      setSortDir(sortDir === 'asc' ? 'desc' : 'asc');
+    } else {
+      setSortKey(key);
+      setSortDir('desc');
+    }
+  }, [sortKey, sortDir]);
+
+  const handleReset = useCallback(() => {
+    setFilterSymbol('all');
+    setFilterStatus('all');
+    setFilterOpenPos('all');
+    setFilterType('all');
+    setSortKey(DEFAULT_SORT_KEY);
+    setSortDir(DEFAULT_SORT_DIR);
+    try {
+      [SS_SYMBOL, SS_STATUS, SS_OPENPOS, SS_TYPE, SS_SORT_KEY, SS_SORT_DIR]
+        .forEach(k => sessionStorage.removeItem(k));
+    } catch {}
+  }, []);
+
+  const anyNonDefault = filterSymbol !== 'all' || filterStatus !== 'all' ||
+    filterOpenPos !== 'all' || filterType !== 'all' ||
+    sortKey !== DEFAULT_SORT_KEY || sortDir !== DEFAULT_SORT_DIR;
+
+  // cycle helpers
+  const cycleStatus = () => {
+    const next: Record<string, string> = { all: 'active', active: 'inactive', inactive: 'all' };
+    setFilterStatus(next[filterStatus] ?? 'all');
+  };
+  const cycleType = () => {
+    const order = ['all', 'tradingview', 'ai', 'social', 'internal'];
+    const i = order.indexOf(filterType);
+    setFilterType(order[(i + 1) % order.length]);
+  };
+  const toggleOpenPos = () => setFilterOpenPos(filterOpenPos === 'all' ? 'hasopen' : 'all');
+
+  const statusLabel: Record<string, string> = { all: 'All Status', active: 'Active', inactive: 'Inactive' };
+  const typeLabel:   Record<string, string> = {
+    all: 'All Type', tradingview: 'TradingView', ai: 'AI', social: 'Social', internal: 'Internal',
+  };
+  const dirArrow = (key: SortKey) => sortKey === key ? (sortDir === 'asc' ? ' ↑' : ' ↓') : '';
+
   return (
-    <div style={{ maxWidth: 460, margin: '0 auto', padding: '14px 10px 70px' }}>
-      {loading && <div style={{ padding: 24, color: 'var(--muted)', textAlign: 'center', fontSize: 13 }}>Loading…</div>}
-      {error && <div style={{ padding: 24, color: 'var(--red)', fontSize: 13 }}>{error}</div>}
-      {!loading && !error && strategies.length === 0 && (
-        <div style={{ padding: 24, color: 'var(--muted)', textAlign: 'center', fontSize: 13 }}>No strategies</div>
-      )}
-      {strategies.map(s => <StrategyCard key={s.id} strategy={s} onL1Refresh={loadStrategies} livePnl={livePnl} />)}
+    <div style={{ maxWidth: 460, margin: '0 auto', paddingBottom: 70 }}>
+      {/* Filter + sort bar */}
+      <div style={{
+        display: 'flex', gap: 6, padding: '8px 10px',
+        overflowX: 'auto', flexShrink: 0,
+        borderBottom: '1px solid var(--border)',
+        scrollbarWidth: 'none',
+      }}>
+        {/* Symbol select */}
+        <select
+          value={filterSymbol}
+          onChange={e => setFilterSymbol(e.target.value)}
+          style={{
+            background:   filterSymbol !== 'all' ? 'var(--blue-a)' : 'var(--bg2)',
+            border:       `1px solid ${filterSymbol !== 'all' ? 'var(--blue)' : 'var(--border)'}`,
+            borderRadius: '20px', padding: '5px 12px',
+            fontSize: 10, fontWeight: 500,
+            color: filterSymbol !== 'all' ? 'var(--blue)' : 'var(--muted)',
+            cursor: 'pointer', outline: 'none', flexShrink: 0,
+          }}
+        >
+          <option value="all">All Symbols</option>
+          {uniqueSymbols.map(sym => <option key={sym} value={sym}>{sym}</option>)}
+        </select>
+
+        {/* Status chip (cycles) */}
+        <span onClick={cycleStatus} style={treeChip(filterStatus !== 'all')}>
+          {statusLabel[filterStatus]}
+        </span>
+
+        {/* Open positions chip (toggle) */}
+        <span onClick={toggleOpenPos} style={treeChip(filterOpenPos !== 'all')}>
+          {filterOpenPos === 'all' ? 'All' : 'Has Open'}
+        </span>
+
+        {/* Type chip (cycles) */}
+        <span onClick={cycleType} style={treeChip(filterType !== 'all')}>
+          {typeLabel[filterType] ?? 'All Type'}
+        </span>
+
+        {/* Sort chips */}
+        <span onClick={() => handleSort('symbol')}      style={treeChip(sortKey === 'symbol')}>
+          {`Symbol${dirArrow('symbol')}`}
+        </span>
+        <span onClick={() => handleSort('last_opened')} style={treeChip(sortKey === 'last_opened')}>
+          {`Opened${dirArrow('last_opened')}`}
+        </span>
+        <span onClick={() => handleSort('activity')}    style={treeChip(sortKey === 'activity')}>
+          {`Activity${dirArrow('activity')}`}
+        </span>
+
+        {/* Reset */}
+        {anyNonDefault && (
+          <span onClick={handleReset} style={treeChip(false, true)}>Reset</span>
+        )}
+      </div>
+
+      {/* Cards */}
+      <div style={{ padding: '14px 10px 0' }}>
+        {loading && <div style={{ padding: 24, color: 'var(--muted)', textAlign: 'center', fontSize: 13 }}>Loading…</div>}
+        {error && <div style={{ padding: 24, color: 'var(--red)', fontSize: 13 }}>{error}</div>}
+        {!loading && !error && sorted.length === 0 && (
+          <div style={{ padding: 24, color: 'var(--muted)', textAlign: 'center', fontSize: 13 }}>
+            {strategies.length === 0 ? 'No strategies' : 'No strategies match the current filters'}
+          </div>
+        )}
+        {sorted.map(s => <StrategyCard key={s.id} strategy={s} onL1Refresh={loadStrategies} livePnl={livePnl} />)}
+      </div>
     </div>
   );
 }
@@ -785,6 +974,21 @@ function DiffChip({ label }: { label: string }) {
 }
 
 // ---- shared style objects ----
+
+function treeChip(active: boolean, clear = false): CSSProperties {
+  return {
+    whiteSpace:   'nowrap',
+    background:   clear ? 'var(--red-a)' : active ? 'var(--blue-a)' : 'var(--bg2)',
+    border:       `1px solid ${clear ? 'var(--red-b)' : active ? 'var(--blue)' : 'var(--border)'}`,
+    borderRadius: '20px',
+    padding:      '5px 12px',
+    fontSize:     10,
+    fontWeight:   500,
+    color:        clear ? 'var(--red)' : active ? 'var(--blue)' : 'var(--muted)',
+    cursor:       'pointer',
+    flexShrink:   0,
+  };
+}
 
 const iconBtnBase: CSSProperties = {
   width: 30, height: 30, borderRadius: '50%',

@@ -97,6 +97,12 @@ Changes required: DB migration, one line in `node_ingest.py`, `ai.ts` GET/PUT, U
   DB. So error-disabled strategies show the generic gray "stopped" chip and may not even be
   marked disabled in the DB. To make the `'error'` chip meaningful, that path must persist
   `enabled = false, stop_reason = 'error'` to `strategies` when it disables a strategy.
+- **Auto-stamp `strategy_source = 'social' | 'internal'` at creation**: the tree-filter Type
+  column supports Social and Internal buckets (migration 033 formalised those values), but
+  neither the social-copy pipeline nor any internal/deterministic engine creates strategy rows
+  today — so those buckets stay empty until the pipelines exist. When a social-copy pipeline
+  (or internal engine) gains a strategy-row creation point, set `strategy_source = 'social'`
+  (or `'internal'`) at that point.
 - **`tester.*` schema cleanup (parity with the `public` sweep)**: migrations 030/031 dropped
   the dead columns from `public` (`drawdown_anchor_pnl`, `win_count`, `loss_count`,
   `platform_override`, `blofin_token`, `signals_today`, `max_daily_signals`,

@@ -396,7 +396,10 @@ router.get('/tree', async (_req: Request, res: Response) => {
           SELECT COUNT(*)
           FROM strategy_positions sp
           WHERE sp.strategy_id = s.id AND sp.status = 'open'
-        ), 0)::int AS open_positions_count
+        ), 0)::int AS open_positions_count,
+        s.strategy_source,
+        (SELECT MAX(sp.opened_at) FROM strategy_positions sp WHERE sp.strategy_id = s.id) AS last_position_opened_at,
+        (SELECT MAX(o.received_at) FROM orders o WHERE o.strategy_id = s.id) AS last_activity_at
       FROM strategies s
       LEFT JOIN exchange_accounts ea ON ea.id = s.account_id
       WHERE COALESCE(s.is_deleted, false) = false
@@ -427,7 +430,10 @@ router.get('/tree', async (_req: Request, res: Response) => {
       capital_allocation:   Number(r.capital_allocation),
       total_return:         Number(r.total_return),
       open_positions_count: r.open_positions_count,
-      open_pnl:             r.open_positions_count > 0 ? (snapshot?.strategies[r.id]?.open_pnl ?? 0) : 0,
+      open_pnl:                  r.open_positions_count > 0 ? (snapshot?.strategies[r.id]?.open_pnl ?? 0) : 0,
+      strategy_source:           r.strategy_source ?? 'tradingview',
+      last_position_opened_at:   r.last_position_opened_at ? (r.last_position_opened_at as Date).toISOString() : null,
+      last_activity_at:          r.last_activity_at ? (r.last_activity_at as Date).toISOString() : null,
     })));
   } catch (err) {
     console.error('Error fetching strategy tree:', err);

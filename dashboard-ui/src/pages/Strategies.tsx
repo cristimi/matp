@@ -40,7 +40,7 @@ interface Strategy {
   closed_long_count?:        number;
   closed_short_count?:       number;
   // AI strategy fields
-  strategy_source?:          'tradingview' | 'ai_engine' | 'manual';
+  strategy_source?:          'tradingview' | 'ai_engine' | 'social' | 'internal' | 'manual';
   ai_dry_run?:               boolean;
   ai_llm_model?:             string;
   ai_llm_provider?:          string;
@@ -1244,6 +1244,8 @@ export default function Strategies() {
       if (filterSource === 'ai'          && src !== 'ai_engine')   return false;
       if (filterSource === 'tradingview' && src !== 'tradingview') return false;
       if (filterSource === 'manual'      && src !== 'manual')      return false;
+      if (filterSource === 'social'      && src !== 'social')      return false;
+      if (filterSource === 'internal'    && src !== 'internal')    return false;
     }
     return true;
   });
@@ -1357,7 +1359,9 @@ export default function Strategies() {
           <option value="all">All Sources</option>
           <option value="tradingview">TradingView</option>
           <option value="ai">AI</option>
-          <option value="manual">Internal</option>
+          <option value="social">Social</option>
+          <option value="internal">Internal</option>
+          <option value="manual">Manual</option>
         </select>
 
         {anyFilterActive && (
