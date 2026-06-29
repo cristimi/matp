@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 
 export interface PnlSnapshot {
   ts: number;
-  strategies: Record<string, { open_pnl: number }>;
+  strategies: Record<string, { open_pnl: number; position_ids: string[] }>;
   positions: Record<string, { mark_price: number; unrealized_pnl: number }>;
 }
 

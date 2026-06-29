@@ -2,7 +2,7 @@ import { getPool } from './db';
 import { getRedis } from './redis';
 
 const EXECUTOR_URL = process.env.EXECUTOR_URL || 'http://order-executor:8004';
-export const PNL_TICK_MS = parseInt(process.env.PNL_TICK_MS || '2500', 10);
+export const PNL_TICK_MS = parseInt(process.env.PNL_TICK_MS || '1000', 10);
 const STALE_MS = PNL_TICK_MS * 4;
 
 export const SNAPSHOT_KEY = 'pnl:live:snapshot';
@@ -10,7 +10,7 @@ export const SNAPSHOT_CHANNEL = 'pnl:live';
 
 export interface PnlSnapshot {
   ts: number;
-  strategies: Record<string, { open_pnl: number }>;
+  strategies: Record<string, { open_pnl: number; position_ids: string[] }>;
   positions: Record<string, { mark_price: number; unrealized_pnl: number }>;
 }
 
@@ -32,10 +32,18 @@ async function tick(): Promise<void> {
     WHERE sp.status = 'open' AND s.account_id IS NOT NULL
   `);
 
-  const strategiesSnap: Record<string, { open_pnl: number }> = {};
+  const strategiesSnap: Record<string, { open_pnl: number; position_ids: string[] }> = {};
   const positionsSnap: Record<string, { mark_price: number; unrealized_pnl: number }> = {};
 
   if (rows.length > 0) {
+    // Pre-pass: collect all open position IDs per strategy before executor fanout
+    for (const row of rows) {
+      if (!strategiesSnap[row.strategy_id]) {
+        strategiesSnap[row.strategy_id] = { open_pnl: 0, position_ids: [] };
+      }
+      strategiesSnap[row.strategy_id].position_ids.push(row.position_id);
+    }
+
     // Fan out once per unique account — never per strategy or per position
     const accountIds = [...new Set(rows.map((r: any) => r.account_id as string))];
     const execMap = new Map<string, any>(); // key: `${accountId}:${symbol}:${side}`
@@ -60,7 +68,7 @@ async function tick(): Promise<void> {
 
     console.log(`[livePnl] tick: ${rows.length} open position(s), ${accountIds.length} account(s) fanned out`);
 
-    // Build per-position and per-strategy snapshots; deduplicate executor keys per strategy
+    // Build per-position and per-strategy PnL; deduplicate executor keys per strategy
     const strategyKeysSeen = new Map<string, Set<string>>();
     for (const row of rows) {
       const execKey = `${row.account_id}:${row.symbol}:${row.side}`;
@@ -71,8 +79,7 @@ async function tick(): Promise<void> {
       const unrealizedPnl = Number(live.unrealized_pnl) || 0;
       positionsSnap[row.position_id] = { mark_price: markPrice, unrealized_pnl: unrealizedPnl };
 
-      if (!strategiesSnap[row.strategy_id]) {
-        strategiesSnap[row.strategy_id] = { open_pnl: 0 };
+      if (!strategyKeysSeen.has(row.strategy_id)) {
         strategyKeysSeen.set(row.strategy_id, new Set());
       }
       // Count each executor position (account:symbol:side) only once per strategy

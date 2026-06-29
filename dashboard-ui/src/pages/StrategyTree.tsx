@@ -124,7 +124,9 @@ export default function StrategyTreePage() {
 type ExpandState = 'collapsed' | 'open' | 'all';
 
 function StrategyCard({ strategy: s, onL1Refresh, livePnl }: { strategy: StrategyTreeItem; onL1Refresh: () => void; livePnl: PnlSnapshot | null }) {
-  const hasOpen = s.open_positions_count > 0;
+  const livePids = livePnl?.strategies[s.id]?.position_ids;
+  const hasOpen = livePids ? livePids.length > 0 : s.open_positions_count > 0;
+  const pidKey = livePids ? [...livePids].sort().join(',') : null;
   const isStopped = !s.enabled;
   const navigate = useNavigate();
 
@@ -138,6 +140,7 @@ function StrategyCard({ strategy: s, onL1Refresh, livePnl }: { strategy: Strateg
   const [showDetail, setShowDetail] = useState(false);
   const [detailData, setDetailData] = useState<Record<string, any> | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  const lastRefetchedKey = useRef<string | null>(null);
 
   const doFetchOpen = useCallback(async () => {
     if (openPositions !== null) return;
@@ -154,6 +157,27 @@ function StrategyCard({ strategy: s, onL1Refresh, livePnl }: { strategy: Strateg
     catch { setAllPositions([]); }
     finally { setLoadingPos(false); }
   }, [s.id, allPositions]);
+
+  // Refetch open positions when the live snapshot reports a position-set membership change.
+  // Keyed on pidKey (sorted id join) so it fires once per membership change, not once per tick.
+  useEffect(() => {
+    if (pidKey === null || expandState === 'collapsed' || loadingPos) return;
+    if (pidKey === lastRefetchedKey.current) return;
+
+    const currentIds = (
+      expandState === 'open' ? (openPositions ?? []) : (allPositions ?? []).filter(p => p.status === 'open')
+    ).map(p => p.id).sort().join(',');
+
+    lastRefetchedKey.current = pidKey;
+    if (pidKey === currentIds) return;
+
+    const scope = expandState === 'all' ? 'all' : 'open';
+    setLoadingPos(true);
+    fetchTreePositions(s.id, scope)
+      .then(fresh => { if (scope === 'open') setOpenPositions(fresh); else setAllPositions(fresh); })
+      .catch(() => {})
+      .finally(() => setLoadingPos(false));
+  }, [pidKey, expandState, loadingPos, openPositions, allPositions, s.id]);
 
   const handleTap = useCallback(() => {
     if (expandState === 'collapsed') {
