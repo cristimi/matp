@@ -89,6 +89,22 @@ Changes required: DB migration, one line in `node_ingest.py`, `ai.ts` GET/PUT, U
   029), never edit an existing one, self-verifying `DO $$ ... RAISE EXCEPTION` block, zero-padded.
   Rationale: the 2026-06-24 exchange-resolution fix could only be proven from container logs, not
   from the DB — this closes that gap for future data-routing changes.
+- **`stop_reason = 'error'` never reaches the DB**: the strategy-tree header chip supports a
+  `user | drawdown | error` distinction, and migration 032 added `strategies.stop_reason`. The
+  user and drawdown stops persist it (order-listener), but the order-generator error path
+  (`scheduler.py` `disable()` ~line 220 + the `_run_strategy` error handler ~line 130) only
+  flips an in-memory flag and logs — it never writes `enabled = false` or `stop_reason` to the
+  DB. So error-disabled strategies show the generic gray "stopped" chip and may not even be
+  marked disabled in the DB. To make the `'error'` chip meaningful, that path must persist
+  `enabled = false, stop_reason = 'error'` to `strategies` when it disables a strategy.
+- **`tester.*` schema cleanup (parity with the `public` sweep)**: migrations 030/031 dropped
+  the dead columns from `public` (`drawdown_anchor_pnl`, `win_count`, `loss_count`,
+  `platform_override`, `blofin_token`, `signals_today`, `max_daily_signals`,
+  `order_execution_log.avg_fill_price`, `strategy_positions.current_price`). The same columns
+  still exist in the `tester.*` schema, along with the long-flagged `max_position_size`
+  leftover. Do a matching cleanup migration for `tester.*`, and update the strategy-tester
+  copy/migrate code that still references those columns. Deferred intentionally during the live
+  sweep to keep blast radius small.
 ### Dynamic strategy allocation (realized-PnL-compounding base)
 
 **Status:** COMPLETE — implemented 2026-06-20 across 5 phases.
