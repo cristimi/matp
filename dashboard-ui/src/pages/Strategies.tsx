@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { useLocation } from 'react-router-dom';
 import { SectionHeader } from '../components/shared';
 
 interface Strategy {
@@ -803,6 +804,8 @@ const TV_FORM_DEFAULTS = {
 export default function Strategies() {
   const [strategies, setStrategies] = useState<Strategy[]>([]);
   const [loading, setLoading]       = useState(true);
+  const location = useLocation();
+  const [autoEditId] = useState<string | null>(() => (location.state as any)?.editId ?? null);
 
   const [filterPair,   setFilterPairRaw]   = useState<string>(() => sessionStorage.getItem('matp_strat_pair')   ?? 'all');
   const [filterStatus, setFilterStatusRaw] = useState<string>(() => sessionStorage.getItem('matp_strat_status') ?? 'all');
@@ -892,6 +895,7 @@ export default function Strategies() {
     const iv = setInterval(fetchStrategies, 30000);
     return () => clearInterval(iv);
   }, [fetchStrategies, fetchAccounts]);
+
 
   const handleOpenAdd = () => {
     setShowAdd(true);
@@ -1007,6 +1011,16 @@ export default function Strategies() {
       }
     }
   };
+
+  // Auto-open edit modal when navigated from tree page with state.editId
+  useEffect(() => {
+    if (!autoEditId || strategies.length === 0 || editTarget) return;
+    const target = strategies.find(s => s.id === autoEditId);
+    if (target) {
+      window.history.replaceState({}, '', window.location.pathname);
+      handleEdit(target);
+    }
+  }, [strategies, autoEditId]);
 
   const handleEditSubmit = async () => {
     if (!editTarget) return;

@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback, CSSProperties } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { HeaderPill } from '../components/shared';
 import { formatPct, formatPnl, pnlColor } from '../utils/pnl';
 import { formatPrice, formatSize } from '../utils/precision';
@@ -123,6 +124,7 @@ type ExpandState = 'collapsed' | 'open' | 'all';
 function StrategyCard({ strategy: s, onL1Refresh }: { strategy: StrategyTreeItem; onL1Refresh: () => void }) {
   const hasOpen = s.open_positions_count > 0;
   const isStopped = !s.enabled;
+  const navigate = useNavigate();
 
   const [expandState, setExpandState] = useState<ExpandState>('collapsed');
   const [openPositions, setOpenPositions] = useState<TreePosition[] | null>(null);
@@ -131,6 +133,9 @@ function StrategyCard({ strategy: s, onL1Refresh }: { strategy: StrategyTreeItem
   const [closedShown, setClosedShown] = useState(CLOSED_STEP);
   const [actionInFlight, setActionInFlight] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [showDetail, setShowDetail] = useState(false);
+  const [detailData, setDetailData] = useState<Record<string, any> | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
 
   const doFetchOpen = useCallback(async () => {
     if (openPositions !== null) return;
@@ -220,6 +225,26 @@ function StrategyCard({ strategy: s, onL1Refresh }: { strategy: StrategyTreeItem
     onL1Refresh();
   }, [expandState, s.id, onL1Refresh]);
 
+  const handleToggleDetail = useCallback(async () => {
+    const opening = !showDetail;
+    setShowDetail(opening);
+    if (opening && detailData === null && !detailLoading) {
+      setDetailLoading(true);
+      try {
+        const data = await api.get<Record<string, any>>(`/strategies/${s.id}`);
+        setDetailData(data);
+      } catch {
+        setDetailData({});
+      } finally {
+        setDetailLoading(false);
+      }
+    }
+  }, [showDetail, detailData, detailLoading, s.id]);
+
+  const handleEdit = useCallback(() => {
+    navigate('/strategies', { state: { editId: s.id } });
+  }, [navigate, s.id]);
+
   // derive visible lists
   const shownOpen = expandState === 'open'
     ? (openPositions ?? [])
@@ -255,7 +280,12 @@ function StrategyCard({ strategy: s, onL1Refresh }: { strategy: StrategyTreeItem
         >
           {actionInFlight ? '…' : (isStopped ? '▶' : '⏸')}
         </button>
-        <button type="button" disabled aria-label="Details" style={{ ...iconBtnLg, margin: '6px 9px 6px 0' }}>
+        <button
+          type="button"
+          aria-label="Details"
+          style={{ ...iconBtnLg, margin: '6px 9px 6px 0', cursor: 'pointer', opacity: showDetail ? 1 : 0.7 }}
+          onClick={handleToggleDetail}
+        >
           ⓘ
         </button>
       </div>
@@ -293,6 +323,44 @@ function StrategyCard({ strategy: s, onL1Refresh }: { strategy: StrategyTreeItem
           {hasOpen && <Metric label="Open PnL" value={formatPnl(s.open_pnl)} color={pnlColor(s.open_pnl)} />}
         </div>
       </div>
+
+      {/* Detail panel (ⓘ) */}
+      {showDetail && (
+        <div style={{
+          margin: '0 9px 9px 13px', padding: '8px 10px',
+          borderTop: '1px solid var(--border)',
+          background: 'var(--bg3)', borderRadius: 8,
+        }}>
+          {detailLoading && <Spinner />}
+          {!detailLoading && (
+            <>
+              <KV k="Interval"        v={detailData?.interval ?? '—'} />
+              <KV k="Default leverage" v={detailData ? `${detailData.default_leverage}×` : '—'} />
+              <KV k="Margin / trade"  v={detailData ? `$${Number(detailData.margin_per_trade).toFixed(2)}` : '—'} />
+              <KV k="Max drawdown"    v={detailData ? `${detailData.max_drawdown_pct}%` : '—'} />
+              <KV k="Committed"       v={detailData ? `$${Number(detailData.initial_allocation ?? detailData.capital_allocation).toFixed(2)}` : '—'} />
+              {detailData?.last_signal_at && (
+                <KV k="Last signal" v={formatRelative(detailData.last_signal_at)} />
+              )}
+              <div style={{ marginTop: 10 }}>
+                <button
+                  type="button"
+                  onClick={handleEdit}
+                  style={{
+                    display: 'block', width: '100%',
+                    padding: '7px 10px', fontSize: 12, fontFamily: 'inherit',
+                    color: 'var(--blue)', background: 'var(--blue-a)',
+                    border: '1px solid var(--blue-b)', borderRadius: 8,
+                    cursor: 'pointer', textAlign: 'center',
+                  }}
+                >
+                  ✎ Edit strategy
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      )}
 
       {/* Strategy track */}
       {expandState !== 'collapsed' && (
@@ -636,12 +704,32 @@ function AccountChip({ children }: { children: React.ReactNode }) {
 }
 
 function StopChip({ reason }: { reason: string | null }) {
+  let chipColor: CSSProperties;
+  if (reason === 'drawdown') {
+    chipColor = {
+      border: '1px solid var(--failed-color-b)',
+      background: 'var(--failed-color-a)',
+      color: 'var(--failed-color)',
+    };
+  } else if (reason === 'error') {
+    chipColor = {
+      border: '1px solid var(--red-b)',
+      background: 'var(--red-a)',
+      color: 'var(--red)',
+    };
+  } else {
+    chipColor = {
+      border: '1px solid var(--border-hi)',
+      background: 'var(--bg3)',
+      color: 'var(--muted)',
+    };
+  }
   return (
     <span style={{
       fontFamily: MONO, fontSize: 10, fontWeight: 600, letterSpacing: '.02em',
       padding: '2px 7px', borderRadius: 6,
-      border: '1px solid var(--border-hi)', background: 'var(--bg3)', color: 'var(--muted)',
       whiteSpace: 'nowrap', lineHeight: 1,
+      ...chipColor,
     }}>
       {reason ?? 'stopped'}
     </span>
