@@ -4,7 +4,7 @@ import { formatPct, formatPnl, pnlColor } from '../utils/pnl';
 import { formatPrice, formatSize } from '../utils/precision';
 import { formatRelative } from '../utils/datetime';
 import {
-  fetchStrategyTree, fetchTreePositions, fetchPositionOrders, fetchOrderDetail,
+  fetchStrategyTree, fetchTreePositions, fetchPositionOrders, fetchOrderDetail, api,
 } from '../api';
 import type { StrategyTreeItem, TreePosition, TreeOrder, OrderDetail } from '../api';
 
@@ -95,12 +95,14 @@ export default function StrategyTreePage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    fetchStrategyTree()
+  const loadStrategies = useCallback(() => {
+    return fetchStrategyTree()
       .then(setStrategies)
       .catch((e: Error) => setError(e.message))
       .finally(() => setLoading(false));
   }, []);
+
+  useEffect(() => { loadStrategies(); }, [loadStrategies]);
 
   return (
     <div style={{ maxWidth: 460, margin: '0 auto', padding: '14px 10px 70px' }}>
@@ -109,7 +111,7 @@ export default function StrategyTreePage() {
       {!loading && !error && strategies.length === 0 && (
         <div style={{ padding: 24, color: 'var(--muted)', textAlign: 'center', fontSize: 13 }}>No strategies</div>
       )}
-      {strategies.map(s => <StrategyCard key={s.id} strategy={s} />)}
+      {strategies.map(s => <StrategyCard key={s.id} strategy={s} onL1Refresh={loadStrategies} />)}
     </div>
   );
 }
@@ -118,7 +120,7 @@ export default function StrategyTreePage() {
 
 type ExpandState = 'collapsed' | 'open' | 'all';
 
-function StrategyCard({ strategy: s }: { strategy: StrategyTreeItem }) {
+function StrategyCard({ strategy: s, onL1Refresh }: { strategy: StrategyTreeItem; onL1Refresh: () => void }) {
   const hasOpen = s.open_positions_count > 0;
   const isStopped = !s.enabled;
 
@@ -127,6 +129,8 @@ function StrategyCard({ strategy: s }: { strategy: StrategyTreeItem }) {
   const [allPositions, setAllPositions]   = useState<TreePosition[] | null>(null);
   const [loadingPos, setLoadingPos] = useState(false);
   const [closedShown, setClosedShown] = useState(CLOSED_STEP);
+  const [actionInFlight, setActionInFlight] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
 
   const doFetchOpen = useCallback(async () => {
     if (openPositions !== null) return;
@@ -167,6 +171,55 @@ function StrategyCard({ strategy: s }: { strategy: StrategyTreeItem }) {
 
   const pressHandlers = useLongPress(handleTap, handleHold);
 
+  const handlePauseResume = useCallback(async () => {
+    setActionError(null);
+    if (isStopped) {
+      setActionInFlight(true);
+      try {
+        await api.post(`/strategies/${s.id}/start`);
+        onL1Refresh();
+      } catch (e: any) {
+        setActionError(e.message);
+      } finally {
+        setActionInFlight(false);
+      }
+    } else {
+      if (!window.confirm('Pausing closes all open positions for this strategy. Continue?')) return;
+      setActionInFlight(true);
+      try {
+        await api.post(`/strategies/${s.id}/stop`);
+        setOpenPositions(null);
+        setAllPositions(null);
+        setExpandState('collapsed');
+        onL1Refresh();
+      } catch (e: any) {
+        setActionError(e.message);
+      } finally {
+        setActionInFlight(false);
+      }
+    }
+  }, [isStopped, s.id, onL1Refresh]);
+
+  const handlePositionClose = useCallback(async () => {
+    setOpenPositions(null);
+    setAllPositions(null);
+    if (expandState === 'open' || expandState === 'all') {
+      const scope = expandState === 'all' ? 'all' : 'open';
+      setLoadingPos(true);
+      try {
+        const fresh = await fetchTreePositions(s.id, scope);
+        if (scope === 'open') setOpenPositions(fresh);
+        else setAllPositions(fresh);
+      } catch {
+        if (expandState === 'open') setOpenPositions([]);
+        else setAllPositions([]);
+      } finally {
+        setLoadingPos(false);
+      }
+    }
+    onL1Refresh();
+  }, [expandState, s.id, onL1Refresh]);
+
   // derive visible lists
   const shownOpen = expandState === 'open'
     ? (openPositions ?? [])
@@ -191,10 +244,16 @@ function StrategyCard({ strategy: s }: { strategy: StrategyTreeItem }) {
         background: isStopped ? 'var(--stopped-bar)' : 'var(--blue)', zIndex: 1,
       }} />
 
-      {/* Top-right icons (inert Phase 2) */}
+      {/* Top-right icons */}
       <div style={{ position: 'absolute', top: 0, right: 2, display: 'flex', alignItems: 'flex-start', zIndex: 2 }}>
-        <button type="button" disabled aria-label={isStopped ? 'Resume' : 'Pause'} style={iconBtnSm}>
-          {isStopped ? '▶' : '⏸'}
+        <button
+          type="button"
+          disabled={actionInFlight}
+          aria-label={isStopped ? 'Resume' : 'Pause'}
+          style={{ ...iconBtnSm, cursor: actionInFlight ? 'default' : 'pointer', opacity: actionInFlight ? 0.5 : 1 }}
+          onClick={handlePauseResume}
+        >
+          {actionInFlight ? '…' : (isStopped ? '▶' : '⏸')}
         </button>
         <button type="button" disabled aria-label="Details" style={{ ...iconBtnLg, margin: '6px 9px 6px 0' }}>
           ⓘ
@@ -222,6 +281,9 @@ function StrategyCard({ strategy: s }: { strategy: StrategyTreeItem }) {
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 6, flexWrap: 'wrap' }}>
           <AccountChip>{s.account_label}</AccountChip>
           {isStopped && <StopChip reason={s.stop_reason} />}
+          {actionError && (
+            <span style={{ fontSize: 10.5, color: 'var(--red)' }}>{actionError}</span>
+          )}
         </div>
 
         {/* Row 3 */}
@@ -241,7 +303,7 @@ function StrategyCard({ strategy: s }: { strategy: StrategyTreeItem }) {
             <>
               <SectionLabel text="Open Positions" />
               {shownOpen.map(p => (
-                <PositionCard key={p.id} position={p} stratLabel={s.account_label} stratExchange={s.account_exchange} />
+                <PositionCard key={p.id} position={p} stratLabel={s.account_label} stratExchange={s.account_exchange} onClose={handlePositionClose} />
               ))}
             </>
           )}
@@ -252,7 +314,7 @@ function StrategyCard({ strategy: s }: { strategy: StrategyTreeItem }) {
                 <>
                   <SectionLabel text="Closed Positions" />
                   {shownClosed.map(p => (
-                    <PositionCard key={p.id} position={p} stratLabel={s.account_label} stratExchange={s.account_exchange} />
+                    <PositionCard key={p.id} position={p} stratLabel={s.account_label} stratExchange={s.account_exchange} onClose={handlePositionClose} />
                   ))}
                 </>
               )}
@@ -291,14 +353,18 @@ function PositionCard({
   position: p,
   stratLabel,
   stratExchange,
+  onClose,
 }: {
   position: TreePosition;
   stratLabel: string;
   stratExchange: string;
+  onClose: () => void;
 }) {
   const [posState, setPosState] = useState<PosState>('header');
   const [orders, setOrders] = useState<TreeOrder[] | null>(null);
   const [loadingOrders, setLoadingOrders] = useState(false);
+  const [closeInFlight, setCloseInFlight] = useState(false);
+  const [closeError, setCloseError] = useState<string | null>(null);
 
   const isOpen = p.status === 'open';
   const symbol = `${p.base_asset}-${p.quote_asset}`;
@@ -320,6 +386,21 @@ function PositionCard({
       setPosState('header');
     }
   }, [posState, orders, p.id]);
+
+  const handleClosePosition = useCallback(async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!window.confirm(`Close this ${p.side} position?`)) return;
+    setCloseInFlight(true);
+    setCloseError(null);
+    try {
+      await api.post(`/positions/${p.id}/close`);
+      onClose();
+    } catch (err: any) {
+      setCloseError(err.message);
+    } finally {
+      setCloseInFlight(false);
+    }
+  }, [p.id, p.side, onClose]);
 
   const pnlVal = isOpen ? p.unrealized_pnl : p.realized_pnl;
 
@@ -354,8 +435,14 @@ function PositionCard({
           </span>
         )}
         {isOpen && (
-          <button type="button" disabled aria-label="Close position (Phase 3)" style={closeIcBtn}>
-            ✕
+          <button
+            type="button"
+            disabled={closeInFlight}
+            aria-label="Close position"
+            style={{ ...closeIcBtn, cursor: closeInFlight ? 'default' : 'pointer', opacity: closeInFlight ? 0.5 : 1 }}
+            onClick={handleClosePosition}
+          >
+            {closeInFlight ? '…' : '✕'}
           </button>
         )}
       </div>
@@ -401,9 +488,20 @@ function PositionCard({
             <div style={{ color: 'var(--muted)', fontSize: 12, padding: '4px 0' }}>No orders</div>
           )}
           {isOpen && (
-            <button type="button" disabled aria-label="Close position (Phase 3)" style={closePosBtn}>
-              Close position
-            </button>
+            <>
+              {closeError && (
+                <div style={{ color: 'var(--red)', fontSize: 11, padding: '4px 0' }}>{closeError}</div>
+              )}
+              <button
+                type="button"
+                disabled={closeInFlight}
+                aria-label="Close position"
+                style={{ ...closePosBtn, cursor: closeInFlight ? 'default' : 'pointer', opacity: closeInFlight ? 0.6 : 1 }}
+                onClick={handleClosePosition}
+              >
+                {closeInFlight ? 'Closing…' : 'Close position'}
+              </button>
+            </>
           )}
         </div>
       )}
@@ -578,14 +676,14 @@ const closeIcBtn: CSSProperties = {
   width: 30, height: 30, borderRadius: '50%',
   border: '1px solid var(--red-b)', background: 'var(--red-a)', color: 'var(--red)',
   fontSize: 10, display: 'flex', alignItems: 'center', justifyContent: 'center',
-  flexShrink: 0, cursor: 'default', padding: 0,
+  flexShrink: 0, cursor: 'pointer', padding: 0,
 };
 
 const closePosBtn: CSSProperties = {
   display: 'block', width: '100%', marginTop: 8,
   padding: 9, fontSize: 12.5, fontFamily: 'inherit',
   color: 'var(--red)', background: 'var(--red-a)',
-  border: '1px solid var(--red-b)', borderRadius: 8, cursor: 'default',
+  border: '1px solid var(--red-b)', borderRadius: 8, cursor: 'pointer',
 };
 
 const loadMoreBtn: CSSProperties = {
