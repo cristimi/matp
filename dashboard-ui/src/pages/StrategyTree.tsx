@@ -183,7 +183,7 @@ function StrategyCard({ strategy: s }: { strategy: StrategyTreeItem }) {
       <div style={{
         position: 'absolute', left: 0, top: 0, bottom: 0, width: 4,
         borderRadius: '11px 0 0 11px',
-        background: isStopped ? 'var(--gray)' : 'var(--blue)', zIndex: 1,
+        background: isStopped ? 'var(--stopped-bar)' : 'var(--blue)', zIndex: 1,
       }} />
 
       {/* Top-right icons (inert Phase 2) */}
@@ -221,7 +221,7 @@ function StrategyCard({ strategy: s }: { strategy: StrategyTreeItem }) {
 
         {/* Row 3 */}
         <div style={{ display: 'flex', alignItems: 'flex-start', gap: 18, marginTop: 6, flexWrap: 'nowrap' }}>
-          <Metric label="Allocation" value={Number(s.capital_allocation).toFixed(0)} />
+          <Metric label="Allocation" value={Number(s.capital_allocation).toFixed(1)} />
           <Metric label="Total Return" value={formatPct(s.total_return)} color={pnlColor(s.total_return)} />
           {hasOpen && <Metric label="Open PnL" value={formatPnl(s.open_pnl)} color={pnlColor(s.open_pnl)} />}
         </div>

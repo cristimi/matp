@@ -259,4 +259,89 @@ pointerType      → 2   (long-press handler)
 
 ---
 
+## Phase 2 fix-up — live PnL + stopped-bar color
+
+### Deployed bundles
+
+```
+dashboard-api: rebuilt (layer-cached), container matp-dashboard-api-1 recreated
+dashboard-ui:  asset hash: index-CsV-0-s_.js  (was index-D94a2hDg.js)
+```
+
+### Bundle string verification
+
+```
+docker compose exec -T dashboard-ui grep -c 'stopped-bar' /usr/share/nginx/html/assets/index-CsV-0-s_.js
+→ 1
+
+docker compose exec -T dashboard-ui grep -c 'toFixed(1)' /usr/share/nginx/html/assets/index-CsV-0-s_.js
+→ 2   (allocation + one other use)
+```
+
+### Fix 1 — L2 live mark_price + unrealized_pnl
+
+`GET /api/dashboard/strategies/hype-test-7db4/positions?scope=open`
+
+```json
+[{
+  "id": "5862c610-54f7-455e-ad78-e73932505baa",
+  "side": "long",
+  "base_asset": "HYPE",
+  "quote_asset": "USDT",
+  "size": 3.2,
+  "entry_price": 62.134,
+  "mark_price": 63.1046,
+  "unrealized_pnl": 3.10592,
+  "realized_pnl": null,
+  "liquidation_price": null,
+  "leverage": 10,
+  "opened_at": "2026-06-23T19:42:25.344Z",
+  "closed_at": null,
+  "close_reason": null,
+  "status": "open",
+  "account_label": "Blofin Demo",
+  "account_exchange": "blofin",
+  "order_count": 1
+}]
+```
+
+`mark_price 63.1046 ≠ entry_price 62.134` — live executor feed confirmed.
+`unrealized_pnl +3.1059` — was `null` / `0` from stale DB before.
+Closed positions fall back to `mark_price = entry_price`, `unrealized_pnl = null`.
+
+### Fix 2 — L1 tree live open_pnl (executor fanout once per request)
+
+`GET /api/dashboard/strategies/tree` (relevant strategy excerpt):
+
+```json
+{
+  "id": "hype-test-7db4",
+  "name": "HYPE Test",
+  "symbol": "HYPE-USDT",
+  "open_positions_count": 1,
+  "open_pnl": 3.096
+}
+```
+
+`open_pnl 3.096` — was `0` from stale `SUM(sp.pnl_unrealized)` before.
+Executor fanout: one `fetch /accounts/:id/positions` per unique active account, not per strategy.
+
+### Fix 3 — Allocation format
+
+`Metric` now renders `191.9` (`.toFixed(1)`) matching `pages/Strategies.tsx`, was `.toFixed(0)` → `192`.
+
+### Fix 4 — Stopped accent bar
+
+Added token `--stopped-bar: #cbd5e1` to `tokens.css`.
+Stopped bar now uses `var(--stopped-bar)` (light cool gray, `#cbd5e1`) instead of `var(--gray)` (`#64748b` dark blue-slate).
+Light neutral gray clearly reads as inactive, distinct from `--blue` (#2563eb).
+
+### Other endpoint curls (unchanged, still working)
+
+`GET /positions/5862c610-.../orders` → 1 entry order, `avg_fill: 62.134`
+
+`GET /orders/4705b35b-.../detail` → origin: tradingview, execution: actual_fill_price: 62.134
+
+---
+
 _Phase 2C (ⓘ detail panel + final redeploy) pending human confirmation._
