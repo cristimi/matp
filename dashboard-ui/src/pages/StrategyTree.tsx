@@ -8,6 +8,7 @@ import {
   fetchStrategyTree, fetchTreePositions, fetchPositionOrders, fetchOrderDetail, api,
 } from '../api';
 import type { StrategyTreeItem, TreePosition, TreeOrder, OrderDetail } from '../api';
+import { useLivePnl, type PnlSnapshot } from '../hooks/useLivePnl';
 
 const MONO = '"JetBrains Mono", monospace';
 const CLOSED_STEP = 3;
@@ -95,6 +96,7 @@ export default function StrategyTreePage() {
   const [strategies, setStrategies] = useState<StrategyTreeItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const livePnl = useLivePnl();
 
   const loadStrategies = useCallback(() => {
     return fetchStrategyTree()
@@ -112,7 +114,7 @@ export default function StrategyTreePage() {
       {!loading && !error && strategies.length === 0 && (
         <div style={{ padding: 24, color: 'var(--muted)', textAlign: 'center', fontSize: 13 }}>No strategies</div>
       )}
-      {strategies.map(s => <StrategyCard key={s.id} strategy={s} onL1Refresh={loadStrategies} />)}
+      {strategies.map(s => <StrategyCard key={s.id} strategy={s} onL1Refresh={loadStrategies} livePnl={livePnl} />)}
     </div>
   );
 }
@@ -121,7 +123,7 @@ export default function StrategyTreePage() {
 
 type ExpandState = 'collapsed' | 'open' | 'all';
 
-function StrategyCard({ strategy: s, onL1Refresh }: { strategy: StrategyTreeItem; onL1Refresh: () => void }) {
+function StrategyCard({ strategy: s, onL1Refresh, livePnl }: { strategy: StrategyTreeItem; onL1Refresh: () => void; livePnl: PnlSnapshot | null }) {
   const hasOpen = s.open_positions_count > 0;
   const isStopped = !s.enabled;
   const navigate = useNavigate();
@@ -320,7 +322,10 @@ function StrategyCard({ strategy: s, onL1Refresh }: { strategy: StrategyTreeItem
         <div style={{ display: 'flex', alignItems: 'flex-start', gap: 18, marginTop: 6, flexWrap: 'nowrap' }}>
           <Metric label="Allocation" value={Number(s.capital_allocation).toFixed(1)} />
           <Metric label="Total Return" value={formatPct(s.total_return)} color={pnlColor(s.total_return)} />
-          {hasOpen && <Metric label="Open PnL" value={formatPnl(s.open_pnl)} color={pnlColor(s.open_pnl)} />}
+          {hasOpen && (() => {
+            const liveOpenPnl = livePnl?.strategies[s.id]?.open_pnl ?? s.open_pnl;
+            return <Metric label="Open PnL" value={formatPnl(liveOpenPnl)} color={pnlColor(liveOpenPnl)} />;
+          })()}
         </div>
       </div>
 
@@ -371,7 +376,7 @@ function StrategyCard({ strategy: s, onL1Refresh }: { strategy: StrategyTreeItem
             <>
               <SectionLabel text="Open Positions" />
               {shownOpen.map(p => (
-                <PositionCard key={p.id} position={p} stratLabel={s.account_label} stratExchange={s.account_exchange} onClose={handlePositionClose} />
+                <PositionCard key={p.id} position={p} stratLabel={s.account_label} stratExchange={s.account_exchange} onClose={handlePositionClose} livePnl={livePnl} />
               ))}
             </>
           )}
@@ -382,7 +387,7 @@ function StrategyCard({ strategy: s, onL1Refresh }: { strategy: StrategyTreeItem
                 <>
                   <SectionLabel text="Closed Positions" />
                   {shownClosed.map(p => (
-                    <PositionCard key={p.id} position={p} stratLabel={s.account_label} stratExchange={s.account_exchange} onClose={handlePositionClose} />
+                    <PositionCard key={p.id} position={p} stratLabel={s.account_label} stratExchange={s.account_exchange} onClose={handlePositionClose} livePnl={livePnl} />
                   ))}
                 </>
               )}
@@ -422,11 +427,13 @@ function PositionCard({
   stratLabel,
   stratExchange,
   onClose,
+  livePnl,
 }: {
   position: TreePosition;
   stratLabel: string;
   stratExchange: string;
   onClose: () => void;
+  livePnl: PnlSnapshot | null;
 }) {
   const [posState, setPosState] = useState<PosState>('header');
   const [orders, setOrders] = useState<TreeOrder[] | null>(null);
@@ -437,6 +444,10 @@ function PositionCard({
   const isOpen = p.status === 'open';
   const symbol = `${p.base_asset}-${p.quote_asset}`;
   const diffAcct = p.account_label !== stratLabel || p.account_exchange !== stratExchange;
+
+  const posSnap = isOpen ? livePnl?.positions[p.id] : undefined;
+  const displayMarkPrice = posSnap?.mark_price ?? p.mark_price;
+  const displayUnrealizedPnl = posSnap !== undefined ? posSnap.unrealized_pnl : p.unrealized_pnl;
 
   const handleTap = useCallback(() => {
     if (posState === 'header') {
@@ -470,7 +481,7 @@ function PositionCard({
     }
   }, [p.id, p.side, onClose]);
 
-  const pnlVal = isOpen ? p.unrealized_pnl : p.realized_pnl;
+  const pnlVal = isOpen ? displayUnrealizedPnl : p.realized_pnl;
 
   return (
     <div style={{
@@ -521,13 +532,13 @@ function PositionCard({
           {isOpen ? (
             <>
               <KV k="Entry"  v={formatPrice(symbol, p.entry_price)} />
-              <KV k="Mark"   v={formatPrice(symbol, p.mark_price)} />
+              <KV k="Mark"   v={formatPrice(symbol, displayMarkPrice)} />
               <KV k="Liq"    v={formatPrice(symbol, p.liquidation_price)} />
               <KV k="Lever"  v={p.leverage != null ? `${p.leverage}×` : '—'} />
               <KV k="Size"   v={formatSize(symbol, p.size)} />
               <KV k="Opened" v={formatRelative(p.opened_at)} />
-              {p.unrealized_pnl != null && (
-                <KV k="Unrealized" v={formatPnl(p.unrealized_pnl)} vColor={pnlColor(p.unrealized_pnl)} />
+              {displayUnrealizedPnl != null && (
+                <KV k="Unrealized" v={formatPnl(displayUnrealizedPnl)} vColor={pnlColor(displayUnrealizedPnl)} />
               )}
             </>
           ) : (

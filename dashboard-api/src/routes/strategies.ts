@@ -1,6 +1,8 @@
 import { Router, Request, Response } from 'express';
 import crypto from 'crypto';
 import { getPool } from '../db';
+import { getRedis } from '../redis';
+import { SNAPSHOT_KEY, isSnapshotFresh, type PnlSnapshot } from '../livePnl';
 
 const router = Router();
 
@@ -401,51 +403,32 @@ router.get('/tree', async (_req: Request, res: Response) => {
       ORDER BY s.created_at DESC
     `);
 
-    // Fan out to executor once per unique account that has open positions — never once per strategy
-    const openRows = rows.filter((r: any) => r.open_positions_count > 0 && r.account_id);
-    const uniqueAccounts = [...new Set(openRows.map((r: any) => r.account_id as string))];
-
-    const liveMap = new Map<string, number>(); // key: accountId:symbol:side → unrealized_pnl
-    await Promise.all(uniqueAccounts.map(async (accountId) => {
-      try {
-        const resp = await fetch(`${EXECUTOR_URL}/accounts/${accountId}/positions`, {
-          signal: AbortSignal.timeout(5000),
-        });
-        if (resp.ok) {
-          const positions = await resp.json();
-          if (Array.isArray(positions)) {
-            positions.forEach((p: any) => {
-              liveMap.set(`${accountId}:${p.symbol}:${p.side}`, Number(p.unrealized_pnl) || 0);
-            });
-          }
-        }
-      } catch (e) {
-        console.error(`Tree: live fetch failed for account ${accountId}:`, e);
+    // Read open_pnl from the live-PnL snapshot (updated by the server-side ticker)
+    let snapshot: PnlSnapshot | null = null;
+    try {
+      const raw = await getRedis().get(SNAPSHOT_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw) as PnlSnapshot;
+        if (isSnapshotFresh(parsed)) snapshot = parsed;
       }
-    }));
+    } catch (e) {
+      console.error('Tree: snapshot read failed:', e);
+    }
 
-    res.json(rows.map((r: any) => {
-      let open_pnl = 0;
-      if (r.open_positions_count > 0 && r.account_id) {
-        const longPnl  = liveMap.get(`${r.account_id}:${r.symbol}:long`)  ?? 0;
-        const shortPnl = liveMap.get(`${r.account_id}:${r.symbol}:short`) ?? 0;
-        open_pnl = longPnl + shortPnl;
-      }
-      return {
-        id:                   r.id,
-        name:                 r.name,
-        symbol:               r.symbol,
-        account_label:        r.account_label,
-        account_exchange:     r.account_exchange,
-        account_mode:         r.account_mode,
-        enabled:              r.enabled,
-        stop_reason:          r.stop_reason ?? null,
-        capital_allocation:   Number(r.capital_allocation),
-        total_return:         Number(r.total_return),
-        open_positions_count: r.open_positions_count,
-        open_pnl,
-      };
-    }));
+    res.json(rows.map((r: any) => ({
+      id:                   r.id,
+      name:                 r.name,
+      symbol:               r.symbol,
+      account_label:        r.account_label,
+      account_exchange:     r.account_exchange,
+      account_mode:         r.account_mode,
+      enabled:              r.enabled,
+      stop_reason:          r.stop_reason ?? null,
+      capital_allocation:   Number(r.capital_allocation),
+      total_return:         Number(r.total_return),
+      open_positions_count: r.open_positions_count,
+      open_pnl:             r.open_positions_count > 0 ? (snapshot?.strategies[r.id]?.open_pnl ?? 0) : 0,
+    })));
   } catch (err) {
     console.error('Error fetching strategy tree:', err);
     res.status(500).json({ error: 'Database error fetching strategy tree' });
@@ -967,32 +950,20 @@ router.get('/:id/positions', async (req: Request, res: Response) => {
       LIMIT $2 OFFSET $3
     `, [req.params.id, limit, offset]);
 
-    // Enrich open positions with live mark_price and unrealized_pnl from executor.
-    // Use strategy_account_id (not the derived display account) as the lookup key.
-    const liveMap = new Map<string, any>();
-    const openRows = rows.filter((r: any) => r.status === 'open');
-    if (openRows.length > 0 && openRows[0].strategy_account_id) {
-      const accountId = openRows[0].strategy_account_id as string;
-      try {
-        const resp = await fetch(`${EXECUTOR_URL}/accounts/${accountId}/positions`, {
-          signal: AbortSignal.timeout(5000),
-        });
-        if (resp.ok) {
-          const livePositions = await resp.json();
-          if (Array.isArray(livePositions)) {
-            livePositions.forEach((p: any) => {
-              liveMap.set(`${accountId}:${p.symbol}:${p.side}`, p);
-            });
-          }
-        }
-      } catch (e) {
-        console.error(`Live enrichment failed for account ${accountId}:`, e);
+    // Enrich open positions with live mark_price and unrealized_pnl from the shared snapshot.
+    let snapshot: PnlSnapshot | null = null;
+    try {
+      const raw = await getRedis().get(SNAPSHOT_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw) as PnlSnapshot;
+        if (isSnapshotFresh(parsed)) snapshot = parsed;
       }
+    } catch (e) {
+      console.error(`Positions: snapshot read failed for ${req.params.id}:`, e);
     }
 
     res.json(rows.map((r: any) => {
-      const liveKey = `${r.strategy_account_id}:${r.symbol}:${r.side}`;
-      const live    = r.status === 'open' ? liveMap.get(liveKey) : undefined;
+      const posSnap = r.status === 'open' ? snapshot?.positions[r.id] : undefined;
       return {
         id:                r.id,
         side:              r.side,
@@ -1000,8 +971,8 @@ router.get('/:id/positions', async (req: Request, res: Response) => {
         quote_asset:       r.quote_asset,
         size:              Number(r.size),
         entry_price:       Number(r.entry_price),
-        mark_price:        live ? Number(live.mark_price || live.entry_price) : Number(r.entry_price),
-        unrealized_pnl:    live ? Number(live.unrealized_pnl) : null,
+        mark_price:        posSnap ? posSnap.mark_price : Number(r.entry_price),
+        unrealized_pnl:    posSnap ? posSnap.unrealized_pnl : null,
         realized_pnl:      r.realized_pnl != null ? Number(r.realized_pnl) : null,
         liquidation_price: r.liquidation_price != null ? Number(r.liquidation_price) : null,
         leverage:          r.leverage,

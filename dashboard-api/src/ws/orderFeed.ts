@@ -1,11 +1,10 @@
-import http from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
 import { getSubscriber } from '../redis';
 
 const CHANNELS = ['orders:received', 'orders:routed', 'orders:filled', 'orders:failed'];
 
-export function initWebSocket(server: http.Server): void {
-  const wss = new WebSocketServer({ server, path: '/ws/orders' });
+export function createOrderWebSocket(): WebSocketServer {
+  const wss = new WebSocketServer({ noServer: true });
 
   const clients = new Set<WebSocket>();
 
@@ -38,4 +37,5 @@ export function initWebSocket(server: http.Server): void {
   }
 
   console.log(`WebSocket server ready. Subscribed to: ${CHANNELS.join(', ')}`);
+  return wss;
 }
