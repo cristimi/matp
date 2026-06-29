@@ -377,6 +377,7 @@ router.get('/tree', async (_req: Request, res: Response) => {
         ea.exchange     AS account_exchange,
         ea.mode         AS account_mode,
         s.enabled,
+        s.stop_reason,
         s.capital_allocation,
         CASE
           WHEN COALESCE(s.initial_allocation, s.capital_allocation, 0) = 0 THEN 0::float
@@ -438,7 +439,7 @@ router.get('/tree', async (_req: Request, res: Response) => {
         account_exchange:     r.account_exchange,
         account_mode:         r.account_mode,
         enabled:              r.enabled,
-        stop_reason:          null,
+        stop_reason:          r.stop_reason ?? null,
         capital_allocation:   Number(r.capital_allocation),
         total_return:         Number(r.total_return),
         open_positions_count: r.open_positions_count,
@@ -753,6 +754,7 @@ router.post('/:id/start', async (req: Request, res: Response) => {
     const result = await getPool().query(
       `UPDATE strategies
        SET enabled = true,
+           stop_reason = NULL,
            allocation_peak = CASE WHEN enabled = false THEN capital_allocation ELSE allocation_peak END,
            updated_at = NOW()
        WHERE id = $1

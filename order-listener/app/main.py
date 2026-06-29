@@ -116,7 +116,7 @@ async def stop_strategy(strategy_id: str):
     if not errors:
         async with pool.acquire() as conn:
             await conn.execute(
-                "UPDATE strategies SET enabled = false, updated_at = NOW() WHERE id = $1",
+                "UPDATE strategies SET enabled = false, stop_reason = 'user', updated_at = NOW() WHERE id = $1",
                 strategy_id,
             )
     return {
