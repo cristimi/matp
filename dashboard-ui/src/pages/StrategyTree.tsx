@@ -146,15 +146,20 @@ function StrategyCard({ strategy: s }: { strategy: StrategyTreeItem }) {
 
   const handleTap = useCallback(() => {
     if (expandState === 'collapsed') {
-      doFetchOpen();
-      setExpandState('open');
+      if (hasOpen) {
+        doFetchOpen();
+        setExpandState('open');
+      } else {
+        doFetchAll();
+        setExpandState('all');
+      }
     } else if (expandState === 'open') {
       doFetchAll();
       setExpandState('all');
     } else {
       setExpandState('collapsed');
     }
-  }, [expandState, doFetchOpen, doFetchAll]);
+  }, [expandState, hasOpen, doFetchOpen, doFetchAll]);
 
   const handleHold = useCallback(() => {
     setExpandState('collapsed');
