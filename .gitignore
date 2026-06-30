@@ -35,3 +35,4 @@ logs/
 # Strategy configs with sensitive params (override in your workflow)
 order-generator/strategies_config/*.yaml
 !order-generator/strategies_config/example_rsi_btc.yaml
+*_backup_*.sql

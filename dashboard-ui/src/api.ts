@@ -203,6 +203,8 @@ export interface TreePosition {
   opened_at: string;
   closed_at: string | null;
   close_reason: string | null;
+  closing_price: number | null;
+  sl_price: number | null;
   status: 'open' | 'closed';
   account_label: string;
   account_exchange: string;

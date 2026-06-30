@@ -708,35 +708,48 @@ function PositionCard({
         tabIndex={0}
         onClick={handleTap}
         onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleTap(); } }}
-        style={{ display: 'flex', alignItems: 'center', minHeight: 42, padding: '6px 10px', cursor: 'pointer', userSelect: 'none', gap: 7 }}
+        style={{ display: 'flex', flexDirection: 'column', padding: '6px 10px', cursor: 'pointer', userSelect: 'none', gap: 3 }}
       >
-        <HeaderPill variant={p.side === 'long' ? 'long' : 'short'}>
-          {p.side === 'long' ? 'LONG' : 'SHORT'}
-        </HeaderPill>
-        <span style={{ fontFamily: MONO, fontWeight: 600, fontSize: 13, color: 'var(--text)' }}>
-          {p.base_asset}
-        </span>
-        <span style={{ fontFamily: MONO, fontSize: 12, color: 'var(--muted)' }}>
-          {formatSize(symbol, p.size)}
-        </span>
-        {diffAcct && <DiffChip label={p.account_label} />}
-        <span style={{ flex: 1 }} />
-        {pnlVal != null && (
-          <span style={{ fontFamily: MONO, fontSize: 12, color: pnlColor(pnlVal) }}>
-            {formatPnl(pnlVal)}
+        {/* top row */}
+        <div style={{ display: 'flex', alignItems: 'center', minHeight: 30, gap: 7 }}>
+          <HeaderPill variant={p.side === 'long' ? 'long' : 'short'}>
+            {p.side === 'long' ? 'LONG' : 'SHORT'}
+          </HeaderPill>
+          <span style={{ fontFamily: MONO, fontWeight: 600, fontSize: 13, color: 'var(--text)' }}>
+            {p.base_asset}
           </span>
-        )}
-        {isOpen && (
-          <button
-            type="button"
-            disabled={closeInFlight}
-            aria-label="Close position"
-            style={{ ...closeIcBtn, cursor: closeInFlight ? 'default' : 'pointer', opacity: closeInFlight ? 0.5 : 1 }}
-            onClick={handleClosePosition}
-          >
-            {closeInFlight ? '…' : '✕'}
-          </button>
-        )}
+          <span style={{ fontFamily: MONO, fontSize: 12, color: 'var(--muted)' }}>
+            {formatSize(symbol, p.size)}
+          </span>
+          {diffAcct && <DiffChip label={p.account_label} />}
+          <span style={{ flex: 1 }} />
+          {pnlVal != null && (
+            <span style={{ fontFamily: MONO, fontSize: 12, color: pnlColor(pnlVal) }}>
+              {formatPnl(pnlVal)}
+            </span>
+          )}
+          {isOpen && (
+            <button
+              type="button"
+              disabled={closeInFlight}
+              aria-label="Close position"
+              style={{ ...closeIcBtn, cursor: closeInFlight ? 'default' : 'pointer', opacity: closeInFlight ? 0.5 : 1 }}
+              onClick={handleClosePosition}
+            >
+              {closeInFlight ? '…' : '✕'}
+            </button>
+          )}
+        </div>
+        {/* price strip */}
+        <div style={{ fontFamily: MONO, fontSize: 11, color: 'var(--muted)', letterSpacing: 0 }}>
+          {[
+            `Open ${formatPrice(symbol, p.entry_price)}`,
+            isOpen
+              ? `Mark ${formatPrice(symbol, displayMarkPrice)}`
+              : p.closing_price != null ? `Close ${formatPrice(symbol, p.closing_price)}` : null,
+            p.sl_price != null ? `SL ${formatPrice(symbol, p.sl_price)}` : null,
+          ].filter(Boolean).join(' · ')}
+        </div>
       </div>
 
       {/* Detail panel */}
@@ -746,6 +759,7 @@ function PositionCard({
             <>
               <KV k="Entry"  v={formatPrice(symbol, p.entry_price)} />
               <KV k="Mark"   v={formatPrice(symbol, displayMarkPrice)} />
+              {p.sl_price != null && <KV k="SL" v={formatPrice(symbol, p.sl_price)} />}
               <KV k="Liq"    v={formatPrice(symbol, p.liquidation_price)} />
               <KV k="Lever"  v={p.leverage != null ? `${p.leverage}×` : '—'} />
               <KV k="Size"   v={formatSize(symbol, p.size)} />
@@ -757,6 +771,7 @@ function PositionCard({
           ) : (
             <>
               <KV k="Entry"        v={formatPrice(symbol, p.entry_price)} />
+              {p.closing_price != null && <KV k="Close" v={formatPrice(symbol, p.closing_price)} />}
               <KV k="Realized"     v={formatPnl(p.realized_pnl)} vColor={pnlColor(p.realized_pnl)} />
               {p.close_reason && <KV k="Close reason" v={p.close_reason} />}
               <KV k="Opened"       v={formatRelative(p.opened_at)} />
