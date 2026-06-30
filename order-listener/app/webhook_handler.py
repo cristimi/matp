@@ -27,6 +27,16 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+def _client_ip(request: Request) -> Optional[str]:
+    xff = request.headers.get("x-forwarded-for")
+    if xff:
+        return xff.split(",")[0].strip()
+    xri = request.headers.get("x-real-ip")
+    if xri:
+        return xri.strip()
+    return request.client.host if request.client else None
+
+
 def _infer_price_decimals(price: float) -> int:
     """Infer sensible decimal precision from price magnitude."""
     if price >= 10_000:
@@ -516,7 +526,7 @@ async def receive_webhook(
 ):
     start_ms = time.monotonic() * 1000
     pool = get_pool()
-    source_ip = request.client.host if request.client else None
+    source_ip = _client_ip(request)
 
     # ── Parse raw body (before any Pydantic validation) ───────────────
     try:
