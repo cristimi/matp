@@ -217,3 +217,47 @@ bf7a8e25 (BTC 0.002):   entry delta=0.004 fill=60017.4 | close delta=0.002 fill=
 b9959a57 (BTC 0.004):   entry delta=0.004 fill=59776.3 | close delta=0.004 fill=60175
 abcc1b26 (HYPE 3.0):    entry delta=3.039 fill=65.802  | close delta=3.0   fill=64.89
 ```
+
+## Phase 3 follow-up — fix close-label denominator ✓
+
+### Problem
+
+The cumulative-sum branch (`SUM(o2.size) >= sp.size * 0.99`) used `sp.size` as the denominator, but `sp.size` is decremented on every partial close and left at the final remaining leg size at the time of full close. For a multi-leg close the threshold was cleared on the very first leg, mislabeling all legs `close`.
+
+### Fix
+
+`dashboard-api/src/routes/positions.ts` — replaced the cumulative-sum branch with a terminal-leg identity check: the order whose `id` matches the latest `received_at DESC, id DESC` among all close orders for this position is the `close`; every earlier leg falls through to `partial-close`. No dependence on `sp.size`.
+
+### Verification
+
+**Bundle — new branch present:**
+```
+$ docker compose exec dashboard-api sh -c "grep -n 'ORDER BY o2.received_at DESC' /app/dist/routes/positions.js"
+151:              ORDER BY o2.received_at DESC, o2.id DESC
+```
+
+**Multi-leg position `fe754dac` (BTC-USDT, 2 close legs):**
+```
+$ docker compose exec dashboard-api curl -s http://localhost:8003/positions/fe754dac-d632-47c4-b243-0acee387fa71/orders \
+    | python3 -m json.tool | grep -E '"type"|"delta"'
+        "type": "entry",
+        "delta": 0.004,
+        "type": "partial-close",
+        "delta": 0.002,
+        "type": "close",
+        "delta": 0.002,
+```
+
+First leg → `partial-close`, last leg → `close`. Correct.
+
+**Regression — single-leg `abcc1b26` (HYPE, 1 close leg):**
+```
+$ docker compose exec dashboard-api curl -s http://localhost:8003/positions/abcc1b26-b404-4e77-8622-c3326deba7aa/orders \
+    | python3 -m json.tool | grep -E '"type"|"delta"'
+        "type": "entry",
+        "delta": 3.03932892,
+        "type": "close",
+        "delta": 3,
+```
+
+Still `close` — no regression.

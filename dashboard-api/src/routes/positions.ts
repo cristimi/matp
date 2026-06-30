@@ -164,13 +164,12 @@ router.get('/:id/orders', async (req: Request, res: Response) => {
           WHEN o.signal_source IN ('take_profit', 'tp', 'take-profit')   THEN 'take-profit'
           WHEN o.closes_position_id = sp.id
             AND sp.status = 'closed'
-            AND sp.size > 0
-            AND (
-              SELECT COALESCE(SUM(o2.size), 0)
-              FROM orders o2
+            AND o.id = (
+              SELECT o2.id FROM orders o2
               WHERE o2.closes_position_id = sp.id
-                AND o2.received_at <= o.received_at
-            ) >= sp.size * 0.99                                          THEN 'close'
+              ORDER BY o2.received_at DESC, o2.id DESC
+              LIMIT 1
+            )                                                            THEN 'close'
           ELSE 'partial-close'
         END AS type,
         o.actual_fill_price AS fill,
