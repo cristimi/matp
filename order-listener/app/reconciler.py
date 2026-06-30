@@ -184,7 +184,7 @@ async def reconcile_once(pool) -> None:
             # Full external close
             await _handle_full_external_close(
                 pool, strategy, symbol, side, pos_id, opened_at,
-                acct_id, get_position_history,
+                acct_id, get_position_history, db_size,
             )
         else:
             # Partial reduction
@@ -222,6 +222,7 @@ async def _handle_full_external_close(
     opened_at,
     acct_id: str,
     get_position_history,
+    db_size: Decimal,
 ) -> None:
     from app.webhook_handler import close_strategy_position
 
@@ -268,34 +269,37 @@ async def _handle_full_external_close(
             f" close_reason={close_reason}"
         )
 
-    # Create a synthetic closing order so sync_position_pnl can attribute PnL
+    # Create a synthetic closing order carrying the real closed size.
+    # Always created — even when pnl is unconfirmed — so the timeline has a close row.
+    # pnl is left NULL when unconfirmed; sync_position_pnl / _recover_manual_close_pnl
+    # will fill it in once exchange history confirms it.
     synthetic_order_id: Optional[uuid.UUID] = None
-    if not pnl_unconfirmed and pnl_realized is not None:
-        close_side = "sell" if side == "long" else "buy"
-        try:
-            pnl_float = float(pnl_realized)
-            async with pool.acquire() as conn:
-                row = await conn.fetchrow(
-                    """
-                    INSERT INTO orders
-                      (symbol, side, signal, order_type, size, platform,
-                       strategy_id, account_id, status, actual_fill_price,
-                       pnl, raw_webhook, signal_source)
-                    VALUES
-                      ($1, $2, $3, 'market', 0, 'exchange',
-                       $4, $5, 'filled', $6,
-                       $7, '{}'::jsonb, 'reconciler')
-                    RETURNING id
-                    """,
-                    symbol, close_side,
-                    "liquidation" if close_reason == "Liquidated" else "exchange_close",
-                    strategy["id"], acct_id,
-                    float(closing_price) if closing_price else None,
-                    pnl_float,
-                )
-            synthetic_order_id = row["id"]
-        except Exception as e:
-            logger.error(f"reconciler: failed to create synthetic order for {pos_id}: {e}")
+    close_side = "sell" if side == "long" else "buy"
+    pnl_float = float(pnl_realized) if pnl_realized is not None and not pnl_unconfirmed else None
+    try:
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                INSERT INTO orders
+                  (symbol, side, signal, order_type, size, platform,
+                   strategy_id, account_id, status, actual_fill_price,
+                   pnl, raw_webhook, signal_source)
+                VALUES
+                  ($1, $2, $3, 'market', $4, 'exchange',
+                   $5, $6, 'filled', $7,
+                   $8, '{}'::jsonb, 'reconciler')
+                RETURNING id
+                """,
+                symbol, close_side,
+                "liquidation" if close_reason == "Liquidated" else "exchange_close",
+                float(db_size),
+                strategy["id"], acct_id,
+                float(closing_price) if closing_price else None,
+                pnl_float,
+            )
+        synthetic_order_id = row["id"]
+    except Exception as e:
+        logger.error(f"reconciler: failed to create synthetic order for {pos_id}: {e}")
 
     result = await close_strategy_position(
         pool, strategy,
@@ -334,7 +338,8 @@ async def _recover_manual_close_pnl(pool) -> None:
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """
-            SELECT sp.id, sp.strategy_id, sp.symbol, sp.side, sp.opened_at, s.account_id
+            SELECT sp.id, sp.strategy_id, sp.symbol, sp.side, sp.opened_at,
+                   sp.size, sp.closing_price, s.account_id
             FROM strategy_positions sp
             JOIN strategies s ON sp.strategy_id = s.id
             WHERE sp.status = 'closed'
@@ -355,11 +360,13 @@ async def _recover_manual_close_pnl(pool) -> None:
     logger.debug(f"reconciler: {len(rows)} closed positions need PnL history fallback")
 
     for row in rows:
-        pos_id    = row["id"]
-        symbol    = row["symbol"]
-        side      = row["side"]
-        acct_id   = row["account_id"]
-        opened_at = row["opened_at"]
+        pos_id           = row["id"]
+        symbol           = row["symbol"]
+        side             = row["side"]
+        acct_id          = row["account_id"]
+        opened_at        = row["opened_at"]
+        pos_size         = row["size"]
+        pos_closing_price = row["closing_price"]
 
         try:
             history = await get_position_history(acct_id, symbol, opened_at)
@@ -421,5 +428,31 @@ async def _recover_manual_close_pnl(pool) -> None:
                 await _book_realized_pnl(
                     pool, str(updated_row['strategy_id']), updated_row['pnl_realized']
                 )
+                # Create a linked synthetic close order if none exists
+                close_side = "sell" if side == "long" else "buy"
+                try:
+                    async with pool.acquire() as conn:
+                        await conn.execute(
+                            """
+                            INSERT INTO orders
+                              (symbol, side, signal, order_type, size, platform,
+                               strategy_id, account_id, status, actual_fill_price,
+                               pnl, raw_webhook, signal_source, closes_position_id)
+                            SELECT $1, $2, 'exchange_close', 'market', $3, 'exchange',
+                                   $4, $5, 'filled', $6,
+                                   $7, '{}'::jsonb, 'reconciler', $8
+                            WHERE NOT EXISTS (
+                                SELECT 1 FROM orders o WHERE o.closes_position_id = $8
+                            )
+                            """,
+                            symbol, close_side,
+                            float(pos_size),
+                            str(updated_row['strategy_id']), acct_id,
+                            float(pos_closing_price) if pos_closing_price else None,
+                            pnl_float,
+                            pos_id,
+                        )
+                except Exception as e:
+                    logger.error(f"reconciler: failed to create close order for {pos_id}: {e}")
         except Exception as e:
             logger.error(f"reconciler: pnl recovery update failed for {pos_id}: {e}")
