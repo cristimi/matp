@@ -13,6 +13,8 @@ Services: `nginx` (reverse proxy), `postgres`, `redis`, `order-listener`, `order
 - Never print private keys, credentials, or secrets.
 - Always read the relevant files before changing anything. Verify changes against the
   running container, not the host build output (see "Verifying a deploy").
+- Only `nginx` publishes a host port (`80:80`). Never add a `ports:` mapping to any
+  other service — it bypasses nginx and exposes the service on `0.0.0.0`.
 
 ## Deploying code changes — use the script
 
@@ -62,6 +64,20 @@ docker compose exec nginx nginx -t && docker compose exec nginx nginx -s reload
 Caching is already correct: hashed `/assets/` are `immutable, 1y`; `index.html` is
 `no-store, no-cache, must-revalidate`, and the outer proxy forwards those headers untouched.
 So a new deploy is picked up on the next page load without users clearing anything.
+
+## Service ports — internal only
+
+Only `nginx` publishes a host port (`80:80`). Every other service is reachable **only**
+over the docker network by hostname (`order-listener:8001`, `ai-signal-generator:8005`,
+`strategy-tester:8006`, etc.). External traffic enters via Zoraxy → host:80 → nginx.
+
+**Never add a `ports:` mapping to a service in `docker-compose.yml`.** Publishing a host
+port bypasses nginx and exposes that service's full API on `0.0.0.0`, including the
+listener's unauthenticated control endpoints. `8001/8005/8006` were removed for exactly
+this reason — do not reintroduce them. To reach a service for debugging, exec into a
+container on the network instead:
+
+`docker compose exec nginx wget -qO- http://order-listener:8001/health`
 
 ## Verifying a deploy (don't trust host build output)
 
