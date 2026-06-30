@@ -146,7 +146,28 @@ DELETE 1
 
 ---
 
+---
+
+## Real TradingView signal confirmation
+
+After both phases were deployed, a live TradingView alert fired against the `hype-test-7db4` strategy. DB record:
+
+```
+$ docker compose exec postgres psql -U matp -d matp \
+    -c "SELECT id, strategy_id, received_at, http_status, outcome, source_ip FROM signal_log ORDER BY received_at DESC LIMIT 2;"
+ id  |     strategy_id     |          received_at          | http_status | outcome |  source_ip
+-----+---------------------+-------------------------------+-------------+---------+-------------
+ 146 | hype-test-7db4      | 2026-06-30 16:02:11.221686+00 |         200 | filled  | 52.32.178.7
+ 144 | tv-btc-test-hl-94e1 | 2026-06-30 15:33:50.580711+00 |         200 | filled  | 172.18.0.15
+```
+
+- id 146 (`hype-test-7db4`, 16:02:11 UTC): arrived after the fix. `source_ip = 52.32.178.7` — a real TradingView egress IP. Confirms the full path (Zoraxy → nginx → order-listener) is working and forwarding the correct client IP end-to-end.
+- id 144 (`tv-btc-test-hl-94e1`, 15:33:50 UTC): arrived before the Phase 2 redeploy — still shows the old internal IP `172.18.0.15`. Expected.
+
+Zoraxy is forwarding the original client IP correctly; no further Zoraxy-side config change needed.
+
+---
+
 ## Notes
 
 - `strategy-tester` has no `ports:` entry in the PORTS column after removal (shows blank vs `8005/tcp` for ai-signal-generator and `8001/tcp` for order-listener which expose internally via `EXPOSE` in their Dockerfiles).
-- Zoraxy open item: if Zoraxy does not forward the original client IP into nginx, `X-Forwarded-For` will contain Zoraxy's internal IP as its first entry rather than the real TradingView IP. This is a Zoraxy-side configuration check, out of scope here.
