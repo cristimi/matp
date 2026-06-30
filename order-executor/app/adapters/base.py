@@ -107,3 +107,9 @@ class ExchangeAdapter(ABC):
         """Return the current mark price for `symbol`, or None if unavailable.
         Subclasses should override. Must never raise."""
         return None
+
+    async def get_instrument_specs(self) -> dict:
+        """Return per-symbol precision descriptors. Must never raise.
+        Shape: { "BTC-USDT": { "price": { "mode": "tick"|"sigfig", "tick"?: float, "sigfigs"?: int }, "size": { "dp": int } } }
+        """
+        return {}

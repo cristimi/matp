@@ -157,6 +157,7 @@ class HyperliquidAdapter(ExchangeAdapter):
                 size = abs(szi)
                 pos_value = float(p.get("positionValue", 0))
                 mark_px = (pos_value / size) if size > 0 else None
+                liq_px = p.get("liquidationPx")
                 positions.append(Position(
                     symbol=p.get("coin", "") + "-USDT",
                     side="long" if szi > 0 else "short",
@@ -165,6 +166,7 @@ class HyperliquidAdapter(ExchangeAdapter):
                     leverage=p.get("leverage", {}).get("value", 1),
                     mark_price=D(str(round(mark_px, 6))) if mark_px else None,
                     unrealized_pnl=D(str(p.get("unrealizedPnl", 0))),
+                    liquidation_price=D(str(liq_px)) if liq_px else None,
                 ))
             return positions
         except ExchangeUnavailableError:
@@ -273,6 +275,23 @@ class HyperliquidAdapter(ExchangeAdapter):
             )
 
         return self._asset_cache[coin]
+
+    async def get_instrument_specs(self) -> dict:
+        """Return per-symbol precision descriptors for all Hyperliquid assets."""
+        try:
+            if self._asset_cache is None:
+                await self._get_asset_index("BTC-USDT")
+            specs = {}
+            for coin in (self._asset_cache or {}):
+                sz_dec = (self._sz_decimals_cache or {}).get(coin, 4)
+                specs[f"{coin}-USDT"] = {
+                    "price": {"mode": "sigfig", "sigfigs": 5},
+                    "size":  {"dp": sz_dec},
+                }
+            return specs
+        except Exception as e:
+            logger.error(f"HyperliquidAdapter.get_instrument_specs failed: {e}")
+            return {}
 
     async def _place_order(
         self,

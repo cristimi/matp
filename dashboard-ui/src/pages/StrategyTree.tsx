@@ -633,6 +633,19 @@ function StrategyCard({ strategy: s, onL1Refresh, livePnl }: { strategy: Strateg
 
 // ---- position card ----
 
+function fmtMoney(v: number): string {
+  if (v >= 1_000_000) return `$${(v / 1_000_000).toFixed(2)}M`;
+  if (v >= 10_000)    return `$${(v / 1_000).toFixed(1)}k`;
+  return `$${Math.round(v)}`;
+}
+
+function fmtPnlPct(pnl: number | null | undefined, margin: number): string {
+  if (pnl == null || !margin) return '';
+  const pct = (pnl / margin) * 100;
+  const sign = pct >= 0 ? '+' : '';
+  return ` (${sign}${pct.toFixed(2)}%)`;
+}
+
 type PosState = 'header' | 'details' | 'orders';
 
 function PositionCard({
@@ -661,6 +674,7 @@ function PositionCard({
   const posSnap = isOpen ? livePnl?.positions[p.id] : undefined;
   const displayMarkPrice = posSnap?.mark_price ?? p.mark_price;
   const displayUnrealizedPnl = posSnap !== undefined ? posSnap.unrealized_pnl : p.unrealized_pnl;
+  const displayLiqPrice = posSnap?.liquidation_price ?? p.liquidation_price;
 
   const handleTap = useCallback(() => {
     if (posState === 'header') {
@@ -696,6 +710,18 @@ function PositionCard({
 
   const pnlVal = isOpen ? displayUnrealizedPnl : p.realized_pnl;
 
+  const priceSpec = { price_mode: p.price_mode, price_tick: p.price_tick, price_sigfigs: p.price_sigfigs };
+  const sizeSpec  = { size_dp: p.size_dp };
+
+  const margin = Number(p.entry_price) * Number(p.size) / (Number(p.leverage) || 1);
+  const notionalValue = isOpen
+    ? Number(p.size) * Number(displayMarkPrice)
+    : Number(p.size) * Number(p.closing_price ?? p.entry_price);
+  const notionalStr = notionalValue > 0 ? `≈${fmtMoney(notionalValue)}` : '';
+  const pnlPctSuffix  = fmtPnlPct(pnlVal, margin);
+  const unrealizedPct = fmtPnlPct(displayUnrealizedPnl, margin);
+  const realizedPct   = fmtPnlPct(p.realized_pnl, margin);
+
   return (
     <div style={{
       background: 'var(--bg2)', border: '1px solid var(--border)',
@@ -719,13 +745,18 @@ function PositionCard({
             {p.base_asset}
           </span>
           <span style={{ fontFamily: MONO, fontSize: 12, color: 'var(--muted)' }}>
-            {formatSize(symbol, p.size)}
+            {formatSize(symbol, p.size, sizeSpec)}
           </span>
+          {notionalStr && (
+            <span style={{ fontFamily: MONO, fontSize: 11, color: 'var(--dim)' }}>
+              {notionalStr}
+            </span>
+          )}
           {diffAcct && <DiffChip label={p.account_label} />}
           <span style={{ flex: 1 }} />
           {pnlVal != null && (
             <span style={{ fontFamily: MONO, fontSize: 12, color: pnlColor(pnlVal) }}>
-              {formatPnl(pnlVal)}
+              {formatPnl(pnlVal)}{pnlPctSuffix}
             </span>
           )}
           {isOpen && (
@@ -743,11 +774,12 @@ function PositionCard({
         {/* price strip */}
         <div style={{ fontFamily: MONO, fontSize: 11, color: 'var(--muted)', letterSpacing: 0 }}>
           {[
-            `Open ${formatPrice(symbol, p.entry_price)}`,
+            `Open ${formatPrice(symbol, p.entry_price, priceSpec)}`,
             isOpen
-              ? `Mark ${formatPrice(symbol, displayMarkPrice)}`
-              : p.closing_price != null ? `Close ${formatPrice(symbol, p.closing_price)}` : null,
-            p.sl_price != null ? `SL ${formatPrice(symbol, p.sl_price)}` : null,
+              ? `Mark ${formatPrice(symbol, displayMarkPrice, priceSpec)}`
+              : p.closing_price != null ? `Close ${formatPrice(symbol, p.closing_price, priceSpec)}` : null,
+            isOpen && displayLiqPrice != null ? `Liq ${formatPrice(symbol, displayLiqPrice, priceSpec)}` : null,
+            p.sl_price != null ? `SL ${formatPrice(symbol, p.sl_price, priceSpec)}` : null,
           ].filter(Boolean).join(' · ')}
         </div>
       </div>
@@ -757,22 +789,24 @@ function PositionCard({
         <div style={{ padding: '4px 12px 8px', borderTop: '1px solid var(--border)' }}>
           {isOpen ? (
             <>
-              <KV k="Entry"  v={formatPrice(symbol, p.entry_price)} />
-              <KV k="Mark"   v={formatPrice(symbol, displayMarkPrice)} />
-              {p.sl_price != null && <KV k="SL" v={formatPrice(symbol, p.sl_price)} />}
-              <KV k="Liq"    v={formatPrice(symbol, p.liquidation_price)} />
+              <KV k="Entry"  v={formatPrice(symbol, p.entry_price, priceSpec)} />
+              <KV k="Mark"   v={formatPrice(symbol, displayMarkPrice, priceSpec)} />
+              {p.sl_price != null && <KV k="SL" v={formatPrice(symbol, p.sl_price, priceSpec)} />}
+              <KV k="Liq"    v={formatPrice(symbol, displayLiqPrice, priceSpec)} />
               <KV k="Lever"  v={p.leverage != null ? `${p.leverage}×` : '—'} />
-              <KV k="Size"   v={formatSize(symbol, p.size)} />
+              <KV k="Notional" v={notionalStr || '—'} />
+              <KV k="Size"   v={formatSize(symbol, p.size, sizeSpec)} />
               <KV k="Opened" v={formatRelative(p.opened_at)} />
               {displayUnrealizedPnl != null && (
-                <KV k="Unrealized" v={formatPnl(displayUnrealizedPnl)} vColor={pnlColor(displayUnrealizedPnl)} />
+                <KV k="Unrealized" v={`${formatPnl(displayUnrealizedPnl)}${unrealizedPct}`} vColor={pnlColor(displayUnrealizedPnl)} />
               )}
             </>
           ) : (
             <>
-              <KV k="Entry"        v={formatPrice(symbol, p.entry_price)} />
-              {p.closing_price != null && <KV k="Close" v={formatPrice(symbol, p.closing_price)} />}
-              <KV k="Realized"     v={formatPnl(p.realized_pnl)} vColor={pnlColor(p.realized_pnl)} />
+              <KV k="Entry"        v={formatPrice(symbol, p.entry_price, priceSpec)} />
+              {p.closing_price != null && <KV k="Close" v={formatPrice(symbol, p.closing_price, priceSpec)} />}
+              <KV k="Notional"     v={notionalStr || '—'} />
+              <KV k="Realized"     v={`${formatPnl(p.realized_pnl)}${realizedPct}`} vColor={pnlColor(p.realized_pnl)} />
               {p.close_reason && <KV k="Close reason" v={p.close_reason} />}
               <KV k="Opened"       v={formatRelative(p.opened_at)} />
               {p.closed_at && <KV k="Closed" v={formatRelative(p.closed_at)} />}
@@ -790,7 +824,7 @@ function PositionCard({
           borderRadius: 4, padding: '5px 7px 6px',
         }}>
           {loadingOrders && <Spinner />}
-          {orders?.map(o => <OrderRow key={o.id} order={o} symbol={symbol} />)}
+          {orders?.map(o => <OrderRow key={o.id} order={o} symbol={symbol} priceSpec={priceSpec} sizeSpec={sizeSpec} />)}
           {orders && orders.length === 0 && (
             <div style={{ color: 'var(--muted)', fontSize: 12, padding: '4px 0' }}>No orders</div>
           )}
@@ -818,7 +852,11 @@ function PositionCard({
 
 // ---- order row ----
 
-function OrderRow({ order: o, symbol }: { order: TreeOrder; symbol: string }) {
+function OrderRow({ order: o, symbol, priceSpec, sizeSpec }: {
+  order: TreeOrder; symbol: string;
+  priceSpec: { price_mode: 'tick' | 'sigfig' | null; price_tick: number | null; price_sigfigs: number | null };
+  sizeSpec: { size_dp: number | null };
+}) {
   const [keyOpen, setKeyOpen] = useState(false);
   const [detailOpen, setDetailOpen] = useState(false);
   const [detail, setDetail] = useState<OrderDetail | null>(null);
@@ -834,10 +872,10 @@ function OrderRow({ order: o, symbol }: { order: TreeOrder; symbol: string }) {
       .finally(() => setLoadingDetail(false));
   }, [detail, o.id]);
 
-  const fillStr  = o.fill  != null ? formatPrice(symbol, o.fill) : '—';
+  const fillStr  = o.fill  != null ? formatPrice(symbol, o.fill, priceSpec) : '—';
   const absDelta = o.delta != null ? Math.abs(o.delta) : null;
   const deltaStr = absDelta != null
-    ? ((o.delta! >= 0 ? '+' : '−') + formatSize(symbol, absDelta))
+    ? ((o.delta! >= 0 ? '+' : '−') + formatSize(symbol, absDelta, sizeSpec))
     : '—';
 
   return (
@@ -867,7 +905,7 @@ function OrderRow({ order: o, symbol }: { order: TreeOrder; symbol: string }) {
       {/* Key details */}
       {keyOpen && (
         <div style={{ padding: '4px 10px 8px', borderTop: '1px solid var(--border)' }}>
-          <KV k="Avg fill"  v={o.key.avg_fill != null ? formatPrice(symbol, o.key.avg_fill) : '—'} />
+          <KV k="Avg fill"  v={o.key.avg_fill != null ? formatPrice(symbol, o.key.avg_fill, priceSpec) : '—'} />
           <KV k="Realized"  v={formatPnl(o.key.realized)}   vColor={pnlColor(o.key.realized)} />
           <KV k="Fee"       v={o.key.fee != null ? String(o.key.fee) : '—'} />
           <KV k="Status"    v={o.status} />
@@ -902,8 +940,8 @@ function OrderRow({ order: o, symbol }: { order: TreeOrder; symbol: string }) {
               {detail.execution && (
                 <>
                   <SectionLabel text="Execution" />
-                  <KV k="Requested"   v={detail.execution.requested_price != null ? formatPrice(symbol, detail.execution.requested_price) : '—'} />
-                  <KV k="Actual fill" v={detail.execution.actual_fill_price != null ? formatPrice(symbol, detail.execution.actual_fill_price) : '—'} />
+                  <KV k="Requested"   v={detail.execution.requested_price != null ? formatPrice(symbol, detail.execution.requested_price, priceSpec) : '—'} />
+                  <KV k="Actual fill" v={detail.execution.actual_fill_price != null ? formatPrice(symbol, detail.execution.actual_fill_price, priceSpec) : '—'} />
                   <KV k="Fee"         v={detail.execution.exchange_fee != null ? String(detail.execution.exchange_fee) : '—'} />
                   <KV k="Exch order"  v={detail.execution.exchange_order_id ?? '—'} />
                   <KV k="Placed"      v={formatRelative(detail.execution.placed_at)} />

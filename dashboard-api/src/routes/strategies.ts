@@ -7,6 +7,29 @@ import { SNAPSHOT_KEY, isSnapshotFresh, type PnlSnapshot } from '../livePnl';
 const router = Router();
 
 const EXECUTOR_URL  = process.env.EXECUTOR_URL || 'http://order-executor:8004';
+
+interface PriceSpec { mode: 'tick' | 'sigfig'; tick?: number; sigfigs?: number }
+interface InstrumentSpec { price: PriceSpec; size: { dp: number } }
+const specCache = new Map<string, { specs: Record<string, InstrumentSpec>; fetchedAt: number }>();
+const SPEC_TTL_MS = 3_600_000; // 1 hour
+
+async function fetchSpecsForAccount(accountId: string): Promise<Record<string, InstrumentSpec>> {
+  const cached = specCache.get(accountId);
+  if (cached && Date.now() - cached.fetchedAt < SPEC_TTL_MS) return cached.specs;
+  try {
+    const resp = await fetch(`${EXECUTOR_URL}/accounts/${accountId}/instrument-specs`, {
+      signal: AbortSignal.timeout(5000),
+    });
+    if (resp.ok) {
+      const specs = await resp.json() as Record<string, InstrumentSpec>;
+      specCache.set(accountId, { specs, fetchedAt: Date.now() });
+      return specs;
+    }
+  } catch (e) {
+    console.error(`[specs] fetch failed for account ${accountId}:`, e);
+  }
+  return specCache.get(accountId)?.specs ?? {};
+}
 const AI_URL        = process.env.AI_SIGNAL_GENERATOR_URL || 'http://ai-signal-generator:8005';
 const LISTENER_URL  = process.env.ORDER_LISTENER_URL || 'http://order-listener:8001';
 
@@ -970,8 +993,16 @@ router.get('/:id/positions', async (req: Request, res: Response) => {
       console.error(`Positions: snapshot read failed for ${req.params.id}:`, e);
     }
 
+    // Fetch precision specs per account (cached, long TTL)
+    const uniqueAccountIds = [...new Set(rows.map((r: any) => r.account_id as string).filter(Boolean))];
+    const accountSpecs = new Map<string, Record<string, InstrumentSpec>>();
+    await Promise.all(uniqueAccountIds.map(async (aid) => {
+      accountSpecs.set(aid, await fetchSpecsForAccount(aid));
+    }));
+
     res.json(rows.map((r: any) => {
       const posSnap = r.status === 'open' ? snapshot?.positions[r.id] : undefined;
+      const spec = accountSpecs.get(r.account_id)?.[r.symbol as string];
       return {
         id:                r.id,
         side:              r.side,
@@ -984,7 +1015,9 @@ router.get('/:id/positions', async (req: Request, res: Response) => {
         closing_price:     r.closing_price != null ? Number(r.closing_price) : null,
         sl_price:          r.sl_price != null ? Number(r.sl_price) : null,
         realized_pnl:      r.realized_pnl != null ? Number(r.realized_pnl) : null,
-        liquidation_price: r.liquidation_price != null ? Number(r.liquidation_price) : null,
+        liquidation_price: posSnap
+          ? (posSnap.liquidation_price ?? null)
+          : (r.liquidation_price != null ? Number(r.liquidation_price) : null),
         leverage:          r.leverage,
         opened_at:         r.opened_at,
         closed_at:         r.closed_at,
@@ -993,6 +1026,10 @@ router.get('/:id/positions', async (req: Request, res: Response) => {
         account_label:     r.account_label,
         account_exchange:  r.account_exchange,
         order_count:       r.order_count,
+        price_mode:        spec?.price.mode    ?? null,
+        price_tick:        spec?.price.mode === 'tick'   ? (spec.price.tick   ?? null) : null,
+        price_sigfigs:     spec?.price.mode === 'sigfig' ? (spec.price.sigfigs ?? 5)   : null,
+        size_dp:           spec?.size.dp ?? null,
       };
     }));
   } catch (err) {

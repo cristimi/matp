@@ -11,7 +11,7 @@ export const SNAPSHOT_CHANNEL = 'pnl:live';
 export interface PnlSnapshot {
   ts: number;
   strategies: Record<string, { open_pnl: number; position_ids: string[] }>;
-  positions: Record<string, { mark_price: number; unrealized_pnl: number }>;
+  positions: Record<string, { mark_price: number; unrealized_pnl: number; liquidation_price: number | null }>;
 }
 
 let _lastSnapshot: PnlSnapshot | null = null;
@@ -33,7 +33,7 @@ async function tick(): Promise<void> {
   `);
 
   const strategiesSnap: Record<string, { open_pnl: number; position_ids: string[] }> = {};
-  const positionsSnap: Record<string, { mark_price: number; unrealized_pnl: number }> = {};
+  const positionsSnap: Record<string, { mark_price: number; unrealized_pnl: number; liquidation_price: number | null }> = {};
 
   if (rows.length > 0) {
     // Pre-pass: collect all open position IDs per strategy before executor fanout
@@ -77,7 +77,8 @@ async function tick(): Promise<void> {
 
       const markPrice = Number(live.mark_price || live.entry_price);
       const unrealizedPnl = Number(live.unrealized_pnl) || 0;
-      positionsSnap[row.position_id] = { mark_price: markPrice, unrealized_pnl: unrealizedPnl };
+      const liquidationPrice = live.liquidation_price != null ? Number(live.liquidation_price) : null;
+      positionsSnap[row.position_id] = { mark_price: markPrice, unrealized_pnl: unrealizedPnl, liquidation_price: liquidationPrice };
 
       if (!strategyKeysSeen.has(row.strategy_id)) {
         strategyKeysSeen.set(row.strategy_id, new Set());

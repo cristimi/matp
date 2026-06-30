@@ -1,12 +1,36 @@
 /**
- * Decimal precision rules per symbol and exchange.
- * price_dp: decimal places for price display
- * size_dp:  decimal places for size display
+ * Price and size formatting. Call sites pass a per-row spec (from the positions API);
+ * the static RULES map is kept only as a last-resort fallback when no spec is available.
  */
-interface PrecisionRule {
-  price_dp: number;
-  size_dp:  number;
+
+export interface PriceSpec {
+  price_mode?: 'tick' | 'sigfig' | null;
+  price_tick?: number | null;
+  price_sigfigs?: number | null;
 }
+
+export interface SizeSpec {
+  size_dp?: number | null;
+}
+
+// ---- helpers ----
+
+function countDecimals(tick: number): number {
+  const s = tick.toFixed(10).replace(/0+$/, '');
+  const dot = s.indexOf('.');
+  return dot === -1 ? 0 : s.length - dot - 1;
+}
+
+function toSigFigs(value: number, sigfigs: number): string {
+  if (value === 0) return '0';
+  const mag = Math.floor(Math.log10(Math.abs(value)));
+  const dp = Math.max(0, sigfigs - 1 - mag);
+  return value.toFixed(dp);
+}
+
+// ---- static fallback map ----
+
+interface PrecisionRule { price_dp: number; size_dp: number }
 
 const RULES: Record<string, PrecisionRule> = {
   'BTC-USDT':  { price_dp: 1, size_dp: 3 },
@@ -21,25 +45,43 @@ const RULES: Record<string, PrecisionRule> = {
 const DEFAULT_RULE: PrecisionRule = { price_dp: 2, size_dp: 3 };
 
 function getRule(symbol: string): PrecisionRule {
-  // Normalise: "BTC/USDT" → "BTC-USDT"
   const normalised = symbol.replace('/', '-').toUpperCase();
   return RULES[normalised] ?? DEFAULT_RULE;
 }
 
-export function formatPrice(symbol: string, value: number | string | null | undefined): string {
+// ---- public API ----
+
+export function formatPrice(
+  symbol: string,
+  value: number | string | null | undefined,
+  spec?: PriceSpec | null,
+): string {
   if (value === null || value === undefined || value === '') return '—';
   const num = Number(value);
   if (isNaN(num)) return '—';
-  const { price_dp } = getRule(symbol);
-  return num.toFixed(price_dp);
+
+  if (spec?.price_mode === 'tick' && spec.price_tick != null) {
+    const tick = spec.price_tick;
+    const rounded = Math.round(num / tick) * tick;
+    return rounded.toFixed(countDecimals(tick));
+  }
+  if (spec?.price_mode === 'sigfig') {
+    return toSigFigs(num, spec.price_sigfigs ?? 5);
+  }
+
+  return num.toFixed(getRule(symbol).price_dp);
 }
 
-export function formatSize(symbol: string, value: number | string | null | undefined): string {
+export function formatSize(
+  symbol: string,
+  value: number | string | null | undefined,
+  spec?: SizeSpec | null,
+): string {
   if (value === null || value === undefined || value === '') return '—';
   const num = Number(value);
   if (isNaN(num)) return '—';
-  const { size_dp } = getRule(symbol);
-  return size_dp === 0
-    ? Math.round(num).toString()
-    : num.toFixed(size_dp);
+
+  const dp = spec?.size_dp != null ? spec.size_dp : getRule(symbol).size_dp;
+  if (dp === 0) return Math.round(num).toString();
+  return num.toFixed(dp).replace(/\.?0+$/, '');
 }

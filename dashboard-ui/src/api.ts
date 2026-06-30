@@ -209,6 +209,10 @@ export interface TreePosition {
   account_label: string;
   account_exchange: string;
   order_count: number;
+  price_mode: 'tick' | 'sigfig' | null;
+  price_tick: number | null;
+  price_sigfigs: number | null;
+  size_dp: number | null;
 }
 
 export interface TreeOrderKey {

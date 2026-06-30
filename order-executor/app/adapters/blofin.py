@@ -3,6 +3,7 @@ import hashlib
 import hmac
 import json
 import logging
+import math
 import time
 import asyncio
 from decimal import Decimal
@@ -351,6 +352,7 @@ class BlofinAdapter(ExchangeAdapter):
             base_size = await self._to_base(inst_id, Decimal(str(abs(size_val))))
 
             mark_raw = p.get("markPrice") or p.get("last") or p.get("averagePrice", "0")
+            liq_px = p.get("liquidationPrice")
             mapped_positions.append(Position(
                 symbol=inst_id,
                 side="long" if size_val > 0 else "short",
@@ -358,7 +360,8 @@ class BlofinAdapter(ExchangeAdapter):
                 entry_price=Decimal(p.get("averagePrice", "0")),
                 leverage=int(p.get("lever") or p.get("leverage") or 10),
                 mark_price=Decimal(str(mark_raw)),
-                unrealized_pnl=Decimal(p.get("unrealizedPnl", "0"))
+                unrealized_pnl=Decimal(p.get("unrealizedPnl", "0")),
+                liquidation_price=Decimal(str(liq_px)) if liq_px else None,
             ))
 
         return mapped_positions
@@ -558,6 +561,30 @@ class BlofinAdapter(ExchangeAdapter):
                 "currency":          "USDT",
                 "error":             str(e),
             }
+
+    async def get_instrument_specs(self) -> dict:
+        """Return per-symbol precision descriptors for all Blofin instruments."""
+        try:
+            if not BlofinAdapter._instruments.get(self.base_url):
+                await self._refresh_instruments()
+            specs = {}
+            for inst_id, inst in BlofinAdapter._instruments.get(self.base_url, {}).items():
+                tick = float(inst.get("tickSize") or "1")
+                lot  = float(inst.get("lotSize") or "1")
+                cv   = float(inst.get("contractValue") or "1")
+                min_base = lot * cv
+                if min_base > 0 and min_base < 1:
+                    size_dp = max(0, -int(math.floor(math.log10(min_base + 1e-15))))
+                else:
+                    size_dp = 0
+                specs[inst_id] = {
+                    "price": {"mode": "tick", "tick": tick},
+                    "size":  {"dp": size_dp},
+                }
+            return specs
+        except Exception as e:
+            logger.error(f"BlofinAdapter.get_instrument_specs failed: {e}")
+            return {}
 
     async def list_instruments(self) -> list[str]:
         """Return all SWAP instrument IDs available on this Blofin endpoint."""

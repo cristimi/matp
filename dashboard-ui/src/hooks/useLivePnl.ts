@@ -3,7 +3,7 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 export interface PnlSnapshot {
   ts: number;
   strategies: Record<string, { open_pnl: number; position_ids: string[] }>;
-  positions: Record<string, { mark_price: number; unrealized_pnl: number }>;
+  positions: Record<string, { mark_price: number; unrealized_pnl: number; liquidation_price: number | null }>;
 }
 
 const WS_PNL_URL = (import.meta.env.VITE_WS_PNL_URL as string | undefined) || '/ws/pnl';

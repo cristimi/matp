@@ -218,6 +218,18 @@ async def get_account_balance(account_id: str):
         }
 
 
+@app.get("/accounts/{account_id}/instrument-specs")
+async def get_instrument_specs(account_id: str):
+    """Return per-symbol precision specs (tick size / sigfig rule) for an account's exchange."""
+    try:
+        adapter = await registry.get(account_id)
+        specs = await adapter.get_instrument_specs()
+        return specs
+    except Exception as e:
+        logger.error(f"get_instrument_specs failed for {account_id}: {e}")
+        return {}
+
+
 @app.get("/accounts/{account_id}/instruments")
 async def get_instruments(account_id: str):
     """Return all tradeable instrument symbols for this account's exchange."""
