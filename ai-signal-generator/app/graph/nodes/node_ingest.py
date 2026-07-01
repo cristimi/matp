@@ -1,5 +1,6 @@
 import logging
 
+from app.data.geometry import detect_geometry
 from app.data.indicators import compute_indicators
 from app.data.macro import fetch_btc_dominance, fetch_macro
 from app.data.news import fetch_news_digest
@@ -23,11 +24,12 @@ async def node_ingest(state: AgentState) -> AgentState:
     interval      = state.get('cycle_interval', '4h')
     enabled_inds  = sc.get('indicators') or ['RSI', 'MACD', 'EMA50', 'EMA200', 'BB', 'VWAP']
 
-    # ── OHLCV + Indicators ───────────────────────────────────────────────
+    # ── OHLCV + Indicators + Geometry ────────────────────────────────────
     ohlcv_data           = None
     technical_indicators = None
+    geometry_data        = None
 
-    if sc.get('use_technical'):
+    if sc.get('use_technical') or sc.get('use_geometry'):
         try:
             ohlcv_data = await fetch_ohlcv(exchange_id, ccxt_symbol, interval, lookback_days)
         except Exception as exc:
@@ -35,11 +37,19 @@ async def node_ingest(state: AgentState) -> AgentState:
             logger.warning("OHLCV fetch failed: %s", exc)
 
         if ohlcv_data and ohlcv_data.get('candles'):
-            try:
-                technical_indicators = compute_indicators(ohlcv_data['candles'], enabled_inds)
-            except Exception as exc:
-                errors.append(f"indicators:{exc}")
-                logger.warning("Indicator computation failed: %s", exc)
+            if sc.get('use_technical'):
+                try:
+                    technical_indicators = compute_indicators(ohlcv_data['candles'], enabled_inds)
+                except Exception as exc:
+                    errors.append(f"indicators:{exc}")
+                    logger.warning("Indicator computation failed: %s", exc)
+
+            if sc.get('use_geometry'):
+                try:
+                    geometry_data = detect_geometry(ohlcv_data['candles']) or None
+                except Exception as exc:
+                    errors.append(f"geometry:{exc}")
+                    logger.warning("Geometry detection failed: %s", exc)
 
     # ── Sentiment ────────────────────────────────────────────────────────
     fear_greed    = None
@@ -98,10 +108,11 @@ async def node_ingest(state: AgentState) -> AgentState:
 
     return {
         **state,
-        'ohlcv_data':          ohlcv_data,
+        'ohlcv_data':           ohlcv_data,
         'technical_indicators': technical_indicators,
-        'sentiment_data':      sentiment_data,
-        'news_data':           news_data,
-        'market_context':      market_context,
-        'data_fetch_errors':   errors,
+        'geometry_data':        geometry_data,
+        'sentiment_data':       sentiment_data,
+        'news_data':            news_data,
+        'market_context':       market_context,
+        'data_fetch_errors':    errors,
     }

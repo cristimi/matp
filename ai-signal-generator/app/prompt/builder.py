@@ -215,6 +215,38 @@ def _render_macro(state: dict) -> str:
     return '\n'.join(lines)
 
 
+def _render_geometry(state: dict) -> str:
+    sc = state['strategy_config']
+    gd = state.get('geometry_data') or {}
+
+    if not sc.get('use_geometry') or not gd or gd.get('shape') == 'no_pattern':
+        return ''
+
+    shape = gd.get('shape', '')
+    conv  = gd.get('convergence_pct_per_bar', 0.0)
+
+    lines = [
+        'GEOMETRIC PATTERN:',
+        f"Detected Shape:       {shape.replace('_', ' ').title()}",
+        f"Fit Quality:          {_v(gd.get('fit_quality'))}",
+        f"Upper Boundary:       {_v(gd.get('upper_boundary'))}",
+        f"Lower Boundary:       {_v(gd.get('lower_boundary'))}",
+        f"Upper Touches:        {_v(gd.get('upper_touches'))}",
+        f"Lower Touches:        {_v(gd.get('lower_touches'))}",
+        f"Position in Range:    {_v(gd.get('position_in_range_pct'))}%  (0=at lower boundary, 100=at upper)",
+        f"Pattern Age:          {_v(gd.get('pattern_age_bars'))} bars",
+    ]
+
+    if conv > 0:
+        lines.append(f"Convergence Rate:     +{conv}% of price per bar (boundaries closing in)")
+    elif conv < 0:
+        lines.append(f"Divergence Rate:      {conv}% of price per bar (boundaries widening)")
+    else:
+        lines.append("Convergence Rate:     0 (parallel boundaries)")
+
+    return '\n'.join(lines)
+
+
 def _render_portfolio(state: dict) -> str:
     lines = [
         'PORTFOLIO CONTEXT:',
@@ -284,6 +316,12 @@ async def build_prompt(state: dict, db_pool) -> str:
     # 2. Technical — only if toggled on and OHLCV data is available
     if sc.get('use_technical') and state.get('ohlcv_data'):
         sections.append(_render_technical(state))
+
+    # 2.5. Geometry — only if toggled on and a named pattern was detected
+    if sc.get('use_geometry'):
+        g = _render_geometry(state)
+        if g:
+            sections.append(g)
 
     # 3. Sentiment — only if at least one sentiment source is toggled on
     if sc.get('use_fear_greed') or sc.get('use_funding_rate') or sc.get('use_open_interest'):

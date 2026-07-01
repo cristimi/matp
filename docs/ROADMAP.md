@@ -55,6 +55,7 @@ Changes required: DB migration, one line in `node_ingest.py`, `ai.ts` GET/PUT, U
 ---
 
 ## Deferred Backlog
+- **`use_geometry` dashboard toggle (Phase 4 of geometric-shape feature)**: expose `use_geometry` as a toggle in the strategy AI config UI, following the exact pattern used for `use_macro`/`use_btc_dominance` in `Strategies.tsx` and the corresponding `dashboard-api` routes (`ai.ts`/`strategies.ts`). No new design pattern — mirror what's there. Column already exists in DB (migration 035). Also consider exposing `template_id = 'geometric_range'` as a selectable option in the template picker.
 - **Minimum order value guard**: before sending to exchange, check notional value (qty × price) against known exchange minimums. Reject with `size_too_small` before hitting the exchange API.
 - **AI prompt template management page**: no runtime CRUD exists for `ai_prompt_templates` — templates are seed-only (migrations 006/010, `ON CONFLICT DO NOTHING`). `GET /api/ai/templates` is read-only; there is no POST/PUT/DELETE anywhere. Build a create/edit page.
   - **Safety model — clone-to-edit, not edit-in-place.** Templates are shared: every `ai_strategy_config.template_id` points at one. Editing a base template in place silently changes behavior for all strategies referencing it (incl. live ones) and breaks backtest/live parity. Seed templates must stay immutable; user clones one into a custom template and edits that.
