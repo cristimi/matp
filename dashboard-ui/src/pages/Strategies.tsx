@@ -691,6 +691,7 @@ const DATA_SOURCES: { key: keyof AiFormState; label: string }[] = [
   { key:'use_news',         label:'Crypto News' },
   { key:'use_btc_dominance',label:'BTC Dominance' },
   { key:'use_macro',        label:'Macro (DXY, US10Y)' },
+  { key:'use_geometry',     label:'Geometric Pattern Detection' },
 ];
 
 function TemplatePreview({
@@ -764,6 +765,7 @@ interface AiFormState {
   use_news:               boolean;
   use_btc_dominance:      boolean;
   use_macro:              boolean;
+  use_geometry:           boolean;
   confidence_threshold:   string;
   cooldown_entry_minutes: string;
   llm_provider:           string;
@@ -784,6 +786,7 @@ const AI_FORM_DEFAULTS: AiFormState = {
   use_news:               true,
   use_btc_dominance:      false,
   use_macro:              false,
+  use_geometry:           false,
   confidence_threshold:   '0.72',
   cooldown_entry_minutes: '240',
   llm_provider:           'google',
@@ -988,6 +991,7 @@ export default function Strategies() {
           use_news:               config.use_news               ?? true,
           use_btc_dominance:      config.use_btc_dominance      ?? false,
           use_macro:              config.use_macro              ?? false,
+          use_geometry:           config.use_geometry           ?? false,
           confidence_threshold:   String(config.confidence_threshold   ?? '0.72'),
           cooldown_entry_minutes: String(config.cooldown_entry_minutes ?? '240'),
           llm_provider:           config.llm_provider           ?? 'google',
@@ -1063,6 +1067,7 @@ export default function Strategies() {
             use_news:               aiEditForm.use_news,
             use_btc_dominance:      aiEditForm.use_btc_dominance,
             use_macro:              aiEditForm.use_macro,
+            use_geometry:           aiEditForm.use_geometry,
             confidence_threshold:   parseFloat(aiEditForm.confidence_threshold),
             cooldown_entry_minutes: parseInt(aiEditForm.cooldown_entry_minutes),
             llm_provider:           aiEditForm.llm_provider,
@@ -1210,6 +1215,7 @@ export default function Strategies() {
             use_news:               aiForm.use_news,
             use_btc_dominance:      aiForm.use_btc_dominance,
             use_macro:              aiForm.use_macro,
+            use_geometry:           aiForm.use_geometry,
             confidence_threshold:   parseFloat(aiForm.confidence_threshold),
             cooldown_entry_minutes: parseInt(aiForm.cooldown_entry_minutes),
             llm_provider:           aiForm.llm_provider,

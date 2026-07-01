@@ -215,7 +215,54 @@ Container state: `Up` (health: healthy after warm-up).
 
 ## Phase 4 — Dashboard toggle
 
-**Deferred to `docs/ROADMAP.md` backlog** — awaiting explicit confirmation before implementing.
+### Files changed
+- `dashboard-ui/src/pages/Strategies.tsx` — added `use_geometry` to `AiFormState`, `AI_FORM_DEFAULTS`, `DATA_SOURCES`, `handleEdit`, `handleEditSubmit`, `handleAddStrategy`
+- `dashboard-api/src/routes/ai.ts` — added `'use_geometry'` to `ALLOWED_CONFIG_FIELDS`; added `use_geometry: aiConfig.use_geometry` to `mockState.strategy_config` in the preview-prompt endpoint
+
+### Verification
+
+**Bundle contains new label:**
+```
+$ docker compose exec -T dashboard-ui grep -rl 'Geometric Pattern' /usr/share/nginx/html
+/usr/share/nginx/html/assets/index-CJSY5U9c.js
+```
+
+**API health:**
+```
+$ docker compose exec nginx wget -qO- http://dashboard-api:8003/health
+{"status":"ok","service":"dashboard-api"}
+```
+
+**DB column present with correct values:**
+```
+$ docker compose exec -T postgres psql -U matp -d matp -c \
+    "SELECT strategy_id, use_geometry FROM ai_strategy_config LIMIT 3;"
+     strategy_id     | use_geometry
+--------------------+--------------
+ hype-breakout-da2e | f
+ ai-btc-6f8c        | t
+(2 rows)
+```
+
+**Config GET returns `use_geometry`:**
+```
+$ curl -s "http://localhost/api/ai/strategies/ai-btc-6f8c/config" | python3 -c "..."
+use_geometry: True
+```
+
+**Redeploys:**
+```
+./scripts/redeploy.sh dashboard-api  → ✓ dashboard-api redeployed.
+./scripts/redeploy.sh dashboard-ui   → ✓ dashboard-ui redeployed. (asset: index-CJSY5U9c.js)
+```
+
+### How it works
+`DATA_SOURCES` is the single source of truth for the checkbox grid — both Add and Edit modals
+iterate over it, so adding `{ key:'use_geometry', label:'Geometric Pattern Detection' }` to the
+array is the only JSX change needed. The checkbox appears automatically in both modals.
+
+The `TemplatePreview` "Active Data Sources" chip list also picks it up since it filters
+`DATA_SOURCES` by the current form state.
 
 ---
 
