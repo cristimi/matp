@@ -955,6 +955,7 @@ router.get('/:id/positions', async (req: Request, res: Response) => {
         sp.close_reason,
         sp.status,
         o_open.sl_price,
+        o_open.tp_price,
         COALESCE(o_open.account_id, oel.account_id, s.account_id) AS account_id,
         COALESCE(ea_open.label,    ea_oel.label,    ea_s.label)    AS account_label,
         COALESCE(ea_open.exchange, ea_oel.exchange, ea_s.exchange) AS account_exchange,
@@ -1014,6 +1015,7 @@ router.get('/:id/positions', async (req: Request, res: Response) => {
         unrealized_pnl:    posSnap ? posSnap.unrealized_pnl : null,
         closing_price:     r.closing_price != null ? Number(r.closing_price) : null,
         sl_price:          r.sl_price != null ? Number(r.sl_price) : null,
+        tp_price:          r.tp_price != null ? Number(r.tp_price) : null,
         realized_pnl:      r.realized_pnl != null ? Number(r.realized_pnl) : null,
         liquidation_price: posSnap
           ? (posSnap.liquidation_price ?? null)

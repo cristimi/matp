@@ -205,6 +205,7 @@ export interface TreePosition {
   close_reason: string | null;
   closing_price: number | null;
   sl_price: number | null;
+  tp_price: number | null;
   status: 'open' | 'closed';
   account_label: string;
   account_exchange: string;

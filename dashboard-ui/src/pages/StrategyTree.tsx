@@ -75,6 +75,25 @@ function KV({ k, v, vColor }: { k: string; v: string; vColor?: string }) {
   );
 }
 
+type DRSeg = { text: string; color?: string };
+
+function DR({ label, segs, sep = ' · ' }: { label: string; segs: DRSeg[]; sep?: string }) {
+  if (segs.length === 0) return null;
+  return (
+    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, padding: '3px 0', fontSize: 12.5 }}>
+      <span style={{ color: 'var(--muted)', flexShrink: 0 }}>{label}</span>
+      <span style={{ fontFamily: MONO, textAlign: 'right' }}>
+        {segs.map((s, i) => (
+          <span key={i}>
+            {i > 0 && <span style={{ color: 'var(--dim)' }}>{sep}</span>}
+            <span style={{ color: s.color ?? 'var(--text)' }}>{s.text}</span>
+          </span>
+        ))}
+      </span>
+    </div>
+  );
+}
+
 function SectionLabel({ text }: { text: string }) {
   return (
     <div style={{
@@ -722,6 +741,21 @@ function PositionCard({
   const unrealizedPct = fmtPnlPct(displayUnrealizedPnl, margin);
   const realizedPct   = fmtPnlPct(p.realized_pnl, margin);
 
+  const priceGridCols = isOpen
+    ? [
+        { label: 'Open', value: formatPrice(symbol, p.entry_price,    priceSpec), color: 'var(--muted)' },
+        { label: 'Mark', value: formatPrice(symbol, displayMarkPrice,  priceSpec), color: 'var(--green)' },
+        { label: 'SL',   value: p.sl_price      != null ? formatPrice(symbol, p.sl_price,      priceSpec) : '—', color: 'var(--muted)' },
+        { label: 'TP',   value: p.tp_price      != null ? formatPrice(symbol, p.tp_price,      priceSpec) : '—', color: 'var(--muted)' },
+        { label: 'Liq',  value: displayLiqPrice != null ? formatPrice(symbol, displayLiqPrice, priceSpec) : '—', color: 'var(--muted)' },
+      ]
+    : [
+        { label: 'Open',  value: formatPrice(symbol, p.entry_price,    priceSpec), color: 'var(--muted)' },
+        { label: 'Close', value: p.closing_price != null ? formatPrice(symbol, p.closing_price, priceSpec) : '—', color: 'var(--muted)' },
+        { label: 'SL',    value: p.sl_price      != null ? formatPrice(symbol, p.sl_price,      priceSpec) : '—', color: 'var(--muted)' },
+        { label: 'TP',    value: p.tp_price      != null ? formatPrice(symbol, p.tp_price,      priceSpec) : '—', color: 'var(--muted)' },
+      ];
+
   return (
     <div style={{
       background: 'var(--bg2)', border: '1px solid var(--border)',
@@ -738,26 +772,48 @@ function PositionCard({
       >
         {/* top row */}
         <div style={{ display: 'flex', alignItems: 'center', minHeight: 30, gap: 7 }}>
-          <HeaderPill variant={p.side === 'long' ? 'long' : 'short'}>
-            {p.side === 'long' ? 'LONG' : 'SHORT'}
-          </HeaderPill>
-          <span style={{ fontFamily: MONO, fontWeight: 600, fontSize: 13, color: 'var(--text)' }}>
-            {p.base_asset}
-          </span>
-          <span style={{ fontFamily: MONO, fontSize: 12, color: 'var(--muted)' }}>
-            {formatSize(symbol, p.size, sizeSpec)}
-          </span>
-          {notionalStr && (
-            <span style={{ fontFamily: MONO, fontSize: 11, color: 'var(--dim)' }}>
-              {notionalStr}
+          {/* side cell: side pill + leverage pill stacked, centered */}
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 3, flexShrink: 0 }}>
+            <HeaderPill variant={p.side === 'long' ? 'long' : 'short'}>
+              {p.side === 'long' ? 'LONG' : 'SHORT'}
+            </HeaderPill>
+            <HeaderPill variant="neutral" style={{ fontSize: 9, padding: '1px 5px' }}>
+              {p.leverage}×
+            </HeaderPill>
+          </div>
+          {/* asset / size / notional — hidden when expanded */}
+          {posState === 'header' ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+              <span style={{ fontFamily: MONO, fontSize: 13, color: 'var(--text)' }}>
+                <span style={{ fontWeight: 600 }}>{p.base_asset}</span>
+                {' '}
+                <span style={{ color: 'var(--muted)', fontSize: 12 }}>{formatSize(symbol, p.size, sizeSpec)}</span>
+              </span>
+              {notionalStr && (
+                <span style={{ fontFamily: MONO, fontSize: 11, color: 'var(--dim)' }}>
+                  {notionalStr}
+                </span>
+              )}
+            </div>
+          ) : (
+            <span style={{ fontFamily: MONO, fontWeight: 600, fontSize: 13, color: 'var(--text)' }}>
+              {p.base_asset}-{p.quote_asset}
             </span>
           )}
           {diffAcct && <DiffChip label={p.account_label} />}
           <span style={{ flex: 1 }} />
-          {pnlVal != null && (
-            <span style={{ fontFamily: MONO, fontSize: 12, color: pnlColor(pnlVal) }}>
-              {formatPnl(pnlVal)}{pnlPctSuffix}
-            </span>
+          {/* PnL cell — hidden when expanded */}
+          {posState === 'header' && pnlVal != null && (
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 1 }}>
+              <span style={{ fontFamily: MONO, fontSize: 12, color: pnlColor(pnlVal) }}>
+                {formatPnl(pnlVal)}
+              </span>
+              {pnlPctSuffix && (
+                <span style={{ fontFamily: MONO, fontSize: 10, color: pnlColor(pnlVal) }}>
+                  {pnlPctSuffix.trim()}
+                </span>
+              )}
+            </div>
           )}
           {isOpen && (
             <button
@@ -771,17 +827,22 @@ function PositionCard({
             </button>
           )}
         </div>
-        {/* price strip */}
-        <div style={{ fontFamily: MONO, fontSize: 11, color: 'var(--muted)', letterSpacing: 0 }}>
-          {[
-            `Open ${formatPrice(symbol, p.entry_price, priceSpec)}`,
-            isOpen
-              ? `Mark ${formatPrice(symbol, displayMarkPrice, priceSpec)}`
-              : p.closing_price != null ? `Close ${formatPrice(symbol, p.closing_price, priceSpec)}` : null,
-            isOpen && displayLiqPrice != null ? `Liq ${formatPrice(symbol, displayLiqPrice, priceSpec)}` : null,
-            p.sl_price != null ? `SL ${formatPrice(symbol, p.sl_price, priceSpec)}` : null,
-          ].filter(Boolean).join(' · ')}
-        </div>
+        {/* two-row price grid — hidden when expanded */}
+        {posState === 'header' && (
+          <div style={{
+            display: 'grid',
+            gridTemplateColumns: `repeat(${priceGridCols.length}, auto)`,
+            gap: '0 10px',
+            fontFamily: MONO, fontSize: 11, letterSpacing: 0,
+          }}>
+            {priceGridCols.map(c => (
+              <span key={c.label} style={{ color: 'var(--dim)' }}>{c.label}</span>
+            ))}
+            {priceGridCols.map(c => (
+              <span key={c.label + '_v'} style={{ color: c.color }}>{c.value}</span>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* Detail panel */}
@@ -789,27 +850,54 @@ function PositionCard({
         <div style={{ padding: '4px 12px 8px', borderTop: '1px solid var(--border)' }}>
           {isOpen ? (
             <>
-              <KV k="Entry"  v={formatPrice(symbol, p.entry_price, priceSpec)} />
-              <KV k="Mark"   v={formatPrice(symbol, displayMarkPrice, priceSpec)} />
-              {p.sl_price != null && <KV k="SL" v={formatPrice(symbol, p.sl_price, priceSpec)} />}
-              <KV k="Liq"    v={formatPrice(symbol, displayLiqPrice, priceSpec)} />
-              <KV k="Lever"  v={p.leverage != null ? `${p.leverage}×` : '—'} />
-              <KV k="Notional" v={notionalStr || '—'} />
-              <KV k="Size"   v={formatSize(symbol, p.size, sizeSpec)} />
-              <KV k="Opened" v={formatRelative(p.opened_at)} />
               {displayUnrealizedPnl != null && (
-                <KV k="Unrealized" v={`${formatPnl(displayUnrealizedPnl)}${unrealizedPct}`} vColor={pnlColor(displayUnrealizedPnl)} />
+                <DR label="PnL" segs={[{ text: `${formatPnl(displayUnrealizedPnl)}${unrealizedPct}`, color: pnlColor(displayUnrealizedPnl) }]} />
               )}
+              <DR label="Levels" segs={[
+                { text: `Liq ${displayLiqPrice != null ? formatPrice(symbol, displayLiqPrice, priceSpec) : '—'}` },
+                { text: `SL ${p.sl_price != null ? formatPrice(symbol, p.sl_price, priceSpec) : '—'}` },
+                { text: `TP ${p.tp_price != null ? formatPrice(symbol, p.tp_price, priceSpec) : '—'}` },
+              ]} />
+              <DR label="Price" sep=" → " segs={[
+                { text: `Entry ${formatPrice(symbol, p.entry_price, priceSpec)}` },
+                { text: `Mark ${formatPrice(symbol, displayMarkPrice, priceSpec)}` },
+              ]} />
+              <DR label="Size" segs={[
+                { text: formatSize(symbol, p.size, sizeSpec) },
+                ...(notionalStr ? [{ text: notionalStr }] : []),
+              ]} />
+              <DR label="Margin" segs={[
+                { text: fmtMoney(margin) },
+                { text: `${p.leverage}×` },
+              ]} />
+              <DR label="Opened" segs={[{ text: formatRelative(p.opened_at) }]} />
             </>
           ) : (
             <>
-              <KV k="Entry"        v={formatPrice(symbol, p.entry_price, priceSpec)} />
-              {p.closing_price != null && <KV k="Close" v={formatPrice(symbol, p.closing_price, priceSpec)} />}
-              <KV k="Notional"     v={notionalStr || '—'} />
-              <KV k="Realized"     v={`${formatPnl(p.realized_pnl)}${realizedPct}`} vColor={pnlColor(p.realized_pnl)} />
-              {p.close_reason && <KV k="Close reason" v={p.close_reason} />}
-              <KV k="Opened"       v={formatRelative(p.opened_at)} />
-              {p.closed_at && <KV k="Closed" v={formatRelative(p.closed_at)} />}
+              <DR label="PnL" segs={[{ text: `Realized ${formatPnl(p.realized_pnl)}${realizedPct}`, color: pnlColor(p.realized_pnl) }]} />
+              {(p.sl_price != null || p.tp_price != null) && (
+                <DR label="Levels" segs={[
+                  ...(p.sl_price != null ? [{ text: `SL ${formatPrice(symbol, p.sl_price, priceSpec)}` }] : []),
+                  ...(p.tp_price != null ? [{ text: `TP ${formatPrice(symbol, p.tp_price, priceSpec)}` }] : []),
+                ]} />
+              )}
+              <DR label="Price" sep=" → " segs={[
+                { text: `Entry ${formatPrice(symbol, p.entry_price, priceSpec)}` },
+                ...(p.closing_price != null ? [{ text: `Close ${formatPrice(symbol, p.closing_price, priceSpec)}` }] : []),
+              ]} />
+              <DR label="Size" segs={[
+                { text: formatSize(symbol, p.size, sizeSpec) },
+                ...(notionalStr ? [{ text: notionalStr }] : []),
+              ]} />
+              <DR label="Margin" segs={[
+                { text: fmtMoney(margin) },
+                { text: `${p.leverage}×` },
+              ]} />
+              {p.close_reason && <DR label="Close reason" segs={[{ text: p.close_reason }]} />}
+              <DR label="Time" segs={[
+                { text: `Opened ${formatRelative(p.opened_at)}` },
+                ...(p.closed_at ? [{ text: `Closed ${formatRelative(p.closed_at)}` }] : []),
+              ]} />
             </>
           )}
         </div>
