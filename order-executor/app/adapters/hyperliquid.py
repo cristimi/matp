@@ -480,11 +480,22 @@ class HyperliquidAdapter(ExchangeAdapter):
                 raw_response=data,
             )
 
-        filled = first.get("filled", {})
-        oid    = str(filled.get("oid", "")) or \
-                 str(first.get("resting", {}).get("oid", ""))
+        filled  = first.get("filled", {})
+        resting = first.get("resting", {})
+        oid     = str(filled.get("oid", "")) or str(resting.get("oid", ""))
 
         avg_px = filled.get("avgPx")
+
+        # HL already tells us whether the order filled immediately or is sitting on the
+        # book — a resting order must be reported as "pending", not "filled". The ack
+        # alone can't distinguish a partial-fill-then-resting from a zero-fill-then-resting,
+        # so callers needing partial-fill detail must poll get_open_orders/userFills.
+        if filled:
+            order_status = "filled"
+        elif resting:
+            order_status = "pending"
+        else:
+            order_status = "filled"  # unexpected response shape; preserve prior behavior
 
         # Log TP/SL trigger order IDs and warn on any trigger-leg failure.
         # Trigger-order statuses may be plain strings ("resting") or dicts.
@@ -506,18 +517,18 @@ class HyperliquidAdapter(ExchangeAdapter):
                         logger.info(f"HL TP/SL leg {i} placed: oid={trig_oid}")
 
         realized_pnl = None
-        if reduce_only and oid:
+        if reduce_only and oid and order_status == "filled":
             realized_pnl = await self._get_fill_pnl(int(oid))
 
         ts = filled.get("totalSz")
-        actual_fill_size = (
-            Decimal(str(ts)) if ts not in (None, "", "0")
-            else Decimal(str(size_rounded))
-        )
+        if ts not in (None, "", "0"):
+            actual_fill_size = Decimal(str(ts))
+        else:
+            actual_fill_size = Decimal(str(size_rounded)) if order_status == "filled" else None
 
         return OrderResult(
             success=True,
-            status="filled",
+            status=order_status,
             exchange_order_id=oid or None,
             actual_fill_price=Decimal(str(avg_px)) if avg_px else None,
             actual_fill_size=actual_fill_size,
@@ -737,6 +748,134 @@ class HyperliquidAdapter(ExchangeAdapter):
             logger.error(f"HyperliquidAdapter.get_account_meta failed: {e}")
             return {}
 
+    async def _fetch_frontend_open_orders(self) -> list[dict]:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.post(
+                f"{self.base_url}/info",
+                json={"type": "frontendOpenOrders", "user": self.query_address},
+            )
+            resp.raise_for_status()
+            return resp.json()
+
+    async def get_open_orders(self, symbol: str | None = None) -> list[dict]:
+        """
+        Return resting, non-trigger limit orders via frontendOpenOrders.
+        TP/SL triggers (isTrigger=true) are list_trigger_orders' job.
+        """
+        try:
+            coin_filter = symbol.replace("-USDT", "").replace("-USD", "").upper() if symbol else None
+            orders = await self._fetch_frontend_open_orders()
+
+            result = []
+            for o in orders:
+                if o.get("isTrigger"):
+                    continue
+                coin = o.get("coin")
+                if coin_filter and coin != coin_filter:
+                    continue
+                orig_sz     = float(o.get("origSz") or 0)
+                remaining   = float(o.get("sz") or 0)
+                filled_size = max(orig_sz - remaining, 0.0)
+                result.append({
+                    "order_id":      str(o["oid"]),
+                    "symbol":        f"{coin}-USDT",
+                    "side":          "buy" if o.get("side") == "B" else "sell",
+                    "price":         float(o.get("limitPx") or 0),
+                    "size":          orig_sz,
+                    "filled_size":   filled_size,
+                    "status":        "partially_filled" if filled_size > 0 else "resting",
+                    "created_at_ms": int(o.get("timestamp") or 0),
+                })
+            return result
+        except Exception as e:
+            logger.error(f"HyperliquidAdapter.get_open_orders failed: {e}")
+            return []
+
+    async def amend_order(
+        self, symbol: str, order_id: str, new_price: float | None = None, new_size: float | None = None
+    ) -> dict:
+        """
+        Amend a resting order's price/size via Hyperliquid's native 'modify' action.
+        'modify' requires a full replacement order spec, so unset fields (side,
+        reduceOnly) are preserved from the current resting order.
+        """
+        try:
+            if new_price is None and new_size is None:
+                return {"success": False, "error": "amend_order requires new_price or new_size"}
+
+            orders = await self._fetch_frontend_open_orders()
+            existing = next((o for o in orders if str(o.get("oid")) == str(order_id)), None)
+            if not existing:
+                return {"success": False, "error": f"order {order_id} not found in open orders"}
+
+            import msgpack
+            from eth_hash.auto import keccak
+
+            asset_index = await self._get_asset_index(symbol)
+            is_buy      = existing.get("side") == "B"
+            reduce_only = bool(existing.get("reduceOnly", False))
+
+            price = new_price if new_price is not None else float(existing.get("limitPx"))
+            size  = new_size if new_size is not None else float(existing.get("sz"))
+
+            size_rounded = self._round_size(symbol, float(size))
+            if size_rounded <= 0:
+                return {"success": False, "error": f"amended size {size} rounds to 0 at szDecimals precision"}
+
+            price_wire = self._float_to_wire(self._round_price(float(price)))
+            size_wire  = self._float_to_wire(size_rounded)
+
+            order_spec = {
+                "a": asset_index,
+                "b": is_buy,
+                "p": price_wire,
+                "s": size_wire,
+                "r": reduce_only,
+                "t": {"limit": {"tif": "Gtc"}},
+            }
+            action = {"type": "modify", "oid": int(order_id), "order": order_spec}
+
+            nonce         = int(time.time() * 1000)
+            action_bytes  = msgpack.packb(action, use_bin_type=True)
+            nonce_bytes   = nonce.to_bytes(8, "big")
+            connection_id = keccak(action_bytes + nonce_bytes + b'\x00')
+
+            source  = "b" if self.base_url.endswith("testnet.xyz") else "a"
+            message = {"source": source, "connectionId": connection_id}
+            signed  = self._account.sign_typed_data(
+                domain_data=_HL_DOMAIN,
+                message_types=_HL_TYPES,
+                message_data=message,
+            )
+
+            payload = {
+                "action":       action,
+                "nonce":        nonce,
+                "signature":    {"r": hex(signed.r), "s": hex(signed.s), "v": signed.v},
+                "vaultAddress": None,
+            }
+
+            async with httpx.AsyncClient(timeout=15) as client:
+                resp = await client.post(f"{self.base_url}/exchange", json=payload)
+                resp.raise_for_status()
+                data = resp.json()
+
+            logger.debug(f"HL amend_order({symbol}, oid={order_id}): {data}")
+
+            if data.get("status") != "ok":
+                return {"success": False, "error": str(data)}
+            resp_field = data.get("response", {})
+            if isinstance(resp_field, str):
+                return {"success": False, "error": resp_field}
+            statuses = resp_field.get("data", {}).get("statuses", [])
+            first = statuses[0] if statuses else {}
+            if isinstance(first, dict) and "error" in first:
+                return {"success": False, "error": first["error"]}
+            return {"success": True, "order_id": order_id, "raw_response": data}
+        except Exception as e:
+            logger.error(f"HyperliquidAdapter.amend_order({symbol}, {order_id}) failed: {e}")
+            return {"success": False, "error": str(e)}
+
     async def list_trigger_orders(self, symbol: str) -> list[dict]:
         """
         Return all open TP/SL trigger orders for a symbol.
@@ -783,11 +922,14 @@ class HyperliquidAdapter(ExchangeAdapter):
         Cancel a single order by oid through the same msgpack/keccak signing path.
         Action format: {"type": "cancel", "cancels": [{"a": asset_index, "o": oid}]}
         Field order in cancel dict is signature-critical: a, o.
+        Works for both regular resting limit orders and trigger (TP/SL) orders — HL
+        uses the same oid namespace and 'cancel' action for both.
         """
         try:
             import msgpack
             from eth_hash.auto import keccak
 
+            oid = int(oid)  # callers may pass a str oid (e.g. from a JSON request body)
             asset_index = await self._get_asset_index(symbol)
             nonce = int(time.time() * 1000)
 

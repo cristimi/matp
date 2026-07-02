@@ -111,6 +111,23 @@ class BlofinAdapter(ExchangeAdapter):
             "Content-Type": "application/json",
         }
 
+    async def _get_order_state(self, symbol: str, order_id: str) -> dict:
+        """Return the live order dict for order_id. Checks orders-pending first (still
+        resting/partially_filled — has a 'state' field); falls back to order history
+        (fully filled/canceled) if it's no longer pending."""
+        try:
+            path = f"/api/v1/trade/orders-pending?instId={symbol}"
+            headers = self._headers("GET", path, "")
+            async with httpx.AsyncClient(base_url=self.base_url, timeout=10) as client:
+                resp = await client.get(path, headers=headers)
+            items = resp.json().get("data") or []
+            for item in items:
+                if str(item.get("orderId")) == str(order_id):
+                    return item
+        except Exception as e:
+            logger.warning(f"Blofin _get_order_state: pending lookup failed for {order_id}: {e}")
+        return await self._get_order_details(symbol, order_id)
+
     async def _get_order_details(self, symbol: str, order_id: str) -> dict:
         # Try orders-history first (completed/filled orders), fall back to fills
         for path_tpl in [
@@ -280,6 +297,7 @@ class BlofinAdapter(ExchangeAdapter):
                 actual_fill_price = None
                 actual_fill_size  = None
                 pnl = None
+                order_status = "filled"
                 if order.order_type == "market":
                     try:
                         await asyncio.sleep(2.0)
@@ -294,15 +312,40 @@ class BlofinAdapter(ExchangeAdapter):
                     except Exception as e:
                         logger.warning(f"Blofin submit_order: fill details fetch failed (order still filled): {e}")
                 else:
-                    # No immediate fill to query (limit/resting). Store the rounded
-                    # submitted size so the DB matches what the exchange will hold.
-                    actual_fill_size = await self._to_base(
-                        order.symbol, Decimal(str(order_size))
-                    )
+                    # Limit/resting: determine the actual state rather than assuming filled.
+                    try:
+                        await asyncio.sleep(1.0)
+                        state_info = await self._get_order_state(order.symbol, exchange_order_id)
+                        state = state_info.get("state")
+                        if state in ("live", "partially_filled"):
+                            order_status = "pending"
+                            actual_fill_price = self._parse_fill_price(state_info)
+                            if state == "partially_filled":
+                                actual_fill_size = await self._parse_fill_size(
+                                    order.symbol, state_info, order_size
+                                )
+                        else:
+                            # Not in the pending book anymore -> fully filled (or, rarely,
+                            # already canceled by the exchange before we could check).
+                            order_status = "filled"
+                            actual_fill_price = self._parse_fill_price(state_info)
+                            actual_fill_size = await self._parse_fill_size(
+                                order.symbol, state_info, order_size
+                            )
+                            pnl_raw = state_info.get("pnl") or state_info.get("realizedPnl")
+                            pnl = Decimal(str(pnl_raw)) if pnl_raw is not None else None
+                    except Exception as e:
+                        logger.warning(
+                            f"Blofin submit_order: limit state lookup failed, assuming pending: {e}"
+                        )
+                        order_status = "pending"
+                        actual_fill_size = await self._to_base(
+                            order.symbol, Decimal(str(order_size))
+                        )
 
                 return OrderResult(
                     success=True,
-                    status="filled",
+                    status=order_status,
                     exchange_order_id=exchange_order_id,
                     raw_response=data,
                     actual_fill_price=actual_fill_price,
@@ -650,6 +693,119 @@ class BlofinAdapter(ExchangeAdapter):
         except Exception as e:
             logger.error(f"BlofinAdapter.get_account_meta failed: {e}")
             return {}
+
+    async def get_open_orders(self, symbol: str | None = None) -> list[dict]:
+        """
+        Return resting, non-trigger limit orders via /api/v1/trade/orders-pending.
+        This endpoint only lists regular orders (TP/SL triggers live under
+        orders-tpsl-pending / list_trigger_orders), so no extra filtering is needed.
+        """
+        try:
+            path = "/api/v1/trade/orders-pending"
+            if symbol:
+                path += f"?instId={symbol}"
+            headers = self._headers("GET", path, "")
+            async with httpx.AsyncClient(base_url=self.base_url, timeout=10) as client:
+                resp = await client.get(path, headers=headers)
+            data = resp.json()
+            entries = data.get("data") or []
+
+            result = []
+            for o in entries:
+                inst_id = o.get("instId")
+                contracts = Decimal(str(o.get("size") or "0"))
+                filled_contracts = Decimal(str(o.get("filledSize") or "0"))
+                base_size = await self._to_base(inst_id, contracts)
+                filled_base = await self._to_base(inst_id, filled_contracts)
+                state = o.get("state")
+                status = "partially_filled" if state == "partially_filled" else "resting"
+                result.append({
+                    "order_id":      o.get("orderId"),
+                    "symbol":        inst_id,
+                    "side":          o.get("side"),
+                    "price":         float(o.get("price") or 0),
+                    "size":          float(base_size),
+                    "filled_size":   float(filled_base),
+                    "status":        status,
+                    "created_at_ms": int(o.get("createTime") or 0),
+                })
+            return result
+        except Exception as e:
+            logger.error(f"BlofinAdapter.get_open_orders failed: {e}")
+            return []
+
+    async def amend_order(
+        self, symbol: str, order_id: str, new_price: float | None = None, new_size: float | None = None
+    ) -> dict:
+        """
+        Amend a resting order's price/size.
+
+        Blofin has NO native amend-order endpoint for perpetual (SWAP) orders — confirmed
+        live: /api/v1/trade/amend-order, /modify-order, and a deliberately-bogus path all
+        return the identical {"code":"152404","msg":"This operation is not supported"}, which
+        indicates that's Blofin's generic "no such route" response, not a real amend rejection.
+        Implemented as cancel-then-replace.
+
+        FAILURE SEMANTICS: if the cancel succeeds but placing the replacement then fails
+        (e.g. a transient API error), the original order is GONE — there is no restore path.
+        In that case this returns {"success": False, "original_cancelled": True, ...} so the
+        caller can detect a dropped order and re-place it explicitly. This is unlike a plain
+        cancel_order failure, which never destroys state.
+        """
+        try:
+            if new_price is None and new_size is None:
+                return {"success": False, "error": "amend_order requires new_price or new_size"}
+
+            existing = await self._get_order_state(symbol, order_id)
+            if not existing:
+                return {"success": False, "error": f"order {order_id} not found"}
+
+            side = existing.get("side")
+            leverage = int(float(existing.get("leverage") or 10))
+            margin_mode = existing.get("marginMode") or "isolated"
+            price = new_price if new_price is not None else float(existing.get("price") or 0)
+            if new_size is not None:
+                base_size = new_size
+            else:
+                contracts = Decimal(str(existing.get("size") or "0"))
+                base_size = float(await self._to_base(symbol, contracts))
+
+            cancel_result = await self.cancel_order(symbol, order_id)
+            if not cancel_result.get("success"):
+                return {
+                    "success": False,
+                    "error": f"cancel failed, original order unchanged: {cancel_result.get('error')}",
+                }
+
+            replacement = OrderRequest(
+                order_id=f"amend-{order_id}",
+                account_id="",
+                symbol=symbol,
+                side=side,
+                signal="amend",
+                order_type="limit",
+                size=Decimal(str(base_size)),
+                price=Decimal(str(price)),
+                leverage=leverage,
+                margin_mode=margin_mode,
+            )
+            result = await self.submit_order(replacement)
+            if not result.success:
+                return {
+                    "success": False,
+                    "original_cancelled": True,
+                    "error": f"cancel succeeded but replacement failed — order is GONE: {result.error_msg}",
+                    "raw_response": result.raw_response,
+                }
+            return {
+                "success": True,
+                "order_id": result.exchange_order_id,
+                "cancelled_order_id": order_id,
+                "raw_response": result.raw_response,
+            }
+        except Exception as e:
+            logger.error(f"BlofinAdapter.amend_order failed: {e}")
+            return {"success": False, "error": str(e)}
 
     async def list_trigger_orders(self, symbol: str) -> list[dict]:
         """

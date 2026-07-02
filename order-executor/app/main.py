@@ -202,6 +202,56 @@ async def get_positions(account_id: str):
         raise HTTPException(status_code=503, detail=f"exchange positions unavailable: {e}")
 
 
+@app.get("/accounts/{account_id}/orders")
+async def get_open_orders(account_id: str, symbol: str | None = None):
+    """Return resting, non-trigger limit orders for an account (optionally filtered by symbol)."""
+    try:
+        adapter = await registry.get(account_id)
+        orders = await adapter.get_open_orders(symbol)
+        return orders
+    except Exception as e:
+        logger.error(f"get_open_orders failed for {account_id}: {e}")
+        return {"success": False, "error_msg": str(e), "orders": []}
+
+
+class CancelOrderRequest(PydanticBaseModel):
+    symbol:   str
+    order_id: str
+
+
+@app.post("/accounts/{account_id}/orders/cancel")
+async def cancel_order_endpoint(account_id: str, request: CancelOrderRequest):
+    """Cancel a resting limit order by id."""
+    try:
+        adapter = await registry.get(account_id)
+        result = await adapter.cancel_order(request.symbol, request.order_id)
+        return result
+    except Exception as e:
+        logger.error(f"cancel_order failed for {account_id}: {e}")
+        return {"success": False, "error": str(e)}
+
+
+class AmendOrderRequest(PydanticBaseModel):
+    symbol:    str
+    order_id:  str
+    new_price: _Optional[float] = None
+    new_size:  _Optional[float] = None
+
+
+@app.post("/accounts/{account_id}/orders/amend")
+async def amend_order_endpoint(account_id: str, request: AmendOrderRequest):
+    """Amend a resting limit order's price and/or size."""
+    try:
+        adapter = await registry.get(account_id)
+        result = await adapter.amend_order(
+            request.symbol, request.order_id, request.new_price, request.new_size
+        )
+        return result
+    except Exception as e:
+        logger.error(f"amend_order failed for {account_id}: {e}")
+        return {"success": False, "error": str(e)}
+
+
 @app.get("/accounts/{account_id}/balance")
 async def get_account_balance(account_id: str):
     """Return balance for a specific account."""

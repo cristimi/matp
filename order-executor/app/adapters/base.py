@@ -113,3 +113,25 @@ class ExchangeAdapter(ABC):
         Shape: { "BTC-USDT": { "price": { "mode": "tick"|"sigfig", "tick"?: float, "sigfigs"?: int }, "size": { "dp": int } } }
         """
         return {}
+
+    @abstractmethod
+    async def get_open_orders(self, symbol: str | None = None) -> list[dict]:
+        """
+        Return resting, non-trigger limit orders (TP/SL triggers are list_trigger_orders'
+        job). Optionally filtered by symbol. Must never raise — return [] on error.
+        Each entry: { "order_id": str, "symbol": str, "side": "buy"|"sell", "price": float,
+        "size": float, "filled_size": float, "status": "resting"|"partially_filled",
+        "created_at_ms": int }
+        """
+        pass
+
+    @abstractmethod
+    async def amend_order(
+        self, symbol: str, order_id: str, new_price: float | None = None, new_size: float | None = None
+    ) -> dict:
+        """
+        Amend a resting limit order's price and/or size.
+        Must never raise — return {"success": False, "error": ...} on failure.
+        Returns {"success": True, ...} on success.
+        """
+        pass
