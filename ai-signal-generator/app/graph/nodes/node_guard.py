@@ -12,13 +12,17 @@ _MAX_SL_TP_PCT = 50.0   # above this is almost certainly hallucinated
 
 # Maps action → strategy_config cooldown key; None means no cooldown
 _ACTION_COOLDOWN: dict[str, str | None] = {
-    'open_long':    'cooldown_entry_minutes',
-    'open_short':   'cooldown_entry_minutes',
-    'partial_close': 'cooldown_entry_minutes',
-    'adjust_stops': 'cooldown_stop_adj_minutes',
-    'close_long':   None,
-    'close_short':  None,
-    'hold':         None,
+    'open_long':         'cooldown_entry_minutes',
+    'open_short':        'cooldown_entry_minutes',
+    'place_limit_long':  'cooldown_entry_minutes',
+    'place_limit_short': 'cooldown_entry_minutes',
+    'partial_close':     'cooldown_entry_minutes',
+    'adjust_stops':      'cooldown_stop_adj_minutes',
+    'close_long':        None,
+    'close_short':       None,
+    'cancel_order':      None,
+    'amend_order':       None,
+    'hold':              None,
 }
 
 
@@ -49,7 +53,7 @@ async def node_guard(state: AgentState) -> AgentState:
 
     # ── 4. Action coherence ──────────────────────────────────────────────
     position_open = state.get('position_open', False)
-    if action in ('open_long', 'open_short') and position_open:
+    if action in ('open_long', 'open_short', 'place_limit_long', 'place_limit_short') and position_open:
         return _reject(state, 'position_already_open')
     if action in ('close_long', 'close_short', 'partial_close') and not position_open:
         return _reject(state, 'no_position_to_close')
@@ -92,6 +96,81 @@ async def node_guard(state: AgentState) -> AgentState:
             'resolved_size':         None,
             'resolved_sl_price':     float(new_sl) if new_sl is not None else None,
             'resolved_tp_price':     float(new_tp) if new_tp is not None else None,
+        }
+
+    # ── place_limit_long / place_limit_short: resting entry at a boundary ─
+    if action in ('place_limit_long', 'place_limit_short'):
+        try:
+            limit_price = signal.get('limit_price')
+            if limit_price is None or float(limit_price) <= 0:
+                return _reject(state, 'limit_price_missing')
+            limit_price = float(limit_price)
+
+            # Don't stack a second resting entry limit on the same side —
+            # the range-working model keeps at most one resting order per side.
+            side_wanted = 'buy' if action == 'place_limit_long' else 'sell'
+            for o in (state.get('open_orders') or []):
+                if o.get('side') == side_wanted:
+                    return _reject(state, 'duplicate_resting_order_same_side')
+
+            leverage = int(sc.get('default_leverage') or 1)
+            margin   = float(sc.get('margin_per_trade') or 5.0)
+            base_qty = round((margin * leverage) / limit_price, 4)
+
+            sl_pct = abs(float(signal['stop_loss_pct']))
+            tp_pct = abs(float(signal['take_profit_pct']))
+            if not (_MIN_SL_TP_PCT <= sl_pct <= _MAX_SL_TP_PCT) or \
+               not (_MIN_SL_TP_PCT <= tp_pct <= _MAX_SL_TP_PCT):
+                logger.warning(
+                    "node_guard reject %s: sl_pct=%s tp_pct=%s outside [%s, %s]",
+                    action, sl_pct, tp_pct, _MIN_SL_TP_PCT, _MAX_SL_TP_PCT,
+                )
+                return _reject(state, 'sl_tp_pct_out_of_range')
+
+            if action == 'place_limit_long':
+                sl_price = round(limit_price * (1 - sl_pct / 100.0), 4)
+                tp_price = round(limit_price * (1 + tp_pct / 100.0), 4)
+            else:
+                sl_price = round(limit_price * (1 + sl_pct / 100.0), 4)
+                tp_price = round(limit_price * (1 - tp_pct / 100.0), 4)
+
+            return {
+                **state,
+                'gate_passed':              True,
+                'gate_rejection_reason':    None,
+                'resolved_size':            base_qty,
+                'resolved_sl_price':        sl_price,
+                'resolved_tp_price':        tp_price,
+                'resolved_limit_price':     limit_price,
+                'resolved_target_order_id': None,
+            }
+
+        except Exception as exc:
+            logger.error("Limit size resolution failed: %s", exc)
+            return _reject(state, 'size_resolution_failed')
+
+    # ── cancel_order / amend_order: manage a resting order, no sizing ─────
+    if action in ('cancel_order', 'amend_order'):
+        target_order_id = signal.get('target_order_id')
+        if not target_order_id:
+            return _reject(state, 'target_order_id_missing')
+
+        resolved_limit_price = None
+        if action == 'amend_order':
+            limit_price = signal.get('limit_price')
+            if limit_price is None or float(limit_price) <= 0:
+                return _reject(state, 'amend_missing_price')
+            resolved_limit_price = float(limit_price)
+
+        return {
+            **state,
+            'gate_passed':              True,
+            'gate_rejection_reason':    None,
+            'resolved_size':            None,
+            'resolved_sl_price':        None,
+            'resolved_tp_price':        None,
+            'resolved_limit_price':     resolved_limit_price,
+            'resolved_target_order_id': str(target_order_id),
         }
 
     # ── Size resolution (opening actions) ───────────────────────────────

@@ -41,6 +41,11 @@ class AgentState(TypedDict):
     resolved_size:         Optional[float]
     resolved_sl_price:     Optional[float]
     resolved_tp_price:     Optional[float]
+    resolved_limit_price:     Optional[float]     # place_limit_* entry price / amend_order new price
+    resolved_target_order_id: Optional[str]        # cancel_order / amend_order target
+
+    # Open orders (Node 1 output, Phase 2)
+    open_orders:           Optional[list]
 
     # Dispatch result (Node 4 output)
     webhook_fired:   bool

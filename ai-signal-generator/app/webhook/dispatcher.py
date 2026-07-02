@@ -9,11 +9,15 @@ from app.webhook.signer import sign_payload
 logger = logging.getLogger(__name__)
 
 ACTION_TO_SIGNAL = {
-    'open_long':   ('buy',  'open_long'),
-    'open_short':  ('sell', 'open_short'),
-    'close_long':  ('sell', 'close_long'),
-    'close_short': ('buy',  'close_short'),
+    'open_long':         ('buy',  'open_long'),
+    'open_short':        ('sell', 'open_short'),
+    'close_long':        ('sell', 'close_long'),
+    'close_short':       ('buy',  'close_short'),
+    'place_limit_long':  ('buy',  'open_long'),
+    'place_limit_short': ('sell', 'open_short'),
 }
+
+_LIMIT_ACTIONS = ('place_limit_long', 'place_limit_short')
 
 
 async def build_payload(state: AgentState) -> dict:
@@ -30,11 +34,14 @@ async def build_payload(state: AgentState) -> dict:
     else:
         side, sig = ACTION_TO_SIGNAL[action]
 
+    is_limit = action in _LIMIT_ACTIONS
+
     return {
         'base_asset':  sc['base_asset'],
         'quote_asset': sc['quote_asset'],
         'side':        side,
-        'order_type':  'market',
+        'order_type':  'limit' if is_limit else 'market',
+        'price':       str(state['resolved_limit_price']) if is_limit else None,
         'size':        str(state['resolved_size']),
         'sl_price':    str(state['resolved_sl_price']) if state.get('resolved_sl_price') else None,
         'tp_price':    str(state['resolved_tp_price']) if state.get('resolved_tp_price') else None,
@@ -50,6 +57,55 @@ async def build_payload(state: AgentState) -> dict:
             'dry_run':        sc.get('dry_run', True),
         },
     }
+
+
+async def dispatch_cancel_order(state: AgentState, listener_url: str) -> dict:
+    """
+    POST to listener /strategies/{strategy_id}/orders/cancel for the LLM's
+    target_order_id. Uses the strategy's webhook_secret for auth.
+    """
+    sc          = state['strategy_config']
+    strategy_id = state['strategy_id']
+    secret      = sc.get('webhook_secret', '')
+    order_id    = state.get('resolved_target_order_id')
+
+    body = {'token': secret, 'order_id': order_id}
+    url  = f"{listener_url.rstrip('/')}/strategies/{strategy_id}/orders/cancel"
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(url, json=body)
+        return {
+            'status_code': resp.status_code,
+            'error': None if resp.status_code == 200 else resp.text,
+        }
+    except Exception as exc:
+        logger.error("dispatch_cancel_order error: %s", exc)
+        return {'status_code': None, 'error': str(exc)}
+
+
+async def dispatch_amend_order(state: AgentState, listener_url: str) -> dict:
+    """
+    POST to listener /strategies/{strategy_id}/orders/amend for the LLM's
+    target_order_id + new price. Uses the strategy's webhook_secret for auth.
+    """
+    sc          = state['strategy_config']
+    strategy_id = state['strategy_id']
+    secret      = sc.get('webhook_secret', '')
+    order_id    = state.get('resolved_target_order_id')
+    new_price   = state.get('resolved_limit_price')
+
+    body = {'token': secret, 'order_id': order_id, 'new_price': new_price}
+    url  = f"{listener_url.rstrip('/')}/strategies/{strategy_id}/orders/amend"
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(url, json=body)
+        return {
+            'status_code': resp.status_code,
+            'error': None if resp.status_code == 200 else resp.text,
+        }
+    except Exception as exc:
+        logger.error("dispatch_amend_order error: %s", exc)
+        return {'status_code': None, 'error': str(exc)}
 
 
 async def dispatch_adjust_stops(state: AgentState, listener_url: str) -> dict:

@@ -133,6 +133,30 @@ def _render_technical(state: dict) -> str:
     return '\n'.join(lines)
 
 
+def _render_open_orders(state: dict) -> str:
+    sc     = state['strategy_config']
+    orders = state.get('open_orders')
+
+    if not sc.get('use_geometry') or orders is None:
+        return ''
+
+    lines = ['OPEN ORDERS (this strategy\'s resting limit orders):']
+    if not orders:
+        lines.append('None — no resting orders.')
+    else:
+        for o in orders:
+            lines.append(
+                f"  order_id={_v(o.get('order_id'))}  side={_v(o.get('side'))}  "
+                f"price={_v(o.get('price'))}  size={_v(o.get('size'))}  status={_v(o.get('status'))}"
+            )
+        lines.append(
+            'Use the order_id above as target_order_id for cancel_order/amend_order. '
+            'Do not place a new limit on a side that already has a resting order.'
+        )
+
+    return '\n'.join(lines)
+
+
 def _render_sentiment(state: dict) -> str:
     sc = state['strategy_config']
     sd = state.get('sentiment_data') or {}
@@ -322,6 +346,12 @@ async def build_prompt(state: dict, db_pool) -> str:
         g = _render_geometry(state)
         if g:
             sections.append(g)
+
+    # 2.6. Open orders — only if toggled on (geometry gates the range-working actions)
+    if sc.get('use_geometry'):
+        oo = _render_open_orders(state)
+        if oo:
+            sections.append(oo)
 
     # 3. Sentiment — only if at least one sentiment source is toggled on
     if sc.get('use_fear_greed') or sc.get('use_funding_rate') or sc.get('use_open_interest'):

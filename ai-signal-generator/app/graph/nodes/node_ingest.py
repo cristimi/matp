@@ -1,5 +1,8 @@
 import logging
 
+import httpx
+
+from app.config import settings
 from app.data.geometry import detect_geometry
 from app.data.indicators import compute_indicators
 from app.data.macro import fetch_btc_dominance, fetch_macro
@@ -9,6 +12,21 @@ from app.data.sentiment import fetch_fear_greed, fetch_funding_rate, fetch_open_
 from app.graph.state import AgentState
 
 logger = logging.getLogger(__name__)
+
+
+async def _fetch_open_orders(strategy_id: str) -> list:
+    """
+    Fetch resting orders from the listener (never the executor directly — keeps
+    the AI isolated from exchange specifics per the exchange-isolation rule).
+    """
+    url = f"{settings.matp_listener_url.rstrip('/')}/strategies/{strategy_id}/orders"
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        resp = await client.get(url)
+    resp.raise_for_status()
+    data = resp.json()
+    if not isinstance(data, list):
+        raise ValueError(f"unexpected /orders response: {data}")
+    return data
 
 
 async def node_ingest(state: AgentState) -> AgentState:
@@ -111,11 +129,22 @@ async def node_ingest(state: AgentState) -> AgentState:
 
     market_context = {'btc_dominance': btc_dominance, 'macro': macro_data}
 
+    # ── Open orders (resting limits) — feeds the range-working actions ────
+    open_orders = None
+    if sc.get('use_geometry'):
+        try:
+            open_orders = await _fetch_open_orders(state['strategy_id'])
+        except Exception as exc:
+            errors.append(f"open_orders:{exc}")
+            logger.warning("Open orders fetch failed: %s", exc)
+            open_orders = []
+
     return {
         **state,
         'ohlcv_data':           ohlcv_data,
         'technical_indicators': technical_indicators,
         'geometry_data':        geometry_data,
+        'open_orders':          open_orders,
         'sentiment_data':       sentiment_data,
         'news_data':            news_data,
         'market_context':       market_context,

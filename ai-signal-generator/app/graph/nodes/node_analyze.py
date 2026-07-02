@@ -18,7 +18,8 @@ _DEFAULT_MODEL    = 'gemini-2.5-flash'
 class LLMSignalOutput(BaseModel):
     action:          Literal[
         'open_long', 'open_short', 'close_long', 'close_short',
-        'hold', 'partial_close', 'adjust_stops'
+        'hold', 'partial_close', 'adjust_stops',
+        'place_limit_long', 'place_limit_short', 'cancel_order', 'amend_order',
     ]
     confidence:      float
     size_pct:        float
@@ -26,6 +27,8 @@ class LLMSignalOutput(BaseModel):
     take_profit_pct: float = Field(description="Distance from entry as a percent, e.g. 3.0 = 3.0%. Use 0 for hold/close actions.")
     new_sl_price:    Optional[float] = None
     new_tp_price:    Optional[float] = None
+    limit_price:     Optional[float] = Field(default=None, description="Boundary price for place_limit_long/short, or the new price for amend_order.")
+    target_order_id: Optional[str] = Field(default=None, description="Resting order id (from OPEN ORDERS context) for cancel_order/amend_order.")
     reasoning:       str
 
 
