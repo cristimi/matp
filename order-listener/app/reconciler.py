@@ -22,6 +22,7 @@ _SIZE_EPSILON_REL = Decimal("0.005")             # 0.5% of db_size — absorbs l
 async def reconcile_once(pool) -> None:
     """
     Single reconciliation pass:
+    0. Reconcile pending (resting) limit orders — detect fills/cancels.
     1. Load all open positions grouped by account.
     2. Fetch live exchange positions per account.
     3. Compare and update miss counters; act when threshold reached.
@@ -29,6 +30,10 @@ async def reconcile_once(pool) -> None:
     """
     from app.executor_client import get_account_positions, get_position_history
     from app.webhook_handler import close_strategy_position, sync_position_pnl
+
+    # Pending-order reconciliation runs unconditionally (independent of whether any
+    # position rows exist yet — a strategy's very first order may still be resting).
+    await _reconcile_pending_orders(pool)
 
     # Load open positions with account_id from strategy
     async with pool.acquire() as conn:
@@ -211,6 +216,185 @@ async def reconcile_once(pool) -> None:
     await sync_position_pnl(pool)
     await _recover_manual_close_pnl(pool)
     logger.debug("reconciler: pass complete")
+
+
+async def _reconcile_pending_orders(pool) -> None:
+    """
+    Detect fills and cancels for resting limit orders (orders.status='pending', placed via
+    the webhook path and left resting on the exchange by order-executor since Part 1).
+
+    Fill vs cancel disambiguation: a pending order that has fallen off the executor's
+    open-orders list has either filled or been cancelled/expired externally. We distinguish
+    by comparing the account's live exchange position for (symbol, side) against what the
+    DB already has tracked for that strategy: any exchange size beyond what's already
+    tracked is attributed to the oldest not-yet-reconciled pending order for that key
+    (orders are processed received_at-ascending, and the DB position is re-read fresh for
+    each order, so a second pending order on the same key sees the first order's
+    just-applied top-up and can't double-claim the same fill). If nothing beyond what's
+    already tracked shows up, the order is marked cancelled and no position is touched.
+
+    Partial fills: if the exchange shows less size attributable than the order's own size
+    but more than the reconciler's tolerance, the order is still marked 'filled' with the
+    exchange-confirmed (smaller) fill_size — this mirrors how a market order's fill_size can
+    already differ from the requested size elsewhere in this codebase (e.g. Blofin lot
+    rounding) and is still recorded as 'filled' rather than a separate partial status.
+
+    TP/SL: live investigation (see Part 2 report) found both adapters attach tp/sl at
+    order-placement time already — Blofin inline on the order body (but its trigger only
+    activates once that specific order fills, sized to that order's own size), Hyperliquid
+    via linked 'waitingForFill' child orders in the normalTpsl grouping (pre-sized to the
+    ORIGINAL requested size, not any eventual partial-fill size). Neither is guaranteed to
+    match the final confirmed position size, so once a fill is materialized here we
+    unconditionally (re)apply modify-stops using the order's own tp_price/sl_price — cheap,
+    idempotent, and guarantees the trigger size matches the real fill size even under a
+    partial fill or Blofin's per-order (non-position-aware) trigger stacking.
+
+    UNKNOWN safety: if the executor is unreachable for an account's open-orders or positions
+    fetch, that account's pending orders are left untouched this pass (mirrors the open-
+    position UNKNOWN handling in reconcile_once).
+    """
+    from datetime import datetime, timezone
+    from app.executor_client import (
+        get_account_positions, get_account_open_orders, call_executor_modify_stops,
+    )
+    from app.webhook_handler import _apply_position_fill, _update_order_status, _get_account_label
+    from app.models import WebhookPayload, OrderResult
+
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT o.id, o.strategy_id, o.symbol, o.side, o.size, o.price,
+                   o.tp_price, o.sl_price, o.exchange_order_id, o.leverage,
+                   o.margin_mode, o.signal,
+                   s.account_id
+            FROM orders o
+            JOIN strategies s ON o.strategy_id = s.id
+            WHERE o.status = 'pending'
+              AND COALESCE(s.is_deleted, false) = false
+            ORDER BY o.received_at ASC
+            """
+        )
+    if not rows:
+        return
+
+    by_account: dict[str, list] = {}
+    for row in rows:
+        by_account.setdefault(row["account_id"], []).append(row)
+
+    for acct_id, order_rows in by_account.items():
+        open_orders = await get_account_open_orders(acct_id)
+        if open_orders is None:
+            logger.warning(
+                f"reconciler: open-orders UNKNOWN for account {acct_id} — leaving "
+                f"{len(order_rows)} pending order(s) untouched this pass"
+            )
+            continue
+        positions = await get_account_positions(acct_id)
+        if positions is None:
+            logger.warning(
+                f"reconciler: positions UNKNOWN for account {acct_id} — leaving "
+                f"{len(order_rows)} pending order(s) untouched this pass"
+            )
+            continue
+
+        resting_ids = {str(o.get("order_id")) for o in open_orders}
+        pos_by_key: dict[tuple, dict] = {}
+        for p in positions:
+            sym  = p.get("symbol") or ""
+            side = (p.get("side") or "").lower()
+            if sym and side:
+                pos_by_key[(sym, side)] = p
+
+        account_label = await _get_account_label(pool, acct_id)
+
+        for row in order_rows:
+            exch_oid = row["exchange_order_id"]
+            if not exch_oid:
+                continue  # never got an exchange id at placement — nothing to check against
+            if str(exch_oid) in resting_ids:
+                continue  # still resting — nothing to do this pass
+
+            symbol     = row["symbol"]
+            pos_side   = "long" if row["side"] == "buy" else "short"
+            order_size = Decimal(str(row["size"]))
+            tol        = max(_SIZE_EPSILON_ABS, order_size * _SIZE_EPSILON_REL)
+
+            async with pool.acquire() as conn:
+                existing = await conn.fetchrow(
+                    """SELECT id, size, entry_price FROM strategy_positions
+                       WHERE strategy_id = $1 AND symbol = $2 AND side = $3 AND status = 'open'""",
+                    row["strategy_id"], symbol, pos_side,
+                )
+            old_size  = Decimal(str(existing["size"]))        if existing else Decimal("0")
+            old_entry = Decimal(str(existing["entry_price"])) if existing else Decimal("0")
+
+            live       = pos_by_key.get((symbol, pos_side))
+            exch_size  = Decimal(str(live.get("size")))        if live else Decimal("0")
+            exch_entry = Decimal(str(live.get("entry_price"))) if live else Decimal("0")
+
+            available = exch_size - old_size
+
+            base_asset, quote_asset = symbol.split("-", 1)
+            synthetic_payload = WebhookPayload(
+                base_asset=base_asset, quote_asset=quote_asset,
+                side=row["side"], order_type="limit",
+                size=order_size, price=row["price"],
+                leverage=row["leverage"], margin_mode=row["margin_mode"],
+                signal=row["signal"], timestamp=datetime.now(timezone.utc),
+                token="reconciler", signal_source="reconciler",
+            )
+            strategy_stub = {"id": row["strategy_id"]}
+
+            if available > tol:
+                fill_size = min(order_size, available)
+                # Back-solve the marginal price of just this fill from the exchange's
+                # blended aggregate entry, so _apply_position_fill's top-up blend
+                # reproduces the exchange-confirmed entry_price exactly (reduces to
+                # exch_entry itself when there's no pre-existing DB leg, i.e. old_size=0).
+                marginal_price = (
+                    (exch_entry * exch_size - old_entry * old_size) / fill_size
+                    if fill_size > 0 else exch_entry
+                )
+
+                result = OrderResult(
+                    success=True, status="filled",
+                    exchange_order_id=str(exch_oid),
+                    actual_fill_price=Decimal(str(marginal_price)),
+                    actual_fill_size=fill_size,
+                )
+                await _apply_position_fill(
+                    pool, strategy_stub, synthetic_payload, symbol, row["id"], result,
+                    effective_leverage=int(row["leverage"] or 1),
+                    effective_margin_mode=row["margin_mode"] or "isolated",
+                )
+                await _update_order_status(
+                    pool, row["id"], "filled", synthetic_payload, result,
+                    acct_id, account_label, row["strategy_id"],
+                )
+                logger.info(
+                    f"reconciler: pending order {row['id']} ({symbol} {pos_side}) FILLED "
+                    f"fill_size={fill_size} fill_price={marginal_price}"
+                )
+
+                if row["tp_price"] is not None or row["sl_price"] is not None:
+                    stop_result = await call_executor_modify_stops(
+                        account_id=acct_id, symbol=symbol, side=pos_side,
+                        tp_price=row["tp_price"], sl_price=row["sl_price"],
+                    )
+                    logger.info(
+                        f"reconciler: post-fill modify-stops for order {row['id']} "
+                        f"({symbol} {pos_side}): success={stop_result.get('success')}"
+                    )
+            else:
+                result = OrderResult(success=False, status="cancelled", exchange_order_id=str(exch_oid))
+                await _update_order_status(
+                    pool, row["id"], "cancelled", synthetic_payload, result,
+                    acct_id, account_label, row["strategy_id"],
+                )
+                logger.info(
+                    f"reconciler: pending order {row['id']} ({symbol} {pos_side}) CANCELLED "
+                    f"(no matching fill found on exchange)"
+                )
 
 
 async def _handle_full_external_close(

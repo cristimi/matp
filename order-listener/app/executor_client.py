@@ -120,6 +120,72 @@ async def get_account_positions(account_id: str) -> Optional[list]:
         return None
 
 
+async def get_account_open_orders(account_id: str, symbol: Optional[str] = None) -> Optional[list]:
+    """
+    Fetch resting, non-trigger limit orders for an account from the executor.
+
+    Returns:
+      - list (possibly empty): a CONFIRMED read. [] means the exchange confirmed no resting
+        orders.
+      - None: UNKNOWN — executor/exchange unreachable or returned an error shape. Callers
+        MUST NOT treat None as 'no orders' (mirrors get_account_positions).
+    Never raises.
+    """
+    url = f"{EXECUTOR_URL}/accounts/{account_id}/orders"
+    params = {"symbol": symbol} if symbol else None
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(url, params=params)
+            response.raise_for_status()
+            data = response.json()
+            return data if isinstance(data, list) else None
+    except Exception as e:
+        logger.warning(
+            f"get_account_open_orders({account_id}) UNKNOWN "
+            f"(treating as unreachable, NOT as empty): {e}"
+        )
+        return None
+
+
+async def call_executor_cancel_order(account_id: str, symbol: str, order_id: str) -> dict:
+    """
+    POST to /accounts/{account_id}/orders/cancel. Returns result dict. Never raises.
+    """
+    url = f"{EXECUTOR_URL}/accounts/{account_id}/orders/cancel"
+    body = {"symbol": symbol, "order_id": str(order_id)}
+    try:
+        async with httpx.AsyncClient(timeout=TIMEOUT_SECONDS) as client:
+            response = await client.post(url, json=body)
+            response.raise_for_status()
+            return response.json()
+    except Exception as e:
+        logger.error(f"Executor cancel-order failed: {e}")
+        return {"success": False, "error": str(e)}
+
+
+async def call_executor_amend_order(
+    account_id: str, symbol: str, order_id: str,
+    new_price: Optional[float] = None, new_size: Optional[float] = None,
+) -> dict:
+    """
+    POST to /accounts/{account_id}/orders/amend. Returns result dict. Never raises.
+    """
+    url = f"{EXECUTOR_URL}/accounts/{account_id}/orders/amend"
+    body: dict = {"symbol": symbol, "order_id": str(order_id)}
+    if new_price is not None:
+        body["new_price"] = float(new_price)
+    if new_size is not None:
+        body["new_size"] = float(new_size)
+    try:
+        async with httpx.AsyncClient(timeout=TIMEOUT_SECONDS) as client:
+            response = await client.post(url, json=body)
+            response.raise_for_status()
+            return response.json()
+    except Exception as e:
+        logger.error(f"Executor amend-order failed: {e}")
+        return {"success": False, "error": str(e)}
+
+
 async def get_position_history(account_id: str, symbol: str, opened_at=None) -> dict:
     """
     Fetch closed-position history for a symbol from the executor.

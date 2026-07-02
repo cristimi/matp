@@ -346,7 +346,8 @@ async def _update_order_status(
                 raw_response = $3,
                 error_msg = $4,
                 actual_fill_price = $6,
-                pnl = $7
+                pnl = $7,
+                account_id = $8
             WHERE id = $5
             """,
             status,
@@ -356,6 +357,7 @@ async def _update_order_status(
             order_id,
             result.actual_fill_price if result else None,
             result.realized_pnl if result else None,
+            account_id or None,
         )
 
     # Publish status update to Redis
@@ -516,6 +518,167 @@ async def adjust_stops_for_strategy(
         f" cancelled={len(result.get('cancelled', []))} placed={len(result.get('placed', []))}"
     )
     return {"success": True, "position_id": str(pos["id"]), **result}
+
+
+@router.get("/strategies/{strategy_id}/orders")
+async def list_orders_for_strategy(strategy_id: str):
+    """
+    List resting (non-trigger) limit orders for a strategy's account, scoped to its symbol.
+    Read-only — no token required, matching other query endpoints (e.g. dashboard's
+    GET /orders, the executor's GET /accounts/{id}/positions).
+    """
+    from app.executor_client import get_account_open_orders
+
+    pool = get_pool()
+    strategy = await _get_strategy(pool, strategy_id)
+    if not strategy:
+        raise HTTPException(status_code=404, detail="Strategy not found")
+
+    account_id = strategy.get("account_id") or ""
+    orders = await get_account_open_orders(account_id, symbol=strategy.get("symbol"))
+    if orders is None:
+        return JSONResponse(
+            status_code=502,
+            content={"success": False, "error": "executor/exchange unreachable"},
+        )
+    return orders
+
+
+@router.post("/strategies/{strategy_id}/orders/cancel")
+async def cancel_order_for_strategy(
+    strategy_id: str,
+    request: Request,
+    x_webhook_token: str = Header(None),
+):
+    """
+    Cancel a resting limit order for a strategy by order_id.
+    Auth: same posture as adjust-stops (X-Webhook-Token header or body 'token' field) —
+    this is a control/mutating route, not a read-only query.
+    Body: {order_id, token?}
+    """
+    from app.executor_client import call_executor_cancel_order
+
+    pool = get_pool()
+    try:
+        raw_bytes = await request.body()
+        body_dict = json.loads(raw_bytes) if raw_bytes else {}
+    except Exception:
+        body_dict = {}
+
+    strategy = await _get_strategy(pool, strategy_id)
+    if not strategy:
+        raise HTTPException(status_code=404, detail="Strategy not found")
+
+    token_to_verify = x_webhook_token or body_dict.get("token", "")
+    if not token_to_verify or not await _verify_token(token_to_verify, strategy["webhook_secret"]):
+        raise HTTPException(status_code=403, detail="Invalid token")
+
+    order_id = body_dict.get("order_id")
+    if not order_id:
+        raise HTTPException(status_code=400, detail="order_id is required")
+
+    account_id = strategy.get("account_id") or ""
+    symbol     = strategy.get("symbol")
+
+    result = await call_executor_cancel_order(account_id, symbol, str(order_id))
+
+    if result.get("success"):
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE orders SET status = 'cancelled'
+                WHERE exchange_order_id = $1 AND strategy_id = $2 AND status = 'pending'
+                """,
+                str(order_id), strategy_id,
+            )
+
+    logger.info(
+        f"cancel-order strategy={strategy_id} order_id={order_id} "
+        f"success={result.get('success')}"
+    )
+    return result
+
+
+@router.post("/strategies/{strategy_id}/orders/amend")
+async def amend_order_for_strategy(
+    strategy_id: str,
+    request: Request,
+    x_webhook_token: str = Header(None),
+):
+    """
+    Amend a resting limit order's price and/or size for a strategy.
+    Auth: same posture as adjust-stops (X-Webhook-Token header or body 'token' field).
+    Body: {order_id, new_price?, new_size?, token?}
+    """
+    from app.executor_client import call_executor_amend_order
+
+    pool = get_pool()
+    try:
+        raw_bytes = await request.body()
+        body_dict = json.loads(raw_bytes) if raw_bytes else {}
+    except Exception:
+        body_dict = {}
+
+    strategy = await _get_strategy(pool, strategy_id)
+    if not strategy:
+        raise HTTPException(status_code=404, detail="Strategy not found")
+
+    token_to_verify = x_webhook_token or body_dict.get("token", "")
+    if not token_to_verify or not await _verify_token(token_to_verify, strategy["webhook_secret"]):
+        raise HTTPException(status_code=403, detail="Invalid token")
+
+    order_id  = body_dict.get("order_id")
+    new_price = body_dict.get("new_price")
+    new_size  = body_dict.get("new_size")
+    if not order_id:
+        raise HTTPException(status_code=400, detail="order_id is required")
+    if new_price is None and new_size is None:
+        raise HTTPException(status_code=400, detail="new_price or new_size is required")
+
+    account_id = strategy.get("account_id") or ""
+    symbol     = strategy.get("symbol")
+
+    result = await call_executor_amend_order(account_id, symbol, str(order_id), new_price, new_size)
+
+    if result.get("success"):
+        # Part 1's Blofin amend is cancel-then-replace: a new order_id is returned and the
+        # old one is recorded as cancelled_order_id. Hyperliquid's native modify also hands
+        # back a new oid (see Part 2 report). Either way, key off the OLD id to find the row.
+        new_order_id       = result.get("order_id") or order_id
+        cancelled_order_id = result.get("cancelled_order_id") or order_id
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE orders
+                SET exchange_order_id = $1,
+                    price = COALESCE($2, price),
+                    size  = COALESCE($3, size)
+                WHERE exchange_order_id = $4 AND strategy_id = $5 AND status = 'pending'
+                """,
+                str(new_order_id),
+                Decimal(str(new_price)) if new_price is not None else None,
+                Decimal(str(new_size)) if new_size is not None else None,
+                str(cancelled_order_id),
+                strategy_id,
+            )
+    elif result.get("original_cancelled"):
+        # Blofin cancel-then-replace: the cancel went through but the replacement was
+        # rejected — the order is truly gone, not "unchanged". Reflect that locally so a
+        # stale 'pending' row doesn't linger for something that no longer exists.
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE orders SET status = 'cancelled'
+                WHERE exchange_order_id = $1 AND strategy_id = $2 AND status = 'pending'
+                """,
+                str(order_id), strategy_id,
+            )
+
+    logger.info(
+        f"amend-order strategy={strategy_id} order_id={order_id} "
+        f"new_price={new_price} new_size={new_size} success={result.get('success')}"
+    )
+    return result
 
 
 @router.post("/webhook/{strategy_id}", response_model=OrderResponse)
@@ -772,6 +935,64 @@ async def _create_strategy_position(pool, payload: WebhookPayload, strategy: dic
             effective_margin_mode,
             opening_order_id,
         )
+
+
+async def _apply_position_fill(
+    pool, strategy: dict, payload: WebhookPayload, pos_symbol: str, opening_order_id: uuid.UUID,
+    result: OrderResult, effective_leverage: int, effective_margin_mode: str = "isolated",
+) -> None:
+    """
+    Top up an existing open leg for (strategy, pos_symbol, side) or create a new
+    strategy_position via _create_strategy_position. Shared by the synchronous
+    market/filled-limit path in _process_order and the reconciler's pending-limit fill
+    detection, so a fill is materialized identically regardless of how it was detected.
+    """
+    pos_side = "long" if payload.side == "buy" else "short"
+    fill_price_val = (
+        result.actual_fill_price or payload.price or payload.indicator_price or Decimal("0")
+    )
+    # Use exchange-confirmed fill size if the caller supplied one (e.g. BloFin lot-rounding
+    # means _to_contracts(payload.size) != payload.size; using the rounded-back base coins
+    # keeps DB and exchange in sync).
+    fill_size = result.actual_fill_size if result.actual_fill_size else payload.size
+
+    async with pool.acquire() as conn:
+        existing = await conn.fetchrow(
+            """SELECT id, size, entry_price FROM strategy_positions
+               WHERE strategy_id = $1 AND symbol = $2 AND side = $3
+                 AND status = 'open'""",
+            strategy['id'], pos_symbol, pos_side,
+        )
+
+        if existing:
+            old_size  = Decimal(str(existing['size']))
+            old_entry = Decimal(str(existing['entry_price']))
+            new_size  = old_size + fill_size
+            new_entry = (
+                (old_entry * old_size + Decimal(str(fill_price_val)) * fill_size)
+                / new_size
+            )
+            await conn.execute(
+                """
+                UPDATE strategy_positions
+                SET size        = $1,
+                    entry_price = $2,
+                    updated_at  = NOW()
+                WHERE id = $3
+                """,
+                new_size, new_entry, existing['id'],
+            )
+            logger.info(
+                f"Topped up position {existing['id']} for {strategy['id']} "
+                f"({pos_symbol} {pos_side}): "
+                f"size {old_size}→{new_size}, entry {old_entry:.4f}→{new_entry:.4f}"
+            )
+        else:
+            await _create_strategy_position(
+                pool, payload, strategy, opening_order_id, result,
+                effective_leverage, effective_margin_mode,
+                fill_size=fill_size,
+            )
 
 
 async def close_strategy_position(
@@ -1166,68 +1387,33 @@ async def _process_order(
         final_status = result.status
 
         await _update_order_status(pool, order_id, final_status, payload, result, account_id, account_label, strategy_id)
+        # Outcome mirrors the order's actual exchange status: a resting limit is "pending"
+        # (not "filled") so the signal log doesn't misreport a phantom fill.
+        if result.status == "filled":
+            _outcome = "filled"
+        elif result.status == "pending":
+            _outcome = "pending"
+        else:
+            _outcome = "route_failed"
         await _finalize_signal_log(
-            pool, signal_log_id, 200,
-            "filled" if result.success else "route_failed",
-            result.error_msg, start_ms,
+            pool, signal_log_id, 200, _outcome, result.error_msg, start_ms,
         )
 
         logger.info(f"Order {order_id} processed for strategy {strategy['id']}: {final_status}")
 
-        if result.success and payload.base_asset and payload.quote_asset and payload.size:
+        # Only a CONFIRMED fill creates/tops-up a position. A resting limit
+        # (status="pending") must not — the reconciler materializes it once the
+        # exchange actually confirms the fill (see _reconcile_pending_orders).
+        if result.status == "filled" and payload.base_asset and payload.quote_asset and payload.size:
 
             # ── Open path: top-up existing or create new position ─────────────
             # (Close signals returned early above via the unified close handler.)
             if payload.signal in ("open_long", "open_short"):
                 pos_side = "long" if payload.signal == "open_long" else "short"
-                fill_price_val = (
-                    result.actual_fill_price
-                    or payload.price
-                    or payload.indicator_price
-                    or Decimal("0")
+                await _apply_position_fill(
+                    pool, strategy, payload, pos_symbol, order_id, result,
+                    effective_leverage, effective_margin_mode,
                 )
-                # Use exchange-confirmed fill size if the adapter returned it.
-                # BloFin lot-rounding means _to_contracts(payload.size) != payload.size;
-                # using the rounded-back base coins keeps DB and exchange in sync.
-                fill_size = result.actual_fill_size if result.actual_fill_size else payload.size
-
-                async with pool.acquire() as conn:
-                    existing = await conn.fetchrow(
-                        """SELECT id, size, entry_price FROM strategy_positions
-                           WHERE strategy_id = $1 AND symbol = $2 AND side = $3
-                             AND status = 'open'""",
-                        strategy['id'], pos_symbol, pos_side,
-                    )
-
-                    if existing:
-                        old_size  = Decimal(str(existing['size']))
-                        old_entry = Decimal(str(existing['entry_price']))
-                        new_size  = old_size + fill_size
-                        new_entry = (
-                            (old_entry * old_size + Decimal(str(fill_price_val)) * fill_size)
-                            / new_size
-                        )
-                        await conn.execute(
-                            """
-                            UPDATE strategy_positions
-                            SET size        = $1,
-                                entry_price = $2,
-                                updated_at  = NOW()
-                            WHERE id = $3
-                            """,
-                            new_size, new_entry, existing['id'],
-                        )
-                        logger.info(
-                            f"Topped up position {existing['id']} for {strategy['id']} "
-                            f"({pos_symbol} {pos_side}): "
-                            f"size {old_size}→{new_size}, entry {old_entry:.4f}→{new_entry:.4f}"
-                        )
-                    else:
-                        await _create_strategy_position(
-                            pool, payload, strategy, order_id, result,
-                            effective_leverage, effective_margin_mode,
-                            fill_size=fill_size,
-                        )
 
                 # ── Flip: if exchange netted an opposite position, close its DB leg ──
                 flip_pnl = exec_result.get("pnl") or exec_result.get("realized_pnl")
