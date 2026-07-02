@@ -6,6 +6,7 @@ import httpx
 
 from app.config import settings
 from app.database import resolve_exchange_id
+from app.scheduling import seconds_until_aligned_wake
 
 logger = logging.getLogger(__name__)
 
@@ -75,13 +76,13 @@ class AdaptiveScheduler:
         await self._trigger_cycle('startup')
 
         while self._running:
-            interval = await self._get_interval()
-            self._last_interval = interval
+            sleep_seconds = await self._get_interval()
+            self._last_interval = sleep_seconds
             logger.info(
-                "Scheduler strategy=%s interval=%ds (%.1fh)",
-                self.strategy_id, interval, interval / 3600,
+                "Scheduler strategy=%s sleeping %.0fs until candle-close+buffer wake (%.1fmin)",
+                self.strategy_id, sleep_seconds, sleep_seconds / 60,
             )
-            interrupted = await self._sleep(interval)
+            interrupted = await self._sleep(sleep_seconds)
             if not self._running:
                 break
             if interrupted:
@@ -93,26 +94,26 @@ class AdaptiveScheduler:
             else:
                 await self._trigger_cycle('scheduled')
 
-    async def _get_interval(self) -> int:
+    async def _get_interval(self) -> float:
+        """Seconds to sleep until buffer_seconds past the next close of whichever
+        candle timeframe applies to the current state (no-position / position-open
+        / at-risk), per seconds_until_aligned_wake()."""
         config = await self._load_config()
         if not config:
             return 4 * 60 * 60
 
         position = await self._get_open_position()
         if not position:
-            return self._parse_interval(config['interval_no_position'])
+            label = config['interval_no_position']
+        else:
+            unrealized_pct = abs(float(position.get('pnl_unrealized_pct') or 0))
+            if unrealized_pct >= float(config['at_risk_threshold_pct']):
+                label = config['interval_at_risk']
+            else:
+                label = config['interval_position_open']
 
-        unrealized_pct = abs(float(position.get('pnl_unrealized_pct') or 0))
-        if unrealized_pct >= float(config['at_risk_threshold_pct']):
-            return self._parse_interval(config['interval_at_risk'])
-
-        return self._parse_interval(config['interval_position_open'])
-
-    def _parse_interval(self, interval_str: str) -> int:
-        """Converts '4h', '15m', '1d', '5m' etc. to seconds."""
-        unit  = interval_str[-1]
-        value = int(interval_str[:-1])
-        return value * {'m': 60, 'h': 3600, 'd': 86400}.get(unit, 3600)
+        buffer_seconds = int(config.get('candle_close_buffer_seconds', 150))
+        return seconds_until_aligned_wake(label, datetime.now(timezone.utc), buffer_seconds)
 
     async def _trigger_cycle(self, trigger_reason: str):
         """Builds initial state and runs the LangGraph graph."""
