@@ -36,17 +36,22 @@ async def node_ingest(state: AgentState) -> AgentState:
             errors.append(f"ohlcv:{exc}")
             logger.warning("OHLCV fetch failed: %s", exc)
 
-        if ohlcv_data and ohlcv_data.get('candles'):
+        # Indicators/geometry must only see closed candles — the last raw
+        # candle can still be filling in even after Phase 1's candle-close
+        # buffer, and a pattern/level computed on a mutable candle would
+        # shift or vanish between cycles as it fills in.
+        closed_candles = ohlcv_data.get('closed_candles') if ohlcv_data else None
+        if closed_candles:
             if sc.get('use_technical'):
                 try:
-                    technical_indicators = compute_indicators(ohlcv_data['candles'], enabled_inds)
+                    technical_indicators = compute_indicators(closed_candles, enabled_inds)
                 except Exception as exc:
                     errors.append(f"indicators:{exc}")
                     logger.warning("Indicator computation failed: %s", exc)
 
             if sc.get('use_geometry'):
                 try:
-                    geometry_data = detect_geometry(ohlcv_data['candles']) or None
+                    geometry_data = detect_geometry(closed_candles) or None
                 except Exception as exc:
                     errors.append(f"geometry:{exc}")
                     logger.warning("Geometry detection failed: %s", exc)

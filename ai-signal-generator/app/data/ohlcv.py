@@ -21,6 +21,20 @@ def _candles_needed(timeframe: str, lookback_days: int) -> int:
     return max(200, (lookback_days * 86400) // tf_sec + 50)
 
 
+def _split_closed_candles(candles: list[dict], timeframe: str, now_epoch: float) -> list[dict]:
+    """Drop any trailing candle(s) whose period hasn't closed yet.
+
+    Exchanges return the still-forming current-period candle as the last entry
+    once it has any trades, even right after our candle-close-aligned wake
+    (Phase 1's buffer only guarantees the *previous* period is final, not that
+    the exchange hasn't already started accumulating the next one). Indicators
+    and geometry must not see that mutable last candle, or a pattern/level can
+    appear and vanish between cycles as it fills in.
+    """
+    tf_sec = _TIMEFRAME_SECONDS.get(timeframe, 3600)
+    return [c for c in candles if (c['timestamp'] / 1000 + tf_sec) <= now_epoch]
+
+
 def _make_exchange(exchange_id: str):
     cls = getattr(ccxt_async, exchange_id, None)
     if cls is None:
@@ -64,8 +78,10 @@ async def fetch_ohlcv(
     Fetch OHLCV candles for the given exchange and symbol.
 
     Returns dict with keys:
-        symbol, timeframe, candles (list of dicts), current_price,
-        price_change_24h_pct, price_change_7d_pct
+        symbol, timeframe, candles (list of dicts, may include a still-forming
+        trailing candle), closed_candles (candles with any not-yet-closed
+        trailing candle dropped — use this for indicators/geometry),
+        current_price, price_change_24h_pct, price_change_7d_pct
     Returns None on any error.
     """
     exchange = None
@@ -100,15 +116,22 @@ async def fetch_ohlcv(
             for c in raw
         ]
 
+        # current_price stays the freshest trade price available, even if that
+        # comes from a still-forming candle — execution/sizing needs live price,
+        # not a stale closed-candle close.
         current_price = candles[-1]['close']
+
+        now_epoch = datetime.now(timezone.utc).timestamp()
+        closed_candles = _split_closed_candles(candles, timeframe, now_epoch)
+
         tf_sec = _TIMEFRAME_SECONDS.get(timeframe, 3600)
         candles_per_day = max(1, 86400 // tf_sec)
 
-        idx_24h = max(0, len(candles) - candles_per_day)
-        idx_7d  = max(0, len(candles) - candles_per_day * 7)
+        idx_24h = max(0, len(closed_candles) - candles_per_day)
+        idx_7d  = max(0, len(closed_candles) - candles_per_day * 7)
 
-        price_24h_ago = candles[idx_24h]['close']
-        price_7d_ago  = candles[idx_7d]['close']
+        price_24h_ago = closed_candles[idx_24h]['close'] if closed_candles else current_price
+        price_7d_ago  = closed_candles[idx_7d]['close']  if closed_candles else current_price
 
         pct_24h = (current_price - price_24h_ago) / price_24h_ago * 100 if price_24h_ago else 0.0
         pct_7d  = (current_price - price_7d_ago)  / price_7d_ago  * 100 if price_7d_ago  else 0.0
@@ -117,6 +140,7 @@ async def fetch_ohlcv(
             'symbol':              symbol,
             'timeframe':           timeframe,
             'candles':             candles,
+            'closed_candles':      closed_candles,
             'current_price':       current_price,
             'price_change_24h_pct': round(pct_24h, 2),
             'price_change_7d_pct':  round(pct_7d,  2),
