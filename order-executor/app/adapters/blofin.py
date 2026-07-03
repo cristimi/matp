@@ -327,10 +327,10 @@ class BlofinAdapter(ExchangeAdapter):
             if order.price:
                 body_data["price"] = str(await self._round_to_tick(order.symbol, order.price))
             if order.tp_price:
-                body_data["tpTriggerPrice"] = str(order.tp_price)
+                body_data["tpTriggerPrice"] = str(await self._round_to_tick(order.symbol, order.tp_price))
                 body_data["tpOrderPrice"] = "-1"  # market execution when triggered
             if order.sl_price:
-                body_data["slTriggerPrice"] = str(order.sl_price)
+                body_data["slTriggerPrice"] = str(await self._round_to_tick(order.symbol, order.sl_price))
                 body_data["slOrderPrice"] = "-1"  # market execution when triggered
 
             body_str = json.dumps(body_data, separators=(",", ":"))
@@ -943,6 +943,7 @@ class BlofinAdapter(ExchangeAdapter):
             for tpsl_type, price in [("tp", tp_price), ("sl", sl_price)]:
                 if price is None:
                     continue
+                price = await self._round_to_tick(symbol, price)
                 body_data: dict = {
                     "instId":     symbol,
                     "marginMode": "isolated",
