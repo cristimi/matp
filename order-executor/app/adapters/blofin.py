@@ -11,7 +11,7 @@ from typing import Dict, List, Optional
 
 import httpx
 
-from app.adapters.base import ExchangeAdapter, ExchangeUnavailableError
+from app.adapters.base import ExchangeAdapter, ExchangeUnavailableError, MMR_CONSERVATISM_BUFFER
 from app.models import OrderRequest, OrderResult, Position
 
 logger = logging.getLogger(__name__)
@@ -22,6 +22,9 @@ class BlofinAdapter(ExchangeAdapter):
     # Class-level cache shared across all instances, keyed by base_url
     _instruments: Dict[str, Dict[str, dict]] = {}   # base_url -> instId -> spec
     _instruments_ts: Dict[str, float]        = {}   # base_url -> fetch timestamp
+    # base_url -> "instId:marginMode" -> tier list (each: minSize/maxSize/maintenanceMarginRate/maxLeverage)
+    _position_tiers: Dict[str, Dict[str, list]] = {}
+    _position_tiers_ts: Dict[str, Dict[str, float]] = {}
 
     def __init__(self, credentials: dict, mode: str):
         super().__init__(credentials, mode)
@@ -187,6 +190,55 @@ class BlofinAdapter(ExchangeAdapter):
         except Exception as e:
             logger.warning(f"BlofinAdapter.get_max_leverage({symbol}) failed: {e}")
             return 0
+
+    async def _get_position_tiers(self, inst_id: str, margin_mode: str) -> list:
+        """Return Blofin's maintenance-margin tier ladder for inst_id/margin_mode,
+        refreshing the class-level cache if stale or missing. Public endpoint —
+        confirmed live at /api/v1/market/position-tiers, no auth required."""
+        key = f"{inst_id}:{margin_mode}"
+        cache    = BlofinAdapter._position_tiers.setdefault(self.base_url, {})
+        ts_cache = BlofinAdapter._position_tiers_ts.setdefault(self.base_url, {})
+        age = time.time() - ts_cache.get(key, 0)
+        if key not in cache or age > _INSTRUMENTS_TTL:
+            path = f"/api/v1/market/position-tiers?instId={inst_id}&marginMode={margin_mode}"
+            try:
+                async with httpx.AsyncClient(base_url=self.base_url, timeout=10) as client:
+                    resp = await client.get(path)
+                data = resp.json().get("data", [])
+                if data:
+                    cache[key] = data
+                    ts_cache[key] = time.time()
+            except Exception as e:
+                logger.warning(f"BlofinAdapter: failed to refresh position tiers for {inst_id}: {e}")
+        return cache.get(key, [])
+
+    async def get_maintenance_margin_rate(
+        self, symbol: str, notional: float, margin_mode: str = "isolated"
+    ) -> Optional[float]:
+        """
+        Return the real maintenance-margin rate for `symbol` at the given position
+        notional (USDT), sourced from Blofin's own tiered position-tiers table (tier
+        boundaries are USDT notional; verified live for BTC-USDT and HYPE-USDT — see
+        investigation report section D). A fixed conservatism buffer is added on top for
+        consistency with the Hyperliquid path and to cover any residual gap versus the
+        exchange's live liquidation price. Returns None on failure/no data; callers MUST
+        fall back to a conservative static value.
+        """
+        try:
+            tiers = await self._get_position_tiers(symbol, margin_mode)
+            if not tiers:
+                return None
+            # Tiers are ordered by ascending minSize; the applicable tier is the last
+            # one whose minSize <= notional.
+            applicable = [t for t in tiers if float(t.get("minSize", 0)) <= notional]
+            tier = applicable[-1] if applicable else tiers[0]
+            mmr = float(tier.get("maintenanceMarginRate") or 0)
+            if mmr <= 0:
+                return None
+            return mmr + MMR_CONSERVATISM_BUFFER
+        except Exception as e:
+            logger.warning(f"BlofinAdapter.get_maintenance_margin_rate({symbol}) failed: {e}")
+            return None
 
     async def get_mark_price(self, symbol: str) -> float | None:
         """Return the current mark price for `symbol`. Returns None on error."""

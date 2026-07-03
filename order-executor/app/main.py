@@ -316,6 +316,24 @@ async def get_mark_price(account_id: str, symbol: str):
         return {"symbol": symbol, "mark_price": None, "error": str(e)}
 
 
+@app.get("/accounts/{account_id}/maintenance-margin/{symbol}")
+async def get_maintenance_margin(
+    account_id: str, symbol: str, notional: float, margin_mode: str = "isolated"
+):
+    """Return the real, tier-aware maintenance-margin rate for `symbol` at the given
+    position notional (quote currency). Used by order-listener's guaranteed-SL formula
+    in place of a flat hardcoded MMR. maintenance_margin_rate is None if the exchange
+    adapter couldn't derive one — callers must fall back to a conservative static value,
+    never treat None as 0."""
+    try:
+        adapter = await registry.get(account_id)
+        mmr = await adapter.get_maintenance_margin_rate(symbol, notional, margin_mode)
+        return {"symbol": symbol, "notional": notional, "maintenance_margin_rate": mmr}
+    except Exception as e:
+        logger.error(f"get_maintenance_margin failed for {account_id}/{symbol}: {e}")
+        return {"symbol": symbol, "notional": notional, "maintenance_margin_rate": None, "error": str(e)}
+
+
 @app.get("/accounts/{account_id}/meta")
 async def get_account_meta(account_id: str):
     """Return safe public metadata for a specific account."""

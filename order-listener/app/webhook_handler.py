@@ -16,9 +16,9 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException, Request, Header
 from fastapi.responses import JSONResponse
 
-from app.config import MMR, MIN_SAFETY_SL_DIST
+from app.config import DEGENERATE_SL_DIST, fallback_mmr
 from app.database import get_pool
-from app.executor_client import get_mark_price
+from app.executor_client import get_mark_price, get_maintenance_margin
 from app.models import WebhookPayload, OrderResponse, OrderResult
 from app.redis_client import publish, cache_get, cache_set, cache_delete
 from app.symbol_validator import resolve_symbol, SymbolMismatchError
@@ -57,13 +57,33 @@ def compute_guaranteed_sl(
     effective_leverage: int,
     side: str,
     strategy_sl: Optional[float],
+    mmr: float,
 ) -> tuple[float, str]:
     """
     Compute the tighter of (strategy SL, liquidation-safe SL).
     Returns (sl_final, sl_source) where sl_source is 'strategy' or 'liquidation_safe'.
-    side must be 'long' or 'short'.
+    side must be 'long' or 'short'. mmr is the maintenance-margin rate to use for the
+    liquidation-safe distance — the call site sources this live from order-executor,
+    falling back to app.config.fallback_mmr() on failure.
+
+    sl_distance is the natural (1/L - mmr) headroom, used as-is whenever positive: any
+    flat "floor" that widens a small natural distance can push the SL past the real
+    liquidation price at high leverage (see docs/process/reports/
+    safety-sl-vs-liq-investigation.md, Hypothesis 1) — a floor can only ever be safe if
+    it never exceeds natural, which makes it a no-op for positive natural. Only the
+    degenerate natural<=0 case (mmr consumed the whole 1/L headroom — shouldn't happen
+    given exchange max-leverage bounds) falls back to a tiny fixed distance.
     """
-    sl_distance = max((1.0 / effective_leverage) - MMR, MIN_SAFETY_SL_DIST)
+    natural = (1.0 / effective_leverage) - mmr
+    if natural <= 0:
+        logger.error(
+            f"compute_guaranteed_sl: non-positive natural distance "
+            f"(1/{effective_leverage} - mmr {mmr:.4%} = {natural:.4%}); "
+            f"using degenerate fallback distance {DEGENERATE_SL_DIST:.4%}"
+        )
+        sl_distance = DEGENERATE_SL_DIST
+    else:
+        sl_distance = natural
     sl_liq = (
         entry_ref * (1 - sl_distance) if side == "long"
         else entry_ref * (1 + sl_distance)
@@ -834,10 +854,25 @@ async def receive_webhook(
                 f"— proceeding with payload sl_price={sl_price}"
             )
         else:
-            _open_side   = "long" if payload.signal == "open_long" else "short"
-            _strategy_sl = float(sl_price) if sl_price is not None else None
+            _open_side    = "long" if payload.signal == "open_long" else "short"
+            _strategy_sl  = float(sl_price) if sl_price is not None else None
+            _notional     = float(payload.size) * _entry_ref
+            _acct_for_mmr = strategy.get("account_id") or ""
+            _mmr = await get_maintenance_margin(
+                _acct_for_mmr, resolved.execution_symbol, _notional, effective_margin_mode
+            )
+            if _mmr is not None:
+                _mmr_source = "live"
+            else:
+                _mmr        = fallback_mmr(effective_leverage)
+                _mmr_source = "fallback"
+                logger.warning(
+                    f"strategy={strategy_id}: live maintenance-margin lookup failed for "
+                    f"{resolved.execution_symbol} — using conservative fallback "
+                    f"mmr={_mmr:.4%} (leverage={effective_leverage})"
+                )
             _sl_final, _sl_source = compute_guaranteed_sl(
-                _entry_ref, effective_leverage, _open_side, _strategy_sl
+                _entry_ref, effective_leverage, _open_side, _strategy_sl, _mmr
             )
             _sl_dist_pct     = abs(_sl_final - _entry_ref) / _entry_ref * 100
             sl_price         = Decimal(str(_sl_final))
@@ -846,11 +881,13 @@ async def receive_webhook(
             _meta["sl_source"]       = _sl_source
             _meta["sl_distance_pct"] = round(_sl_dist_pct, 4)
             _meta["entry_ref"]       = _entry_ref
+            _meta["mmr"]             = round(_mmr, 6)
+            _meta["mmr_source"]      = _mmr_source
             payload.signal_metadata  = _meta
             logger.info(
                 f"Guaranteed SL: strategy={strategy_id} side={_open_side} "
                 f"entry={_entry_ref} sl={_sl_final} source={_sl_source} "
-                f"distance={_sl_dist_pct:.3f}%"
+                f"distance={_sl_dist_pct:.3f}% mmr={_mmr:.4%} ({_mmr_source})"
             )
 
     order_id = uuid.uuid4()

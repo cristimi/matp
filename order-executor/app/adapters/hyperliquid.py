@@ -20,7 +20,7 @@ import httpx
 from eth_account import Account
 from eth_account.messages import encode_typed_data
 
-from app.adapters.base import ExchangeAdapter, ExchangeUnavailableError
+from app.adapters.base import ExchangeAdapter, ExchangeUnavailableError, MMR_CONSERVATISM_BUFFER
 from app.models import OrderRequest, OrderResult
 
 logger = logging.getLogger(__name__)
@@ -70,6 +70,8 @@ class HyperliquidAdapter(ExchangeAdapter):
         self._asset_cache: Optional[dict] = None
         self._sz_decimals_cache: Optional[dict] = None  # coin → sz_decimals int
         self._max_lev_cache: Optional[dict] = None      # coin → exchange max leverage (int)
+        self._margin_table_id_cache: Optional[dict] = None  # coin → marginTableId (int)
+        self._margin_tables_cache: dict = {}                # marginTableId → marginTiers list
         logger.info(
             f"HyperliquidAdapter initialised "
             f"(wallet={self.wallet_address[:8]}..., "
@@ -185,6 +187,56 @@ class HyperliquidAdapter(ExchangeAdapter):
             logger.warning(f"HyperliquidAdapter.get_max_leverage({symbol}) failed: {e}")
             return 0
 
+    async def get_maintenance_margin_rate(
+        self, symbol: str, notional: float, margin_mode: str = "isolated"
+    ) -> Optional[float]:
+        """
+        Derive the maintenance-margin rate for `symbol` at the given position notional
+        (USDC). Hyperliquid's marginTable gives, per notional tier, the max leverage
+        allowed in that tier; the standard formula for a tier's MMR is
+        1 / (2 * tier_maxLeverage). A fixed conservatism buffer is added on top to cover
+        the fee/funding gap Hyperliquid folds into its live liquidationPx but that this
+        static formula can't model (confirmed via BTC 40x: theoretical 1.25% vs.
+        implied-real 1.2961% from a live position — see investigation report section D).
+        Margin mode is not tier-relevant on Hyperliquid (isolated/cross use the same
+        marginTable) — accepted only for interface parity with the Blofin adapter.
+        Returns None on failure; callers MUST fall back to a conservative static value.
+        """
+        try:
+            await self._get_asset_index(symbol)  # ensures caches populated
+            coin = symbol.replace("-USDT", "").replace("-USD", "").upper()
+            table_id = (self._margin_table_id_cache or {}).get(coin)
+            if not table_id:
+                return None
+
+            tiers = self._margin_tables_cache.get(table_id)
+            if tiers is None:
+                async with httpx.AsyncClient(timeout=10) as client:
+                    resp = await client.post(
+                        f"{self.base_url}/info",
+                        json={"type": "marginTable", "id": table_id},
+                    )
+                    resp.raise_for_status()
+                    data = resp.json()
+                tiers = data.get("marginTiers", [])
+                self._margin_tables_cache[table_id] = tiers
+
+            if not tiers:
+                return None
+
+            # Tiers are ordered by ascending lowerBound; the applicable tier is the last
+            # one whose lowerBound <= notional.
+            applicable = [t for t in tiers if float(t.get("lowerBound", 0)) <= notional]
+            tier = applicable[-1] if applicable else tiers[0]
+            tier_max_lev = float(tier.get("maxLeverage") or 0)
+            if tier_max_lev <= 0:
+                return None
+
+            return (1.0 / (2.0 * tier_max_lev)) + MMR_CONSERVATISM_BUFFER
+        except Exception as e:
+            logger.warning(f"HyperliquidAdapter.get_maintenance_margin_rate({symbol}) failed: {e}")
+            return None
+
     async def get_mark_price(self, symbol: str) -> float | None:
         """Return the current mark price for `symbol` via metaAndAssetCtxs. Returns None on error."""
         try:
@@ -260,6 +312,10 @@ class HyperliquidAdapter(ExchangeAdapter):
                 asset["name"]: int(asset.get("maxLeverage", 0) or 0)
                 for asset in universe
             }
+            self._margin_table_id_cache = {
+                asset["name"]: int(asset.get("marginTableId", 0) or 0)
+                for asset in universe
+            }
             logger.info(
                 f"Loaded {len(self._asset_cache)} assets from Hyperliquid"
             )
@@ -269,6 +325,7 @@ class HyperliquidAdapter(ExchangeAdapter):
             self._asset_cache = None
             self._sz_decimals_cache = None
             self._max_lev_cache = None
+            self._margin_table_id_cache = None
             raise ValueError(
                 f"Asset '{coin}' not found in Hyperliquid universe. "
                 f"Check symbol format (expected e.g. 'BTC', not 'BTC-USDT')."

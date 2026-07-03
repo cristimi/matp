@@ -3,6 +3,7 @@ Abstract Base Class for all exchange adapters.
 """
 
 from abc import ABC, abstractmethod
+from typing import Optional
 from app.models import OrderRequest, OrderResult
 
 
@@ -10,6 +11,14 @@ class ExchangeUnavailableError(Exception):
     """Raised when an exchange/executor read could not be completed (network or API error).
     Callers MUST treat this as UNKNOWN — never as 'no positions'."""
     pass
+
+
+# Added to every derived maintenance-margin rate (theoretical-formula and exchange-tier
+# alike) to cover fees/funding folded into an exchange's live liquidation price but not
+# into a static tier table. Sized from the observed Hyperliquid BTC 40x gap (theoretical
+# 1.25% vs. implied-real 1.2961% -> ~0.046%), rounded up with headroom. See
+# docs/process/reports/safety-sl-vs-liq-investigation.md section D.
+MMR_CONSERVATISM_BUFFER = 0.0015
 
 
 class ExchangeAdapter(ABC):
@@ -102,6 +111,16 @@ class ExchangeAdapter(ABC):
         """Return the exchange's maximum allowed leverage for `symbol`.
         Returns 0 if unknown. Subclasses should override. Must never raise."""
         return 0
+
+    async def get_maintenance_margin_rate(
+        self, symbol: str, notional: float, margin_mode: str = "isolated"
+    ) -> Optional[float]:
+        """Return the real, tier-aware maintenance-margin rate (e.g. 0.0125 for 1.25%)
+        for a position of the given notional (quote-currency) size on `symbol`, already
+        including MMR_CONSERVATISM_BUFFER. Returns None if unknown/unavailable — callers
+        MUST fall back to a conservative static value, never treat None as 0.
+        Subclasses should override. Must never raise."""
+        return None
 
     async def get_mark_price(self, symbol: str) -> float | None:
         """Return the current mark price for `symbol`, or None if unavailable.

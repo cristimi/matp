@@ -95,6 +95,24 @@ async def get_mark_price(account_id: str, symbol: str) -> Optional[float]:
     return float(mp) if mp is not None else None
 
 
+async def get_maintenance_margin(
+    account_id: str, symbol: str, notional: float, margin_mode: str = "isolated"
+) -> Optional[float]:
+    """
+    Fetch the live, tier-aware maintenance-margin rate for `symbol` at the given
+    position notional (quote currency) from the executor.
+    Returns None if unavailable (network error, no data, or exchange couldn't derive
+    one). Never raises. Callers MUST fall back to a conservative static value — see
+    app.config.fallback_mmr — not treat None as 0.
+    """
+    data = await call_executor_get(
+        f"/accounts/{account_id}/maintenance-margin/{symbol}"
+        f"?notional={notional}&margin_mode={margin_mode}"
+    )
+    mmr = data.get("maintenance_margin_rate")
+    return float(mmr) if mmr is not None else None
+
+
 async def get_account_positions(account_id: str) -> Optional[list]:
     """
     Fetch live open positions for an account from the executor.
