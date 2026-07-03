@@ -113,6 +113,35 @@ async def get_maintenance_margin(
     return float(mmr) if mmr is not None else None
 
 
+async def get_trigger_orders(account_id: str, symbol: str) -> Optional[list]:
+    """
+    Fetch resting TP/SL trigger orders for a symbol from the executor. This is the
+    authoritative source for a position's CURRENTLY-active SL — see the executor
+    route's docstring for why the DB can't be trusted for this.
+
+    Returns:
+      - list (possibly empty): a transport-level CONFIRMED read. Note the executor's
+        adapters swallow their own exchange-call errors and return [] internally (a
+        pre-existing contract shared with get_open_orders/modify-stops), so an empty
+        list here can mean either "genuinely no resting stops" or a masked adapter-
+        level failure — callers must treat both the same way: nothing to compare
+        against, so do nothing (never invent or widen a stop from this ambiguity).
+      - None: UNKNOWN at the transport level — executor unreachable/non-200. Callers
+        MUST NOT treat None as 'no trigger orders'.
+    Never raises.
+    """
+    url = f"{EXECUTOR_URL}/accounts/{account_id}/trigger-orders/{symbol}"
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(url)
+            response.raise_for_status()
+            data = response.json()
+            return data if isinstance(data, list) else None
+    except Exception as e:
+        logger.warning(f"get_trigger_orders({account_id}, {symbol}) UNKNOWN: {e}")
+        return None
+
+
 async def get_account_positions(account_id: str) -> Optional[list]:
     """
     Fetch live open positions for an account from the executor.

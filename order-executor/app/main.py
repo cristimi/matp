@@ -434,6 +434,26 @@ async def modify_stops(account_id: str, request: ModifyStopsRequest):
         return {"success": False, "error_msg": str(e)}
 
 
+@app.get("/accounts/{account_id}/trigger-orders/{symbol}")
+async def get_trigger_orders(account_id: str, symbol: str):
+    """Return open TP/SL trigger orders for a symbol.
+
+    This is the only authoritative source for the CURRENTLY-active SL on a position:
+    strategy_positions has no sl_price column, and the /adjust-stops management route
+    can change a position's live stop without writing anything back to the DB — so any
+    DB-recorded intent (e.g. orders.sl_price from the opening fill) can silently go
+    stale. Used by order-listener's after-fill liquidation-safety guard. Must never
+    raise — returns [] on error (caller must not treat [] as a confirmed 'no stops',
+    only as 'nothing to check against this pass')."""
+    try:
+        adapter = await registry.get(account_id)
+        orders = await adapter.list_trigger_orders(symbol)
+        return orders
+    except Exception as e:
+        logger.error(f"get_trigger_orders failed for {account_id}/{symbol}: {e}")
+        return []
+
+
 @app.get("/health")
 async def health():
     return {"status": "ok", "service": "order-executor", "version": "1.0.0"}

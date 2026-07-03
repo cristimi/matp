@@ -18,6 +18,22 @@ RECONCILE_MISS_THRESHOLD: int = int(os.environ.get("RECONCILE_MISS_THRESHOLD", "
 _SIZE_EPSILON_ABS = Decimal("0.000001")          # absolute floor
 _SIZE_EPSILON_REL = Decimal("0.005")             # 0.5% of db_size — absorbs lot-rounding drift
 
+# Liquidation-safety guard (Phase 3, safety-sl-fix-report.md): when an active SL is
+# found on the wrong side of live liquidation, tighten it to land this fraction of the
+# entry->liquidation distance back from liq, toward entry. 10% is comparable in
+# magnitude to the Phase 1/2 open-time conservatism buffer (both land the tightened
+# BTC-40x-short case within ~1% of each other — see the phase 3 report) while being
+# proportional to the actual live distance rather than a fixed price offset, so it
+# scales sensibly across symbols/leverage.
+_TIGHTEN_MARGIN_FRAC = Decimal("0.10")
+# Absolute floor for the pull-back, as a fraction of entry price — guards the edge case
+# where entry->liq distance is itself tiny (extreme leverage), where 10% of it could be
+# smaller than exchange tick/rounding noise and risk landing back on the unsafe side.
+_TIGHTEN_MIN_MARGIN_FRAC = Decimal("0.0005")
+# Hard cap: never pull back more than this fraction of the distance, so a pathological
+# tiny-distance case can't push the new SL past entry itself.
+_TIGHTEN_MAX_MARGIN_FRAC = Decimal("0.90")
+
 
 async def reconcile_once(pool) -> None:
     """
@@ -41,7 +57,7 @@ async def reconcile_once(pool) -> None:
             """
             SELECT sp.id, sp.strategy_id, sp.symbol, sp.side,
                    sp.size, sp.opened_at, sp.reconcile_miss_count,
-                   sp.reconcile_divergent,
+                   sp.reconcile_divergent, sp.opening_order_id,
                    s.account_id
             FROM strategy_positions sp
             JOIN strategies s ON sp.strategy_id = s.id
@@ -81,6 +97,7 @@ async def reconcile_once(pool) -> None:
             )
             continue
         pos_map: dict[tuple, Decimal] = {}
+        raw_by_key: dict[tuple, dict] = {}
         for p in positions:
             try:
                 sym  = p.get("symbol") or p.get("instId") or ""
@@ -88,10 +105,16 @@ async def reconcile_once(pool) -> None:
                 size = Decimal(str(p.get("size") or "0"))
                 if sym and side and size > 0:
                     pos_map[(sym, side)] = size
+                    raw_by_key[(sym, side)] = p
             except Exception as e:
                 logger.warning(f"reconciler: bad position entry from exchange: {p}: {e}")
         exchange_map[acct_id] = pos_map
         logger.debug(f"reconciler: account {acct_id} has {len(pos_map)} live positions")
+
+        # Belt-and-suspenders liquidation-safety guard: backfill liquidation_price and
+        # detect/tighten any SL on the wrong side of the exchange's own live liq price.
+        # Uses the positions/rows already fetched above — no extra position reads.
+        await _guard_liquidation_safety(pool, acct_id, by_account[acct_id], raw_by_key)
 
     # Process each open DB row
     for row in rows:
@@ -216,6 +239,246 @@ async def reconcile_once(pool) -> None:
     await sync_position_pnl(pool)
     await _recover_manual_close_pnl(pool)
     logger.debug("reconciler: pass complete")
+
+
+async def _guard_liquidation_safety(
+    pool, acct_id: str, db_rows: list, raw_by_key: dict,
+) -> None:
+    """
+    After-fill belt-and-suspenders (Phase 3 of docs/process/reports/
+    safety-sl-fix-report.md): cross-check each open position's CURRENTLY-active SL
+    against the exchange's own reported liquidation_price. The Phase 1/2 open-time
+    formula estimates a safe SL before the position exists (from a derived/fallback
+    MMR plus a conservatism buffer); this guard checks the real thing once it does.
+
+    Authoritative "current SL" source: the exchange's own resting SL trigger order
+    (get_trigger_orders), NOT any DB column. strategy_positions has no sl_price column,
+    and the /strategies/{id}/adjust-stops management route can change a position's live
+    stop without writing anything back to the DB — so orders.sl_price (the value at the
+    ORIGINAL fill) can silently go stale. If no resting SL trigger is found this pass,
+    no comparison is made — this guard only ever tightens an EXISTING stop, never
+    invents one.
+
+    db_rows: this account's open strategy_positions rows (from the caller's already-
+    fetched query). raw_by_key: (symbol, side) -> live position dict for this account
+    (from the caller's already-fetched get_account_positions() call — no extra read).
+    """
+    import asyncio
+    import json
+    from datetime import datetime, timezone
+    from app.executor_client import get_trigger_orders, call_executor_modify_stops
+    from app.webhook_handler import _infer_price_decimals
+
+    _TIGHTEN_ATTEMPTS = 3
+    _TIGHTEN_RETRY_DELAY_S = 1.5
+
+    async def _is_guard_managed(opening_order_id) -> bool:
+        """True if a prior pass of THIS guard successfully placed the resting SL —
+        i.e. we are responsible for this position's stop existing at all, so a stop
+        that later disappears is our failure to fix, not an intentional gap to leave
+        alone."""
+        if opening_order_id is None:
+            return False
+        async with pool.acquire() as conn:
+            meta_row = await conn.fetchrow(
+                "SELECT signal_metadata->>'liq_safety_tightened' AS flag FROM orders WHERE id = $1",
+                opening_order_id,
+            )
+        return bool(meta_row and meta_row["flag"] == "true")
+
+    async def _place_and_verify(symbol, side, new_sl, current_tp, liq_price) -> Optional[Decimal]:
+        """
+        Call modify-stops and verify the new SL actually landed by reading it back —
+        do NOT trust call_executor_modify_stops's top-level 'success' alone. Confirmed
+        live: Hyperliquid's place_trigger_orders can return success=True with a
+        per-leg 'error' inside `placed` (e.g. testnet "Only post-only orders allowed
+        immediately after network upgrade") when the whole signed action was accepted
+        but an individual trigger leg was rejected — modify-stops already CANCELLED
+        the old stop by that point, so a blind trust here can leave a position with NO
+        SL at all. Retries a few times (this specific rejection was transient in
+        practice). Returns the landed SL price (Decimal) on confirmed success, else None.
+        """
+        for attempt in range(1, _TIGHTEN_ATTEMPTS + 1):
+            await call_executor_modify_stops(
+                account_id=acct_id, symbol=symbol, side=side,
+                tp_price=current_tp, sl_price=new_sl,
+            )
+            verify = await get_trigger_orders(acct_id, symbol)
+            if verify is not None:
+                sl_now = [
+                    t for t in verify
+                    if t.get("tpsl") == "sl" and t.get("triggerPx") is not None
+                ]
+                if sl_now:
+                    try:
+                        landed = Decimal(str(sl_now[0]["triggerPx"]))
+                    except Exception:
+                        landed = None
+                    if landed is not None:
+                        landed_safe = not (
+                            (side == "short" and landed >= liq_price) or
+                            (side == "long"  and landed <= liq_price)
+                        )
+                        if landed_safe:
+                            return landed
+            logger.warning(
+                f"reconciler: liquidation-safety modify-stops attempt {attempt}/"
+                f"{_TIGHTEN_ATTEMPTS} for {acct_id}/{symbol} did not land a verified "
+                f"safe SL — {'retrying' if attempt < _TIGHTEN_ATTEMPTS else 'giving up this pass'}"
+            )
+            if attempt < _TIGHTEN_ATTEMPTS:
+                await asyncio.sleep(_TIGHTEN_RETRY_DELAY_S)
+        return None
+
+    for row in db_rows:
+        symbol = row["symbol"]
+        side   = row["side"]
+        pos    = raw_by_key.get((symbol, side))
+        if not pos:
+            continue  # not live on exchange this pass — size-reconciliation path handles it
+
+        liq_raw = pos.get("liquidation_price")
+        if liq_raw is None:
+            continue  # exchange didn't report one (e.g. some cross-margin states) — can't guard
+        try:
+            liq_price = Decimal(str(liq_raw))
+        except Exception:
+            continue
+        if liq_price <= 0:
+            continue
+
+        # Backfill strategy_positions.liquidation_price — was always NULL before this guard.
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE strategy_positions
+                SET liquidation_price = $1, updated_at = NOW()
+                WHERE id = $2 AND status = 'open'
+                  AND (liquidation_price IS NULL OR liquidation_price != $1)
+                """,
+                liq_price, row["id"],
+            )
+
+        trigger_orders = await get_trigger_orders(acct_id, symbol)
+        if trigger_orders is None:
+            logger.warning(
+                f"reconciler: trigger-orders UNKNOWN for {acct_id}/{symbol} "
+                f"(executor/exchange unreachable) — skipping liquidation-safety check this pass"
+            )
+            continue
+
+        sl_triggers = [
+            t for t in trigger_orders
+            if t.get("tpsl") == "sl" and t.get("triggerPx") is not None
+        ]
+        tp_triggers = [
+            t for t in trigger_orders
+            if t.get("tpsl") == "tp" and t.get("triggerPx") is not None
+        ]
+        current_tp = None
+        if tp_triggers:
+            try:
+                current_tp = float(Decimal(str(tp_triggers[0]["triggerPx"])))
+            except Exception:
+                current_tp = None
+
+        opening_order_id = row["opening_order_id"]
+
+        if not sl_triggers:
+            # Never invent a stop for a position we never touched — but if a PRIOR
+            # pass of this guard placed one and it's since vanished (e.g. the
+            # modify-stops leg-rejection race above), that's our gap to close, not an
+            # intentional no-SL choice to respect.
+            if not await _is_guard_managed(opening_order_id):
+                continue
+            logger.error(
+                f"reconciler: position {row['id']} ({symbol} {side}) is guard-managed "
+                f"but has NO resting SL trigger — exchange-side stop is MISSING, "
+                f"re-establishing protection"
+            )
+            active_sl_for_log = None
+        else:
+            try:
+                active_sl = Decimal(str(sl_triggers[0]["triggerPx"]))
+            except Exception:
+                continue
+            is_unsafe = (
+                (side == "short" and active_sl >= liq_price) or
+                (side == "long"  and active_sl <= liq_price)
+            )
+            if not is_unsafe:
+                continue
+            logger.warning(
+                f"reconciler: UNSAFE SL detected for position {row['id']} ({symbol} {side}) "
+                f"active_sl={active_sl} liquidation_price={liq_price} — "
+                f"SL is on the wrong side of live liquidation"
+            )
+            active_sl_for_log = active_sl
+
+        entry_raw = pos.get("entry_price")
+        try:
+            entry_price = Decimal(str(entry_raw)) if entry_raw is not None else None
+        except Exception:
+            entry_price = None
+        if not entry_price or entry_price <= 0:
+            logger.error(
+                f"reconciler: cannot tighten SL for {row['id']} ({symbol} {side}) — "
+                f"no usable entry_price from exchange this pass"
+            )
+            continue
+
+        distance = abs(liq_price - entry_price)
+        if distance <= 0:
+            logger.error(
+                f"reconciler: cannot tighten SL for {row['id']} ({symbol} {side}) — "
+                f"liquidation_price == entry_price ({liq_price}), degenerate distance"
+            )
+            continue
+
+        margin = max(distance * _TIGHTEN_MARGIN_FRAC, entry_price * _TIGHTEN_MIN_MARGIN_FRAC)
+        margin = min(margin, distance * _TIGHTEN_MAX_MARGIN_FRAC)
+        new_sl = (liq_price - margin) if side == "short" else (liq_price + margin)
+        new_sl = round(float(new_sl), _infer_price_decimals(float(entry_price)))
+
+        landed_sl = await _place_and_verify(symbol, side, new_sl, current_tp, liq_price)
+        if landed_sl is None:
+            logger.error(
+                f"reconciler: liquidation-safety tighten FAILED (unverified) for {row['id']} "
+                f"({symbol} {side}) after {_TIGHTEN_ATTEMPTS} attempts — position may be "
+                f"UNPROTECTED; will retry next pass"
+            )
+            continue
+
+        logger.warning(
+            f"reconciler: liquidation-safety TIGHTENED SL for {row['id']} ({symbol} {side}): "
+            f"{active_sl_for_log} -> {landed_sl} (liq={liq_price}, margin={margin}, "
+            f"tp_preserved={current_tp})"
+        )
+
+        if opening_order_id is None:
+            logger.warning(
+                f"reconciler: position {row['id']} has no opening_order_id — "
+                f"tighten applied but not recorded in signal_metadata"
+            )
+            continue
+
+        audit_patch = {
+            "liq_safety_tightened":         True,
+            "liq_safety_tightened_at":      datetime.now(timezone.utc).isoformat(),
+            "liq_safety_prior_sl":          float(active_sl_for_log) if active_sl_for_log is not None else None,
+            "liq_safety_new_sl":            float(landed_sl),
+            "liq_safety_liquidation_price": float(liq_price),
+        }
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE orders
+                SET signal_metadata = COALESCE(signal_metadata, '{}'::jsonb) || $1::jsonb,
+                    updated_at = NOW()
+                WHERE id = $2
+                """,
+                json.dumps(audit_patch), opening_order_id,
+            )
 
 
 async def _reconcile_pending_orders(pool) -> None:
