@@ -375,6 +375,16 @@ class ModifyStopsRequest(PydanticBaseModel):
 _MODIFY_STOPS_VERIFY_ATTEMPTS   = 3
 _MODIFY_STOPS_VERIFY_DELAY_S    = 1.5
 _MODIFY_STOPS_PRICE_TOLERANCE   = 0.001  # 0.1% — accommodates exchange tick rounding
+_MODIFY_STOPS_READ_RETRIES      = 2      # extra list_trigger_orders() retries when a
+_MODIFY_STOPS_READ_RETRY_DELAY_S = 1.0   # read-back is UNKNOWN, before treating a leg
+                                          # as still-unconfirmed for this attempt (never
+                                          # re-place solely because a read was unknown)
+
+# Per-leg placement state in the modify-stops retry loop.
+_LEG_PENDING          = "pending"           # needs to be (re)placed
+_LEG_AWAITING_CONFIRM = "awaiting_confirm"  # adapter reported it placed (no error);
+                                             # not yet confirmed by a successful read-back
+_LEG_CONFIRMED        = "confirmed"         # a successful read-back found it resting
 
 
 def _find_landed_leg(verify: list, tpsl: str, requested_price: float) -> _Optional[dict]:
@@ -463,54 +473,92 @@ async def modify_stops(account_id: str, request: ModifyStopsRequest):
                 logger.warning(f"Cancel failed oid={oid}: {cancel_result.get('error')}")
 
         # 4. Place new trigger orders, verifying by read-back and retrying only the
-        # legs not yet confirmed landed (so a retry never re-requests an already-
-        # landed leg, which would otherwise stack a duplicate trigger order).
+        # legs genuinely confirmed ABSENT (so a retry never re-requests a leg the
+        # adapter already placed, which would otherwise stack a duplicate trigger
+        # order). A leg moves: pending -> (place call) -> awaiting_confirm -> either
+        # confirmed (a successful read-back finds it) or back to pending (a
+        # SUCCESSFUL read-back shows it genuinely missing). An UNKNOWN read-back
+        # (None) never causes that demotion — it only pauses confirmation, so a
+        # transient read failure can never trigger a duplicate re-place.
         trigger_side = "sell" if request.side == "long" else "buy"
-        remaining_tp = request.tp_price
-        remaining_sl = request.sl_price
+        sl_state = _LEG_PENDING if request.sl_price is not None else None
+        tp_state = _LEG_PENDING if request.tp_price is not None else None
         all_placed: list = []
         sl_oid = tp_oid = None
         attempts = 0
 
-        while (remaining_tp is not None or remaining_sl is not None) and attempts < _MODIFY_STOPS_VERIFY_ATTEMPTS:
+        while (sl_state == _LEG_PENDING or tp_state == _LEG_PENDING) and attempts < _MODIFY_STOPS_VERIFY_ATTEMPTS:
             attempts += 1
+            place_tp = request.tp_price if tp_state == _LEG_PENDING else None
+            place_sl = request.sl_price if sl_state == _LEG_PENDING else None
             place_result = await adapter.place_trigger_orders(
                 symbol       = request.symbol,
                 trigger_side = trigger_side,
                 size         = position_size,
-                tp_price     = remaining_tp,
-                sl_price     = remaining_sl,
+                tp_price     = place_tp,
+                sl_price     = place_sl,
             )
-            all_placed.extend(place_result.get("placed", []))
+            placed_this_attempt = place_result.get("placed", [])
+            all_placed.extend(placed_this_attempt)
 
-            verify = await adapter.list_trigger_orders(request.symbol)
+            for leg in placed_this_attempt:
+                has_error = "error" in leg
+                if leg.get("tpsl") == "sl" and place_sl is not None:
+                    sl_state = _LEG_PENDING if has_error else _LEG_AWAITING_CONFIRM
+                elif leg.get("tpsl") == "tp" and place_tp is not None:
+                    tp_state = _LEG_PENDING if has_error else _LEG_AWAITING_CONFIRM
+
+            # Confirm by read-back — retry the READ itself (not the place) on an
+            # UNKNOWN result, so a transient read failure never gets mistaken for a
+            # genuinely-missing leg.
+            verify = None
+            for read_attempt in range(_MODIFY_STOPS_READ_RETRIES + 1):
+                verify = await adapter.list_trigger_orders(request.symbol)
+                if verify is not None:
+                    break
+                if read_attempt < _MODIFY_STOPS_READ_RETRIES:
+                    logger.warning(
+                        f"modify-stops {account_id}/{request.symbol}: verify read-back "
+                        f"UNKNOWN on attempt {attempts}/{_MODIFY_STOPS_VERIFY_ATTEMPTS} "
+                        f"(read retry {read_attempt + 1}/{_MODIFY_STOPS_READ_RETRIES})"
+                    )
+                    await asyncio.sleep(_MODIFY_STOPS_READ_RETRY_DELAY_S)
+
             if verify is None:
                 logger.warning(
-                    f"modify-stops {account_id}/{request.symbol}: verify read-back UNKNOWN "
-                    f"on attempt {attempts}/{_MODIFY_STOPS_VERIFY_ATTEMPTS} — retrying"
+                    f"modify-stops {account_id}/{request.symbol}: verify read-back still "
+                    f"UNKNOWN after {_MODIFY_STOPS_READ_RETRIES} extra read(s) on attempt "
+                    f"{attempts}/{_MODIFY_STOPS_VERIFY_ATTEMPTS} — leaving any "
+                    f"awaiting-confirm leg as-is (not re-placing on an unknown read)"
                 )
             else:
-                if remaining_sl is not None:
-                    sl_leg = _find_landed_leg(verify, "sl", remaining_sl)
+                if sl_state in (_LEG_AWAITING_CONFIRM, _LEG_PENDING) and request.sl_price is not None:
+                    sl_leg = _find_landed_leg(verify, "sl", request.sl_price)
                     if sl_leg:
                         sl_oid = sl_leg.get("oid")
-                        remaining_sl = None
-                if remaining_tp is not None:
-                    tp_leg = _find_landed_leg(verify, "tp", remaining_tp)
+                        sl_state = _LEG_CONFIRMED
+                    elif sl_state == _LEG_AWAITING_CONFIRM:
+                        # Adapter reported it placed, but a CONFIRMED read-back shows
+                        # it genuinely absent — safe to retry placing next attempt.
+                        sl_state = _LEG_PENDING
+                if tp_state in (_LEG_AWAITING_CONFIRM, _LEG_PENDING) and request.tp_price is not None:
+                    tp_leg = _find_landed_leg(verify, "tp", request.tp_price)
                     if tp_leg:
                         tp_oid = tp_leg.get("oid")
-                        remaining_tp = None
+                        tp_state = _LEG_CONFIRMED
+                    elif tp_state == _LEG_AWAITING_CONFIRM:
+                        tp_state = _LEG_PENDING
 
-            if (remaining_tp is not None or remaining_sl is not None) and attempts < _MODIFY_STOPS_VERIFY_ATTEMPTS:
+            if (sl_state == _LEG_PENDING or tp_state == _LEG_PENDING) and attempts < _MODIFY_STOPS_VERIFY_ATTEMPTS:
                 logger.warning(
                     f"modify-stops {account_id}/{request.symbol}: attempt {attempts}/"
-                    f"{_MODIFY_STOPS_VERIFY_ATTEMPTS} did not land every requested leg "
-                    f"(sl_pending={remaining_sl is not None}, tp_pending={remaining_tp is not None}) — retrying"
+                    f"{_MODIFY_STOPS_VERIFY_ATTEMPTS} left a leg genuinely unplaced "
+                    f"(sl={sl_state}, tp={tp_state}) — retrying"
                 )
                 await asyncio.sleep(_MODIFY_STOPS_VERIFY_DELAY_S)
 
-        sl_ok = None if request.sl_price is None else (remaining_sl is None)
-        tp_ok = None if request.tp_price is None else (remaining_tp is None)
+        sl_ok = None if request.sl_price is None else (sl_state == _LEG_CONFIRMED)
+        tp_ok = None if request.tp_price is None else (tp_state == _LEG_CONFIRMED)
         success = (sl_ok is not False) and (tp_ok is not False)
 
         error_msg = None

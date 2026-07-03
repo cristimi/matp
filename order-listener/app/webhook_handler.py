@@ -1057,16 +1057,18 @@ async def close_strategy_position(
     """
     Canonical close/reduce routine. Atomic: exchange call before DB write.
     - close_size=None or >= open size  → full close (status='closed')
-    - close_size < open size           → partial reduce (status stays 'open')
+    - close_size < open size           → partial reduce (status stays 'open') — any
+      resting TP/SL trigger is re-applied at the new, smaller size afterward (a
+      resting trigger is not auto-resized by the exchange when the position shrinks)
     - skip_exchange=True               → exchange already executed; pass fill_price/realized_pnl
     Returns a dict: {success, status, actual_fill_price, realized_pnl, ...}
     """
-    from app.executor_client import call_executor_close_position
+    from app.executor_client import call_executor_close_position, get_trigger_orders
 
     async with pool.acquire() as conn:
         pos = await conn.fetchrow(
             """
-            SELECT id, size
+            SELECT id, size, opening_order_id
             FROM strategy_positions
             WHERE strategy_id = $1 AND symbol = $2 AND side = $3 AND status = 'open'
             """,
@@ -1089,9 +1091,29 @@ async def close_strategy_position(
         if close_size is not None else current_size
     )
     is_full = eff_close_size >= current_size
+    acct_id = strategy.get('account_id') or ""
+
+    # A partial reduce leaves any resting TP/SL sized to the OLD position — capture
+    # its price(s) now, before anything changes, so they can be re-applied at the new
+    # size once the reduce lands (modify-stops resolves the live size itself; the
+    # tolerance is closed by resizing, not by inventing new stops).
+    pre_tp = pre_sl = None
+    pre_read_failed = False
+    if not is_full:
+        existing_triggers = await get_trigger_orders(acct_id, symbol)
+        if existing_triggers is None:
+            pre_read_failed = True
+        else:
+            for t in existing_triggers:
+                px = t.get("triggerPx")
+                if px is None:
+                    continue
+                if t.get("tpsl") == "tp":
+                    pre_tp = float(px)
+                elif t.get("tpsl") == "sl":
+                    pre_sl = float(px)
 
     if not skip_exchange:
-        acct_id = strategy.get('account_id') or ""
         close_result = await call_executor_close_position(
             account_id=acct_id,
             symbol=symbol,
@@ -1157,6 +1179,13 @@ async def close_strategy_position(
             "error_msg": "Position already closed by concurrent request",
         }
 
+    if not is_full:
+        await _resize_stops_after_partial_close(
+            pool, acct_id, symbol, side,
+            pre_tp, pre_sl, pre_read_failed,
+            opening_order_id=pos['opening_order_id'],
+        )
+
     logger.info(
         f"{'Closed' if is_full else 'Partially closed'} position {pos['id']} "
         f"for strategy {strategy['id']} ({symbol} {side}), "
@@ -1177,6 +1206,112 @@ async def close_strategy_position(
     if not skip_exchange:
         ret["exchange_order_id"] = close_result.get('exchange_order_id')
     return ret
+
+
+async def _resize_stops_after_partial_close(
+    pool,
+    acct_id: str,
+    symbol: str,
+    side: str,
+    pre_tp: Optional[float],
+    pre_sl: Optional[float],
+    pre_read_failed: bool,
+    opening_order_id: Optional[uuid.UUID],
+) -> None:
+    """
+    After a partial close/reduce lands, re-apply the position's TP/SL at the prices
+    captured before the reduce (by close_strategy_position, via get_trigger_orders) —
+    modify-stops resolves the now-smaller live position_size itself, so re-placing the
+    SAME prices resizes the resting trigger(s) to match. If that pre-read was unknown,
+    fall back to the stops recorded on the position's opening order. If neither source
+    yields a price, nothing is re-applied (a confirmed-empty pre-read means there was
+    nothing to resize; an unknown-with-no-fallback is logged, not swallowed).
+    """
+    from app.executor_client import call_executor_modify_stops
+
+    tp_price, sl_price = pre_tp, pre_sl
+
+    if pre_read_failed:
+        tp_price = sl_price = None
+        if opening_order_id is not None:
+            async with pool.acquire() as conn:
+                rec = await conn.fetchrow(
+                    "SELECT tp_price, sl_price FROM orders WHERE id = $1",
+                    opening_order_id,
+                )
+            if rec:
+                tp_price = float(rec['tp_price']) if rec['tp_price'] is not None else None
+                sl_price = float(rec['sl_price']) if rec['sl_price'] is not None else None
+        logger.warning(
+            f"close_strategy_position: pre-close trigger read UNKNOWN for {symbol} {side}"
+            f" — falling back to opening-order stops (tp={tp_price}, sl={sl_price})"
+        )
+
+    if tp_price is None and sl_price is None:
+        if pre_read_failed:
+            logger.error(
+                f"close_strategy_position: could not determine TP/SL to resize after "
+                f"partial close of {symbol} {side} (pre-read unknown, no recorded "
+                f"fallback) — any resting trigger may now be OVERSIZED relative to "
+                f"the reduced position"
+            )
+            if opening_order_id is not None:
+                await _flag_sl_unconfirmed(
+                    pool, opening_order_id,
+                    "partial-close stop resize could not be attempted — TP/SL price "
+                    "unknown (pre-read failed, no recorded fallback)",
+                )
+        return  # confirmed-empty pre-read: no resting stops, nothing to resize
+
+    result = await call_executor_modify_stops(
+        account_id=acct_id, symbol=symbol, side=side,
+        tp_price=tp_price, sl_price=sl_price,
+    )
+    sl_ok = result.get("sl_ok")
+    tp_ok = result.get("tp_ok")
+    if sl_price is not None and sl_ok is not True:
+        logger.error(
+            f"close_strategy_position: post-partial-close stop resize FAILED to confirm "
+            f"SL for {symbol} {side} — position may be UNPROTECTED at the new size: "
+            f"{result.get('error_msg')}"
+        )
+        if opening_order_id is not None:
+            await _flag_sl_unconfirmed(pool, opening_order_id, result.get("error_msg"))
+    elif tp_price is not None and tp_ok is not True:
+        logger.warning(
+            f"close_strategy_position: post-partial-close TP resize did not land for "
+            f"{symbol} {side} (sl_ok={sl_ok}): {result.get('error_msg')}"
+        )
+    else:
+        logger.info(
+            f"close_strategy_position: resized resting stops for {symbol} {side} to the "
+            f"new position size (sl_ok={sl_ok}, tp_ok={tp_ok})"
+        )
+
+
+async def _flag_sl_unconfirmed(pool, opening_order_id: uuid.UUID, detail: Optional[str]) -> None:
+    """Write the same self-heal flag the post-fill reconciler path uses (see
+    reconciler._is_guard_managed) so the liquidation-safety guard picks up a
+    genuinely-missing resting SL on its next pass instead of it staying silent."""
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            UPDATE orders
+            SET signal_metadata = COALESCE(signal_metadata, '{}'::jsonb) || $1::jsonb,
+                updated_at = NOW()
+            WHERE id = $2
+            """,
+            json.dumps({
+                "sl_placement_unconfirmed":       True,
+                "sl_placement_unconfirmed_at":     datetime.now(timezone.utc).isoformat(),
+                "sl_placement_unconfirmed_detail": detail,
+            }),
+            opening_order_id,
+        )
+    logger.error(
+        f"close_strategy_position: flagged opening_order={opening_order_id} for "
+        f"liquidation-safety guard self-heal next pass"
+    )
 
 
 async def sync_position_pnl(pool) -> None:
