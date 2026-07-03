@@ -111,25 +111,6 @@ Changes required: DB migration, one line in `node_ingest.py`, `ai.ts` GET/PUT, U
   leftover. Do a matching cleanup migration for `tester.*`, and update the strategy-tester
   copy/migrate code that still references those columns. Deferred intentionally during the live
   sweep to keep blast radius small.
-- **Guaranteed safety-SL can land beyond the real liquidation price**: `compute_guaranteed_sl()`
-  (`order-listener/app/webhook_handler.py:55`) uses a hardcoded `MMR = 0.01`
-  (`order-listener/app/config.py:27`) that assumes 1% maintenance margin is conservative. It
-  isn't once `effective_leverage` gets close to a symbol's exchange max leverage — real tiered
-  MMR rises there (e.g. Hyperliquid BTC at 40x/40x-max has real MMR ≈1.25–1.3%, not 1%),
-  and the computed SL can sit past the exchange's real liquidation price, meaning the position
-  liquidates before the "safety" SL would ever trigger. Confirmed live on one open position
-  (BTC-USDT short, 40x, Hyperliquid, `tv-btc-test-hl-94e1`) — see
-  `docs/process/reports/safety-sl-vs-liq-investigation.md` for full evidence and per-position
-  math. Side-agnostic (affects longs too, not just shorts — the one instance found is a short by
-  coincidence of current data). Separately, `MIN_SAFETY_SL_DIST = 0.005` is a flat floor that
-  doesn't scale with leverage; it's currently unreachable (configured strategy `max_leverage`
-  tops out at 50x, below the ~66.7x crossover where it would override the formula) but would
-  reproduce the same failure mode if any strategy is ever configured above that. Fix direction:
-  source real per-symbol/tier MMR from the exchange (Hyperliquid exposes `meta`/`marginTable`
-  per symbol; confirm Blofin's equivalent) instead of a global constant, and/or scale the safety
-  buffer by proximity to the symbol's exchange max leverage; consider also cross-checking the
-  computed SL against the exchange's live `liquidationPx` at order time as a belt-and-suspenders
-  guard.
 ### Dynamic strategy allocation (realized-PnL-compounding base)
 
 **Status:** COMPLETE — implemented 2026-06-20 across 5 phases.
