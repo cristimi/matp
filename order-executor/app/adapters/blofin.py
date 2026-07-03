@@ -859,10 +859,13 @@ class BlofinAdapter(ExchangeAdapter):
             logger.error(f"BlofinAdapter.amend_order failed: {e}")
             return {"success": False, "error": str(e)}
 
-    async def list_trigger_orders(self, symbol: str) -> list[dict]:
+    async def list_trigger_orders(self, symbol: str) -> Optional[list[dict]]:
         """
         Return pending TP/SL orders for a symbol.
         Each entry: {oid, tpsl, triggerPx, sz}
+
+        Returns None (not []) on a genuine exchange-call failure — callers must not
+        treat None as "confirmed no trigger orders."
         """
         try:
             path = f"/api/v1/trade/orders-tpsl-pending?instId={symbol}"
@@ -883,7 +886,7 @@ class BlofinAdapter(ExchangeAdapter):
             return result
         except Exception as e:
             logger.error(f"BlofinAdapter.list_trigger_orders failed: {e}")
-            return []
+            return None
 
     async def cancel_order(self, symbol: str, order_id: str) -> dict:
         """Cancel a pending TP/SL or regular order by its order_id."""
@@ -966,7 +969,12 @@ class BlofinAdapter(ExchangeAdapter):
                     placed.append({"tpsl": tpsl_type, "error": data.get("msg")})
                     logger.warning(f"Blofin trigger ({tpsl_type}) failed: {data.get('msg')}")
 
-            return {"success": True, "placed": placed}
+            success = not any("error" in p for p in placed)
+            if not success:
+                logger.warning(
+                    f"Blofin place_trigger_orders({symbol}) PARTIAL/FAILED: {placed}"
+                )
+            return {"success": success, "placed": placed}
         except Exception as e:
             logger.error(f"BlofinAdapter.place_trigger_orders failed: {e}")
             return {"success": False, "error": str(e)}

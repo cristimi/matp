@@ -263,71 +263,59 @@ async def _guard_liquidation_safety(
     fetched query). raw_by_key: (symbol, side) -> live position dict for this account
     (from the caller's already-fetched get_account_positions() call — no extra read).
     """
-    import asyncio
     import json
     from datetime import datetime, timezone
     from app.executor_client import get_trigger_orders, call_executor_modify_stops
     from app.webhook_handler import _infer_price_decimals
 
-    _TIGHTEN_ATTEMPTS = 3
-    _TIGHTEN_RETRY_DELAY_S = 1.5
-
     async def _is_guard_managed(opening_order_id) -> bool:
-        """True if a prior pass of THIS guard successfully placed the resting SL —
-        i.e. we are responsible for this position's stop existing at all, so a stop
-        that later disappears is our failure to fix, not an intentional gap to leave
-        alone."""
+        """True if this position's missing SL is OUR gap to close, not an intentional
+        no-SL choice to respect — either because a prior pass of THIS guard
+        successfully placed the resting SL that's since vanished, or because a caller
+        (currently: the post-fill path in _reconcile_pending_orders) explicitly
+        flagged the SL as unconfirmed after modify-stops failed to land it."""
         if opening_order_id is None:
             return False
         async with pool.acquire() as conn:
             meta_row = await conn.fetchrow(
-                "SELECT signal_metadata->>'liq_safety_tightened' AS flag FROM orders WHERE id = $1",
+                """
+                SELECT signal_metadata->>'liq_safety_tightened' AS guard_flag,
+                       signal_metadata->>'sl_placement_unconfirmed' AS unconfirmed_flag
+                FROM orders WHERE id = $1
+                """,
                 opening_order_id,
             )
-        return bool(meta_row and meta_row["flag"] == "true")
+        return bool(meta_row and (
+            meta_row["guard_flag"] == "true" or meta_row["unconfirmed_flag"] == "true"
+        ))
 
-    async def _place_and_verify(symbol, side, new_sl, current_tp, liq_price) -> Optional[Decimal]:
+    async def _place_and_verify(symbol, side, new_sl, current_tp) -> Optional[Decimal]:
         """
-        Call modify-stops and verify the new SL actually landed by reading it back —
-        do NOT trust call_executor_modify_stops's top-level 'success' alone. Confirmed
-        live: Hyperliquid's place_trigger_orders can return success=True with a
-        per-leg 'error' inside `placed` (e.g. testnet "Only post-only orders allowed
-        immediately after network upgrade") when the whole signed action was accepted
-        but an individual trigger leg was rejected — modify-stops already CANCELLED
-        the old stop by that point, so a blind trust here can leave a position with NO
-        SL at all. Retries a few times (this specific rejection was transient in
-        practice). Returns the landed SL price (Decimal) on confirmed success, else None.
+        Call modify-stops for the (already safety-margined) new_sl and trust its own
+        honest, centrally-verified contract — order-executor's modify-stops route now
+        does its own read-back+retry (3 attempts / 1.5s) and only reports sl_ok=True
+        once a resting SL is CONFIRMED at the requested price (see
+        docs/process/reports/modify-stops-contract-fix-report.md). This used to run
+        its own duplicate verify+retry loop here because the route's top-level
+        'success' used to lie (Hyperliquid could return success=True with a per-leg
+        'error' inside `placed`); now that the route is honest, re-verifying here
+        would just double the retries for no benefit. Kept as a named wrapper (not
+        inlined at the call site) because it still owns the one thing modify-stops
+        can't know: new_sl was computed with a liquidation-safety margin by the
+        caller, so a confirmed landing at that price is safe by construction — no
+        second read-back needed to prove it. Returns the landed SL price (Decimal) on
+        confirmed success, else None.
         """
-        for attempt in range(1, _TIGHTEN_ATTEMPTS + 1):
-            await call_executor_modify_stops(
-                account_id=acct_id, symbol=symbol, side=side,
-                tp_price=current_tp, sl_price=new_sl,
-            )
-            verify = await get_trigger_orders(acct_id, symbol)
-            if verify is not None:
-                sl_now = [
-                    t for t in verify
-                    if t.get("tpsl") == "sl" and t.get("triggerPx") is not None
-                ]
-                if sl_now:
-                    try:
-                        landed = Decimal(str(sl_now[0]["triggerPx"]))
-                    except Exception:
-                        landed = None
-                    if landed is not None:
-                        landed_safe = not (
-                            (side == "short" and landed >= liq_price) or
-                            (side == "long"  and landed <= liq_price)
-                        )
-                        if landed_safe:
-                            return landed
-            logger.warning(
-                f"reconciler: liquidation-safety modify-stops attempt {attempt}/"
-                f"{_TIGHTEN_ATTEMPTS} for {acct_id}/{symbol} did not land a verified "
-                f"safe SL — {'retrying' if attempt < _TIGHTEN_ATTEMPTS else 'giving up this pass'}"
-            )
-            if attempt < _TIGHTEN_ATTEMPTS:
-                await asyncio.sleep(_TIGHTEN_RETRY_DELAY_S)
+        result = await call_executor_modify_stops(
+            account_id=acct_id, symbol=symbol, side=side,
+            tp_price=current_tp, sl_price=new_sl,
+        )
+        if result.get("sl_ok") is True:
+            return Decimal(str(new_sl))
+        logger.warning(
+            f"reconciler: liquidation-safety modify-stops for {acct_id}/{symbol} did not "
+            f"land a confirmed safe SL — {result.get('error_msg')} (will retry next pass)"
+        )
         return None
 
     for row in db_rows:
@@ -440,12 +428,11 @@ async def _guard_liquidation_safety(
         new_sl = (liq_price - margin) if side == "short" else (liq_price + margin)
         new_sl = round(float(new_sl), _infer_price_decimals(float(entry_price)))
 
-        landed_sl = await _place_and_verify(symbol, side, new_sl, current_tp, liq_price)
+        landed_sl = await _place_and_verify(symbol, side, new_sl, current_tp)
         if landed_sl is None:
             logger.error(
                 f"reconciler: liquidation-safety tighten FAILED (unverified) for {row['id']} "
-                f"({symbol} {side}) after {_TIGHTEN_ATTEMPTS} attempts — position may be "
-                f"UNPROTECTED; will retry next pass"
+                f"({symbol} {side}) — position may be UNPROTECTED; will retry next pass"
             )
             continue
 
@@ -468,6 +455,8 @@ async def _guard_liquidation_safety(
             "liq_safety_prior_sl":          float(active_sl_for_log) if active_sl_for_log is not None else None,
             "liq_safety_new_sl":            float(landed_sl),
             "liq_safety_liquidation_price": float(liq_price),
+            # Resolved (if it was set): this pass just confirmed a landed, safe SL.
+            "sl_placement_unconfirmed":     False,
         }
         async with pool.acquire() as conn:
             await conn.execute(
@@ -516,6 +505,7 @@ async def _reconcile_pending_orders(pool) -> None:
     fetch, that account's pending orders are left untouched this pass (mirrors the open-
     position UNKNOWN handling in reconcile_once).
     """
+    import json
     from datetime import datetime, timezone
     from app.executor_client import (
         get_account_positions, get_account_open_orders, call_executor_modify_stops,
@@ -644,10 +634,60 @@ async def _reconcile_pending_orders(pool) -> None:
                         account_id=acct_id, symbol=symbol, side=pos_side,
                         tp_price=row["tp_price"], sl_price=row["sl_price"],
                     )
-                    logger.info(
-                        f"reconciler: post-fill modify-stops for order {row['id']} "
-                        f"({symbol} {pos_side}): success={stop_result.get('success')}"
-                    )
+                    sl_requested = row["sl_price"] is not None
+                    sl_ok = stop_result.get("sl_ok")
+                    if sl_requested and sl_ok is not True:
+                        # modify-stops cancels-then-places: a rejected SL leg here
+                        # leaves a position that JUST filled with NO stop at all.
+                        # Fire-and-forget logging isn't enough — flag it so the
+                        # liquidation-safety guard's self-heal path (see
+                        # _is_guard_managed) re-establishes protection on its next
+                        # pass instead of this gap silently persisting.
+                        logger.error(
+                            f"reconciler: post-fill modify-stops FAILED to confirm SL for "
+                            f"order {row['id']} ({symbol} {pos_side}) — position may be "
+                            f"UNPROTECTED after fill: {stop_result.get('error_msg')}"
+                        )
+                        async with pool.acquire() as conn:
+                            pos_row = await conn.fetchrow(
+                                """
+                                SELECT opening_order_id FROM strategy_positions
+                                WHERE strategy_id = $1 AND symbol = $2 AND side = $3
+                                  AND status = 'open'
+                                """,
+                                row["strategy_id"], symbol, pos_side,
+                            )
+                        if pos_row and pos_row["opening_order_id"] is not None:
+                            async with pool.acquire() as conn:
+                                await conn.execute(
+                                    """
+                                    UPDATE orders
+                                    SET signal_metadata = COALESCE(signal_metadata, '{}'::jsonb) || $1::jsonb,
+                                        updated_at = NOW()
+                                    WHERE id = $2
+                                    """,
+                                    json.dumps({
+                                        "sl_placement_unconfirmed":      True,
+                                        "sl_placement_unconfirmed_at":   datetime.now(timezone.utc).isoformat(),
+                                        "sl_placement_unconfirmed_detail": stop_result.get("error_msg"),
+                                    }),
+                                    pos_row["opening_order_id"],
+                                )
+                            logger.error(
+                                f"reconciler: flagged opening_order={pos_row['opening_order_id']} "
+                                f"for liquidation-safety guard self-heal next pass"
+                            )
+                        else:
+                            logger.error(
+                                f"reconciler: could not flag position for self-heal — no open "
+                                f"strategy_position/opening_order_id found for order {row['id']} "
+                                f"({symbol} {pos_side}) immediately after fill"
+                            )
+                    else:
+                        logger.info(
+                            f"reconciler: post-fill modify-stops for order {row['id']} "
+                            f"({symbol} {pos_side}): success={stop_result.get('success')}"
+                        )
             else:
                 result = OrderResult(success=False, status="cancelled", exchange_order_id=str(exch_oid))
                 await _update_order_status(

@@ -4,6 +4,7 @@ Receives OrderRequest from order-listener.
 Routes to correct exchange adapter via AccountRegistry.
 Returns OrderResult.
 """
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
@@ -371,12 +372,42 @@ class ModifyStopsRequest(PydanticBaseModel):
     sl_price: _Optional[float] = None
 
 
+_MODIFY_STOPS_VERIFY_ATTEMPTS   = 3
+_MODIFY_STOPS_VERIFY_DELAY_S    = 1.5
+_MODIFY_STOPS_PRICE_TOLERANCE   = 0.001  # 0.1% — accommodates exchange tick rounding
+
+
+def _find_landed_leg(verify: list, tpsl: str, requested_price: float) -> _Optional[dict]:
+    """Find a resting trigger in a list_trigger_orders() read-back matching tpsl type
+    and (within a small rounding tolerance) the requested price."""
+    for t in verify:
+        if t.get("tpsl") != tpsl or t.get("triggerPx") is None:
+            continue
+        try:
+            actual = float(t["triggerPx"])
+        except (TypeError, ValueError):
+            continue
+        if requested_price == 0:
+            continue
+        if abs(actual - requested_price) / abs(requested_price) <= _MODIFY_STOPS_PRICE_TOLERANCE:
+            return t
+    return None
+
+
 @app.post("/accounts/{account_id}/positions/modify-stops")
 async def modify_stops(account_id: str, request: ModifyStopsRequest):
     """
     Cancel existing TP/SL trigger orders for a position and place new ones.
     Does not touch the position itself — pure stop management.
-    Returns: {success, cancelled, placed}
+
+    `success` is True only if every requested leg (SL, and TP if requested) is
+    CONFIRMED resting on the exchange after a verify-read-back+retry loop — never
+    trust the adapter's own place call alone (an exchange can accept the signed
+    action while rejecting an individual leg). Because cancel-then-place is not
+    atomic, a caller must inspect `sl_ok`/`tp_ok` (not just `success`) to know
+    whether the position may currently be unprotected.
+
+    Returns: {success, cancelled, placed, sl_ok, tp_ok, sl_oid, tp_oid, attempts, error_msg}
     """
     try:
         adapter = await registry.get(account_id)
@@ -395,8 +426,27 @@ async def modify_stops(account_id: str, request: ModifyStopsRequest):
             }
         position_size = float(target.size)
 
-        # 2. List existing trigger orders
+        # 2. List existing trigger orders — a confirmed read is required before we
+        # cancel anything. An unknown (None) read means we cannot safely proceed:
+        # we'd be cancelling stops we can't actually see, on doubt. Nothing has been
+        # touched yet, so failing here leaves the position exactly as it was.
         existing = await adapter.list_trigger_orders(request.symbol)
+        if existing is None:
+            logger.error(
+                f"modify-stops {account_id}/{request.symbol}: could not confirm existing "
+                f"trigger orders (read failure) — refusing to proceed"
+            )
+            return {
+                "success":   False,
+                "cancelled": [],
+                "placed":    [],
+                "sl_ok":     None,
+                "tp_ok":     None,
+                "error_msg": (
+                    "Could not confirm existing trigger orders before cancel — refusing "
+                    "to proceed blindly. Position stops are UNCHANGED (nothing was cancelled)."
+                ),
+            }
         logger.info(
             f"modify-stops {account_id}/{request.symbol}: found {len(existing)} trigger orders"
         )
@@ -412,21 +462,78 @@ async def modify_stops(account_id: str, request: ModifyStopsRequest):
             else:
                 logger.warning(f"Cancel failed oid={oid}: {cancel_result.get('error')}")
 
-        # 4. Place new trigger orders
+        # 4. Place new trigger orders, verifying by read-back and retrying only the
+        # legs not yet confirmed landed (so a retry never re-requests an already-
+        # landed leg, which would otherwise stack a duplicate trigger order).
         trigger_side = "sell" if request.side == "long" else "buy"
-        place_result = await adapter.place_trigger_orders(
-            symbol       = request.symbol,
-            trigger_side = trigger_side,
-            size         = position_size,
-            tp_price     = request.tp_price,
-            sl_price     = request.sl_price,
-        )
+        remaining_tp = request.tp_price
+        remaining_sl = request.sl_price
+        all_placed: list = []
+        sl_oid = tp_oid = None
+        attempts = 0
+
+        while (remaining_tp is not None or remaining_sl is not None) and attempts < _MODIFY_STOPS_VERIFY_ATTEMPTS:
+            attempts += 1
+            place_result = await adapter.place_trigger_orders(
+                symbol       = request.symbol,
+                trigger_side = trigger_side,
+                size         = position_size,
+                tp_price     = remaining_tp,
+                sl_price     = remaining_sl,
+            )
+            all_placed.extend(place_result.get("placed", []))
+
+            verify = await adapter.list_trigger_orders(request.symbol)
+            if verify is None:
+                logger.warning(
+                    f"modify-stops {account_id}/{request.symbol}: verify read-back UNKNOWN "
+                    f"on attempt {attempts}/{_MODIFY_STOPS_VERIFY_ATTEMPTS} — retrying"
+                )
+            else:
+                if remaining_sl is not None:
+                    sl_leg = _find_landed_leg(verify, "sl", remaining_sl)
+                    if sl_leg:
+                        sl_oid = sl_leg.get("oid")
+                        remaining_sl = None
+                if remaining_tp is not None:
+                    tp_leg = _find_landed_leg(verify, "tp", remaining_tp)
+                    if tp_leg:
+                        tp_oid = tp_leg.get("oid")
+                        remaining_tp = None
+
+            if (remaining_tp is not None or remaining_sl is not None) and attempts < _MODIFY_STOPS_VERIFY_ATTEMPTS:
+                logger.warning(
+                    f"modify-stops {account_id}/{request.symbol}: attempt {attempts}/"
+                    f"{_MODIFY_STOPS_VERIFY_ATTEMPTS} did not land every requested leg "
+                    f"(sl_pending={remaining_sl is not None}, tp_pending={remaining_tp is not None}) — retrying"
+                )
+                await asyncio.sleep(_MODIFY_STOPS_VERIFY_DELAY_S)
+
+        sl_ok = None if request.sl_price is None else (remaining_sl is None)
+        tp_ok = None if request.tp_price is None else (remaining_tp is None)
+        success = (sl_ok is not False) and (tp_ok is not False)
+
+        error_msg = None
+        if sl_ok is False:
+            error_msg = (
+                f"SL leg did NOT land after {attempts} attempt(s) — "
+                f"position may be UNPROTECTED. tp_ok={tp_ok}"
+            )
+            logger.error(f"modify-stops {account_id}/{request.symbol}: {error_msg}")
+        elif tp_ok is False:
+            error_msg = f"TP leg did not land after {attempts} attempt(s) (SL ok={sl_ok})."
+            logger.warning(f"modify-stops {account_id}/{request.symbol}: {error_msg}")
 
         return {
-            "success":   place_result.get("success", False),
+            "success":   success,
             "cancelled": cancelled,
-            "placed":    place_result.get("placed", []),
-            "error_msg": place_result.get("error"),
+            "placed":    all_placed,
+            "sl_ok":     sl_ok,
+            "tp_ok":     tp_ok,
+            "sl_oid":    sl_oid,
+            "tp_oid":    tp_oid,
+            "attempts":  attempts,
+            "error_msg": error_msg,
         }
 
     except Exception as e:
@@ -442,16 +549,18 @@ async def get_trigger_orders(account_id: str, symbol: str):
     strategy_positions has no sl_price column, and the /adjust-stops management route
     can change a position's live stop without writing anything back to the DB — so any
     DB-recorded intent (e.g. orders.sl_price from the opening fill) can silently go
-    stale. Used by order-listener's after-fill liquidation-safety guard. Must never
-    raise — returns [] on error (caller must not treat [] as a confirmed 'no stops',
-    only as 'nothing to check against this pass')."""
+    stale. Used by order-listener's after-fill liquidation-safety guard.
+
+    Returns the adapter's result verbatim: a list (possibly empty) is a CONFIRMED
+    read; `null` means the read itself failed (exchange/network error) — callers
+    must not treat `null` as 'no stops', only as 'unknown, nothing to check this pass'."""
     try:
         adapter = await registry.get(account_id)
         orders = await adapter.list_trigger_orders(symbol)
         return orders
     except Exception as e:
         logger.error(f"get_trigger_orders failed for {account_id}/{symbol}: {e}")
-        return []
+        return None
 
 
 @app.get("/health")

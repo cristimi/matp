@@ -527,9 +527,19 @@ async def adjust_stops_for_strategy(
     )
 
     if not result.get("success"):
+        logger.error(
+            f"adjust-stops FAILED strategy={strategy_id} pos={pos['id']} "
+            f"({pos['symbol']} {pos['side']}) tp={tp_price} sl={sl_price}: "
+            f"{result.get('error_msg')} (sl_ok={result.get('sl_ok')}, tp_ok={result.get('tp_ok')})"
+        )
         return JSONResponse(
             status_code=502,
-            content={"success": False, "error": result.get("error_msg", "modify-stops failed")},
+            content={
+                "success":   False,
+                "error":     result.get("error_msg", "modify-stops failed"),
+                "sl_ok":     result.get("sl_ok"),
+                "tp_ok":     result.get("tp_ok"),
+            },
         )
 
     logger.info(

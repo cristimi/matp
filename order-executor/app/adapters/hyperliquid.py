@@ -933,11 +933,14 @@ class HyperliquidAdapter(ExchangeAdapter):
             logger.error(f"HyperliquidAdapter.amend_order({symbol}, {order_id}) failed: {e}")
             return {"success": False, "error": str(e)}
 
-    async def list_trigger_orders(self, symbol: str) -> list[dict]:
+    async def list_trigger_orders(self, symbol: str) -> Optional[list[dict]]:
         """
         Return all open TP/SL trigger orders for a symbol.
         Each entry: {oid, tpsl, triggerPx, sz, side}
         Uses frontendOpenOrders which includes trigger orders (not in openOrders).
+
+        Returns None (not []) on a genuine exchange-call failure — callers must not
+        treat None as "confirmed no trigger orders."
         """
         try:
             coin = symbol.replace("-USDT", "").replace("-USD", "").upper()
@@ -972,7 +975,7 @@ class HyperliquidAdapter(ExchangeAdapter):
             return result
         except Exception as e:
             logger.error(f"HyperliquidAdapter.list_trigger_orders failed: {e}")
-            return []
+            return None
 
     async def cancel_order(self, symbol: str, oid: int) -> dict:
         """
@@ -1140,7 +1143,16 @@ class HyperliquidAdapter(ExchangeAdapter):
                         placed.append({"tpsl": leg_type, "oid": trig_oid, "status": "placed"})
                         logger.info(f"HL trigger leg ({leg_type}) placed: oid={trig_oid}")
 
-            return {"success": True, "placed": placed}
+            requested_legs = len(orders_list)
+            failed_legs = [p for p in placed if "error" in p]
+            success = (len(placed) == requested_legs) and not failed_legs
+            if not success:
+                logger.warning(
+                    f"HL place_trigger_orders({symbol}) PARTIAL/FAILED: "
+                    f"requested={requested_legs} landed={len(placed) - len(failed_legs)} "
+                    f"failed={len(failed_legs)}"
+                )
+            return {"success": success, "placed": placed}
 
         except Exception as e:
             logger.error(f"HyperliquidAdapter.place_trigger_orders failed: {e}")

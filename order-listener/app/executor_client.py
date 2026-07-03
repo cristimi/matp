@@ -120,14 +120,12 @@ async def get_trigger_orders(account_id: str, symbol: str) -> Optional[list]:
     route's docstring for why the DB can't be trusted for this.
 
     Returns:
-      - list (possibly empty): a transport-level CONFIRMED read. Note the executor's
-        adapters swallow their own exchange-call errors and return [] internally (a
-        pre-existing contract shared with get_open_orders/modify-stops), so an empty
-        list here can mean either "genuinely no resting stops" or a masked adapter-
-        level failure — callers must treat both the same way: nothing to compare
-        against, so do nothing (never invent or widen a stop from this ambiguity).
-      - None: UNKNOWN at the transport level — executor unreachable/non-200. Callers
-        MUST NOT treat None as 'no trigger orders'.
+      - list (possibly empty): a CONFIRMED read — the executor's adapters distinguish
+        a genuine empty result from a read failure (see list_trigger_orders on both
+        adapters), so [] here reliably means "no resting stops."
+      - None: UNKNOWN — either the executor/adapter's own exchange-call failed (the
+        route passes that through as JSON null), or this transport call itself failed
+        (unreachable/non-200). Callers MUST NOT treat None as 'no trigger orders'.
     Never raises.
     """
     url = f"{EXECUTOR_URL}/accounts/{account_id}/trigger-orders/{symbol}"
