@@ -5,11 +5,16 @@ Shadow-only: writes to shadow_signals, never POSTs to order-listener.
 
 Exit wiring (Prompt 3b-2):
   - Entry signals come from strategy.evaluate() on each closed 1h bar.
-  - active_bracket (BracketState) is created on entry, cleared on exit/flip.
+  - active bracket (BracketState) is created on entry, cleared on exit/flip.
   - Near-tick loop (~1s): feeds forming-1m close as point price to bracket.
   - 1m safety-net: feeds closed 1m bar high/low to catch wicks between polls.
   - RSI condition-modify: on each 1h close, feeds close as point price + RSI
     so the bracket can tighten its stop without ingesting a wide bar.
+
+Position state (Phase 0 consolidation): `strategy.position` (a PositionState,
+see strategies/base.py) is the single authoritative record of side/bracket/
+entry_bar_time. Every code path below reads and writes that one object --
+there is no second, engine-local copy to keep in sync.
 """
 import asyncio
 import logging
@@ -60,8 +65,12 @@ async def load_active_strategies(pool) -> list:
     return strategies
 
 
-async def _store_exit_leg(pool, strategy, mode: str, bh: dict, leg: dict, bar_time_ms: int, price: float) -> None:
-    side = bh["side"]
+async def _store_exit_leg(
+    pool, strategy, mode: str, bracket: BracketState, leg: dict, bar_time_ms: int, price: float,
+) -> None:
+    # Side of the bracket being closed -- NOT strategy.position.side, which may
+    # already reflect a same-bar flip decision by the time this exit leg is stored.
+    side = bracket.side
     sig = Signal(
         signal="close_long" if side == "long" else "close_short",
         side=side,
@@ -74,7 +83,7 @@ async def _store_exit_leg(pool, strategy, mode: str, bh: dict, leg: dict, bar_ti
     await store_shadow_signal(pool, strategy.strategy_id, strategy.signal_source, sig, mode)
 
 
-async def _near_tick_loop(redis_client: aioredis.Redis, pool, strategy, mode: str, bh: dict) -> None:
+async def _near_tick_loop(redis_client: aioredis.Redis, pool, strategy, mode: str) -> None:
     """Poll forming 1m candle ~every second; feed close as point price to bracket."""
     exchange = settings.ingestion_exchange
     symbol = strategy.symbol
@@ -82,7 +91,7 @@ async def _near_tick_loop(redis_client: aioredis.Redis, pool, strategy, mode: st
     while True:
         try:
             await asyncio.sleep(1)
-            bracket: BracketState | None = bh["bracket"]
+            bracket: BracketState | None = strategy.position.bracket
             if bracket is None or bracket.closed:
                 continue
             forming = await read_forming_candle(redis_client, exchange, symbol, "1m")
@@ -96,18 +105,16 @@ async def _near_tick_loop(redis_client: aioredis.Redis, pool, strategy, mode: st
                     "engine: near-tick exit strategy=%s reason=%s size=%.1f price=%.2f",
                     strategy.strategy_id, leg["exit_reason"], leg["size_pct"], p,
                 )
-                await _store_exit_leg(pool, strategy, mode, bh, leg, forming["t"], p)
+                await _store_exit_leg(pool, strategy, mode, bracket, leg, forming["t"], p)
             if bracket.closed:
                 strategy.mark_flat()
-                bh["bracket"] = None
-                bh["side"] = None
         except asyncio.CancelledError:
             raise
         except Exception as exc:
             logger.warning("engine: near-tick error strategy=%s: %s", strategy.strategy_id, exc)
 
 
-async def _safety_net_loop(redis_client: aioredis.Redis, pool, strategy, mode: str, bh: dict) -> None:
+async def _safety_net_loop(redis_client: aioredis.Redis, pool, strategy, mode: str) -> None:
     """Subscribe to closed 1m bars; feed real high/low to catch wicks between near-tick polls."""
     exchange = settings.ingestion_exchange
     symbol = strategy.symbol
@@ -115,7 +122,7 @@ async def _safety_net_loop(redis_client: aioredis.Redis, pool, strategy, mode: s
     try:
         async for bar in subscribe_closed_bars(redis_client, exchange, symbol, "1m"):
             try:
-                bracket: BracketState | None = bh["bracket"]
+                bracket: BracketState | None = strategy.position.bracket
                 if bracket is None or bracket.closed:
                     continue
                 # Real high/low from the closed 1m bar — catches wicks missed between polls
@@ -125,11 +132,9 @@ async def _safety_net_loop(redis_client: aioredis.Redis, pool, strategy, mode: s
                         "engine: 1m safety-net exit strategy=%s reason=%s size=%.1f",
                         strategy.strategy_id, leg["exit_reason"], leg["size_pct"],
                     )
-                    await _store_exit_leg(pool, strategy, mode, bh, leg, bar["t"], bar["c"])
+                    await _store_exit_leg(pool, strategy, mode, bracket, leg, bar["t"], bar["c"])
                 if bracket.closed:
                     strategy.mark_flat()
-                    bh["bracket"] = None
-                    bh["side"] = None
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -151,9 +156,7 @@ async def run_strategy_stream(
     exchange = settings.ingestion_exchange
     symbol   = strategy.symbol
     tf       = strategy.timeframe
-
-    # Shared bracket state (engine-side; asyncio single-thread = no lock needed)
-    bh: dict = {"bracket": None, "side": None, "entry_bar_time": None}
+    position = strategy.position  # single authoritative position-state owner
 
     # --- Warmup: replay stream history to rebuild position + bracket state ---
     candles = await read_stream_history(
@@ -166,20 +169,22 @@ async def run_strategy_stream(
             sigs = strategy.evaluate(subset)
             for sig in sigs:
                 await store_shadow_signal(pool, strategy.strategy_id, strategy.signal_source, sig, mode)
-                # Track bracket on entries/flips — do NOT feed 1h high/low as exit ticks
+                # Track bracket on entries/flips — do NOT feed 1h high/low as exit ticks.
+                # NOTE: don't call strategy.mark_flat() here -- a close during warmup is
+                # always paired with an open in the same evaluate() call (a flip), and
+                # evaluate() has already set position.side to the new side by the time
+                # this loop runs. mark_flat() would wrongly clobber that back to None.
+                # Only the engine-owned bracket bookkeeping needs clearing here.
                 if sig.signal in ("open_long", "open_short"):
-                    side = "long" if sig.signal == "open_long" else "short"
-                    bh["bracket"] = BracketState(sig.bracket_spec, sig.bar_close_price)
-                    bh["side"] = side
-                    bh["entry_bar_time"] = sig.signal_bar_time
+                    position.bracket = BracketState(sig.bracket_spec, sig.bar_close_price)
+                    position.entry_bar_time = sig.signal_bar_time
                 elif sig.signal in ("close_long", "close_short"):
-                    bh["bracket"] = None
-                    bh["side"] = None
-                    bh["entry_bar_time"] = None
+                    position.bracket = None
+                    position.entry_bar_time = None
         logger.info(
             "engine: warmup complete strategy=%s bars=%d position=%s bracket=%s",
-            strategy.strategy_id, len(candles), strategy._position_side,
-            "active" if bh["bracket"] else "none",
+            strategy.strategy_id, len(candles), position.side,
+            "active" if position.bracket else "none",
         )
     else:
         logger.warning("engine: no warmup data for strategy=%s %s %s", strategy.strategy_id, symbol, tf)
@@ -187,9 +192,9 @@ async def run_strategy_stream(
     # --- Catch-up replay: replay 1m bars from entry forward through any open bracket ---
     # Skips RSI condition-modify (no aligned 1h RSI history); un-tightened stop is the
     # conservative choice; condition-modify resumes on the next live 1h close if still open.
-    if bh["bracket"] is not None and not bh["bracket"].closed and bh["entry_bar_time"] is not None:
+    if position.bracket is not None and not position.bracket.closed and position.entry_bar_time is not None:
         tf_ms = _TIMEFRAME_MS.get(tf, 3_600_000)
-        start_from = bh["entry_bar_time"] + tf_ms  # position open only after the entry bar closes
+        start_from = position.entry_bar_time + tf_ms  # position open only after the entry bar closes
         m1 = await read_stream_history(redis_client, exchange, symbol, "1m", count=2000)
         replayed = [c for c in m1 if c["t"] >= start_from]
         if replayed and replayed[0]["t"] > start_from:
@@ -203,19 +208,17 @@ async def run_strategy_stream(
             len(replayed), strategy.strategy_id, start_from,
         )
         for bar in replayed:
-            if bh["bracket"] is None or bh["bracket"].closed:
+            if position.bracket is None or position.bracket.closed:
                 break
-            legs = bh["bracket"].update(high=bar["h"], low=bar["l"])
+            legs = position.bracket.update(high=bar["h"], low=bar["l"])
             for leg in legs:
-                await _store_exit_leg(pool, strategy, mode, bh, leg, bar["t"], bar["c"])
+                await _store_exit_leg(pool, strategy, mode, position.bracket, leg, bar["t"], bar["c"])
                 logger.info(
                     "engine: catch-up exit strategy=%s reason=%s at bar_t=%d price=%.4f",
                     strategy.strategy_id, leg["exit_reason"], bar["t"], bar["c"],
                 )
-            if bh["bracket"].closed:
+            if position.bracket.closed:
                 strategy.mark_flat()
-                bh["bracket"] = None
-                bh["side"] = None
 
     logger.info("engine: entering live subscription strategy=%s %s %s", strategy.strategy_id, symbol, tf)
 
@@ -231,7 +234,7 @@ async def run_strategy_stream(
 
             # (d) RSI condition-modify on 1h close — point price + RSI, no wide bar
             # Run before processing evaluate's sigs so condition_close clears bracket first.
-            bracket = bh["bracket"]
+            bracket = position.bracket
             if bracket is not None and not bracket.closed:
                 c = candle["c"]
                 rsi_val = strategy.last_rsi
@@ -241,11 +244,9 @@ async def run_strategy_stream(
                         "engine: 1h RSI-modify exit strategy=%s reason=%s size=%.1f",
                         strategy.strategy_id, leg["exit_reason"], leg["size_pct"],
                     )
-                    await _store_exit_leg(pool, strategy, mode, bh, leg, candle["t"], c)
+                    await _store_exit_leg(pool, strategy, mode, bracket, leg, candle["t"], c)
                 if bracket.closed:
                     strategy.mark_flat()
-                    bh["bracket"] = None
-                    bh["side"] = None
 
             for sig in sigs:
                 logger.info(
@@ -254,24 +255,19 @@ async def run_strategy_stream(
                 )
                 await store_shadow_signal(pool, strategy.strategy_id, strategy.signal_source, sig, mode)
                 if sig.signal in ("open_long", "open_short"):
-                    side = "long" if sig.signal == "open_long" else "short"
-                    bh["bracket"] = BracketState(sig.bracket_spec, sig.bar_close_price)
-                    bh["side"] = side
-                    bh["entry_bar_time"] = sig.signal_bar_time
+                    position.bracket = BracketState(sig.bracket_spec, sig.bar_close_price)
+                    position.entry_bar_time = sig.signal_bar_time
                 elif sig.signal in ("close_long", "close_short"):
-                    bh["bracket"] = None
-                    bh["side"] = None
-                    bh["entry_bar_time"] = None
                     strategy.mark_flat()
 
     tasks = [
         asyncio.create_task(_entry_loop(),    name=f"entry_{strategy.strategy_id}"),
         asyncio.create_task(
-            _near_tick_loop(redis_client, pool, strategy, mode, bh),
+            _near_tick_loop(redis_client, pool, strategy, mode),
             name=f"neartick_{strategy.strategy_id}",
         ),
         asyncio.create_task(
-            _safety_net_loop(redis_client, pool, strategy, mode, bh),
+            _safety_net_loop(redis_client, pool, strategy, mode),
             name=f"safetynet_{strategy.strategy_id}",
         ),
     ]

@@ -14,7 +14,7 @@ Bracket spec (fixed):
 """
 import logging
 from app.indicators import candles_to_series, compute_rsi, crossover, crossunder
-from app.strategies.base import Signal
+from app.strategies.base import PositionState, Signal
 
 logger = logging.getLogger(__name__)
 
@@ -56,15 +56,18 @@ class TestHarnessStrategy:
     signal_source = SIGNAL_SOURCE
     warmup_bars = WARMUP_BARS
 
-    # One-position-at-a-time: track synthetic position side in memory.
+    # One-position-at-a-time: `position` is the single authoritative record of
+    # side/bracket/entry_bar_time, shared with the engine (see strategies/base.py).
     # Engine resets this on startup; it is not persisted.
     def __init__(self):
-        self._position_side: str | None = None  # "long" | "short" | None
+        self.position = PositionState()
         self.last_rsi: float | None = None
 
     def mark_flat(self) -> None:
-        """Clear synthetic position (called by engine when bracket exits the position)."""
-        self._position_side = None
+        """Reset to fully flat (called by engine when a bracket exits the position)."""
+        self.position.side = None
+        self.position.bracket = None
+        self.position.entry_bar_time = None
 
     def evaluate(self, closed_candles: list[dict]) -> list[Signal]:
         if len(closed_candles) < WARMUP_BARS + 1:
@@ -88,8 +91,8 @@ class TestHarnessStrategy:
         cross_up   = crossover(rsi, RSI_MID)
         cross_down = crossunder(rsi, RSI_MID)
 
-        if cross_up and self._position_side != "long":
-            if self._position_side == "short":
+        if cross_up and self.position.side != "long":
+            if self.position.side == "short":
                 signals.append(Signal(
                     signal="close_short",
                     side="short",
@@ -98,7 +101,7 @@ class TestHarnessStrategy:
                     bar_close_price=bar_close,
                     bracket_spec={},
                 ))
-                self._position_side = None
+                self.position.side = None
 
             signals.append(Signal(
                 signal="open_long",
@@ -108,14 +111,14 @@ class TestHarnessStrategy:
                 bar_close_price=bar_close,
                 bracket_spec=_bracket_spec("long", bar_close),
             ))
-            self._position_side = "long"
+            self.position.side = "long"
             logger.info(
                 "test_harness: open_long bar_time=%d close=%.2f rsi=%.2f",
                 bar_time, bar_close, float(rsi.iloc[-1]),
             )
 
-        elif cross_down and self._position_side != "short":
-            if self._position_side == "long":
+        elif cross_down and self.position.side != "short":
+            if self.position.side == "long":
                 signals.append(Signal(
                     signal="close_long",
                     side="long",
@@ -124,7 +127,7 @@ class TestHarnessStrategy:
                     bar_close_price=bar_close,
                     bracket_spec={},
                 ))
-                self._position_side = None
+                self.position.side = None
 
             signals.append(Signal(
                 signal="open_short",
@@ -134,7 +137,7 @@ class TestHarnessStrategy:
                 bar_close_price=bar_close,
                 bracket_spec=_bracket_spec("short", bar_close),
             ))
-            self._position_side = "short"
+            self.position.side = "short"
             logger.info(
                 "test_harness: open_short bar_time=%d close=%.2f rsi=%.2f",
                 bar_time, bar_close, float(rsi.iloc[-1]),

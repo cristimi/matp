@@ -59,6 +59,11 @@ class BracketState:
         self._closed    = False
 
     @property
+    def side(self) -> str:
+        """Side this bracket was opened for -- fixed at construction, never mutated."""
+        return "long" if self._d == 1 else "short"
+
+    @property
     def protective_stop(self) -> float:
         return self._protective
 
