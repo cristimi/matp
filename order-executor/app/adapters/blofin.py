@@ -78,6 +78,15 @@ class BlofinAdapter(ExchangeAdapter):
         enforced = max(min_size, rounded)
         return f"{enforced:g}"
 
+    async def _round_to_tick(self, inst_id: str, price) -> float:
+        """Round a price to the instrument's tick size (same fallback as
+        get_instrument_specs()) — Blofin rejects prices that aren't an exact tick
+        multiple with code 102016 'Precision does not match'."""
+        inst = await self._get_instrument(inst_id)
+        tick = float((inst or {}).get("tickSize") or "0.1")
+        raw = float(price)
+        return round(round(raw / tick) * tick, 10)
+
     async def _to_base(self, inst_id: str, contracts: Decimal) -> Decimal:
         """Convert a Blofin contract count to base-asset volume (inverse of _to_contracts).
         base_coins = contracts * contractValue. Uses the cached instrument spec."""
@@ -316,7 +325,7 @@ class BlofinAdapter(ExchangeAdapter):
                 body_data["positionSide"] = "net"
 
             if order.price:
-                body_data["price"] = str(order.price)
+                body_data["price"] = str(await self._round_to_tick(order.symbol, order.price))
             if order.tp_price:
                 body_data["tpTriggerPrice"] = str(order.tp_price)
                 body_data["tpOrderPrice"] = "-1"  # market execution when triggered
