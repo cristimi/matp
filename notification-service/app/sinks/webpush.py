@@ -65,6 +65,8 @@ class WebPushSink(Sink):
                 data=payload,
                 vapid_private_key=settings.vapid_private_key,
                 vapid_claims={"sub": settings.vapid_subject},
+                ttl=settings.webpush_ttl_s,
+                headers={"Urgency": settings.webpush_urgency},
             )
             return True, None, False
         except WebPushException as e:

@@ -14,6 +14,12 @@ class Settings(BaseSettings):
     vapid_public_key:  str = ""
     vapid_subject:     str = "mailto:admin@example.com"
 
+    # Web Push delivery. Urgency=high tells the push service (FCM) to deliver
+    # immediately instead of batching under Android Doze. ttl (seconds) lets a
+    # briefly-offline device still receive the message on reconnect.
+    webpush_urgency: str = "high"
+    webpush_ttl_s:   int = 600
+
     # Redis Stream + consumer group for the notification event bus.
     stream_key:    str = "notifications:events"
     consumer_group: str = "notification-service"
