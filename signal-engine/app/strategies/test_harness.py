@@ -72,7 +72,7 @@ class TestHarnessStrategy:
         self.position.bracket = None
         self.position.entry_bar_time = None
 
-    def evaluate(self, closed_candles: list[dict]) -> list[Signal]:
+    def evaluate(self, closed_candles: list[dict], detect_entries: bool = True) -> list[Signal]:
         if len(closed_candles) < WARMUP_BARS + 1:
             return []
 
@@ -84,6 +84,9 @@ class TestHarnessStrategy:
             return []
 
         self.last_rsi = float(rsi.iloc[-1])
+
+        if not detect_entries:
+            return []
 
         last_bar = closed_candles[-1]
         bar_time = last_bar["t"]

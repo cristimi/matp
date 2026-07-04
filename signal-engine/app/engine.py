@@ -15,6 +15,15 @@ Position state (Phase 0 consolidation): `strategy.position` (a PositionState,
 see strategies/base.py) is the single authoritative record of side/bracket/
 entry_bar_time. Every code path below reads and writes that one object --
 there is no second, engine-local copy to keep in sync.
+
+Intrabar entries (Phase 2): for `entry_trigger='intrabar'` strategies, entries and
+opposite-cross flips are decided by `_intrabar_entry_loop` (polls the forming bar,
+~1s) instead of `_entry_loop`. `_entry_loop` still runs for these strategies but
+calls `evaluate(candles, detect_entries=False)` -- refreshing `last_rsi` for the
+RSI condition-modify exit and appending the closed bar to `candles`, without
+touching `position` or emitting entry/flip signals itself. `entry_trigger='bar_close'`
+(the default, and every strategy today) is untouched: `_entry_loop` calls
+`evaluate(candles)` exactly as before and no intrabar loop is started.
 """
 import asyncio
 import logging
@@ -225,6 +234,8 @@ async def run_strategy_stream(
 
     logger.info("engine: entering live subscription strategy=%s %s %s", strategy.strategy_id, symbol, tf)
 
+    is_intrabar = strategy.entry_trigger == "intrabar"
+
     async def _entry_loop() -> None:
         nonlocal candles
         async for candle in subscribe_closed_bars(redis_client, exchange, symbol, tf):
@@ -232,7 +243,11 @@ async def run_strategy_stream(
             if len(candles) > settings.warmup_candles + 200:
                 candles = candles[-(settings.warmup_candles + 200):]
 
-            sigs = strategy.evaluate(candles)
+            # entry_trigger='intrabar': entries/flips come solely from _intrabar_entry_loop.
+            # Still evaluate here (detect_entries=False) to refresh strategy.last_rsi from
+            # the closed bar for the RSI condition-modify exit below -- but never touch
+            # `position` or emit signals from this loop for these strategies.
+            sigs = strategy.evaluate(candles, detect_entries=not is_intrabar)
             # last_rsi is now updated on strategy after evaluate()
 
             # (d) RSI condition-modify on 1h close — point price + RSI, no wide bar
@@ -263,6 +278,44 @@ async def run_strategy_stream(
                 elif sig.signal in ("close_long", "close_short"):
                     strategy.mark_flat()
 
+    async def _intrabar_entry_loop() -> None:
+        """Poll the forming 1h candle (~1s) and evaluate entries against it, so a cross
+        fires mid-bar instead of only at close (entry_trigger='intrabar' only). Reuses
+        `strategy.position` for the one-entry-per-cross guard -- same object the closed-bar
+        loop reads, so a cross seen here is not re-fired when its bar later closes."""
+        logger.info("engine: intrabar entry loop started strategy=%s", strategy.strategy_id)
+        while True:
+            try:
+                await asyncio.sleep(1)
+                forming = await read_forming_candle(redis_client, exchange, symbol, tf)
+                if forming is None:
+                    continue
+                # Throwaway snapshot -- never mutate the closed-bar loop's `candles` list.
+                snapshot = candles + [forming]
+                sigs = strategy.evaluate(snapshot)
+                for sig in sigs:
+                    logger.info(
+                        "engine: intrabar signal strategy=%s signal=%s bar_time=%d close=%.2f",
+                        strategy.strategy_id, sig.signal, sig.signal_bar_time, sig.bar_close_price,
+                    )
+                    await store_shadow_signal(pool, strategy.strategy_id, strategy.signal_source, sig, mode)
+                    if sig.signal in ("open_long", "open_short"):
+                        position.bracket = BracketState(sig.bracket_spec, sig.bar_close_price)
+                        position.entry_bar_time = sig.signal_bar_time
+                    elif sig.signal in ("close_long", "close_short"):
+                        # NOT strategy.mark_flat() -- a close from evaluate() here is always
+                        # the close leg of a same-call flip (evaluate() never emits a standalone
+                        # close), and evaluate() has already set position.side to the new side
+                        # by the time this loop runs. mark_flat() would clobber that back to
+                        # None (same reasoning as the warmup loop above). Only the engine-owned
+                        # bracket bookkeeping needs clearing here.
+                        position.bracket = None
+                        position.entry_bar_time = None
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning("engine: intrabar entry error strategy=%s: %s", strategy.strategy_id, exc)
+
     tasks = [
         asyncio.create_task(_entry_loop(),    name=f"entry_{strategy.strategy_id}"),
         asyncio.create_task(
@@ -274,6 +327,10 @@ async def run_strategy_stream(
             name=f"safetynet_{strategy.strategy_id}",
         ),
     ]
+    if is_intrabar:
+        tasks.append(
+            asyncio.create_task(_intrabar_entry_loop(), name=f"intrabar_{strategy.strategy_id}")
+        )
     await asyncio.gather(*tasks)
 
 

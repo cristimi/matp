@@ -47,10 +47,15 @@ class Strategy(Protocol):
     # not yet read by evaluate()). Defaults to 'bar_close' for existing behavior.
     entry_trigger: str
 
-    def evaluate(self, closed_candles: list[dict]) -> list[Signal]:
+    def evaluate(self, closed_candles: list[dict], detect_entries: bool = True) -> list[Signal]:
         """
         Evaluate all closed candles and return any signals for the most-recent closed bar.
         Must be called with candles sorted oldest-first. Returns [] if no signal.
+
+        detect_entries=False: update internal indicator state (e.g. last_rsi) only --
+        do not detect crosses, do not touch `position`, always returns []. Used by the
+        engine's closed-bar loop for `entry_trigger='intrabar'` strategies, where entries
+        and flips are decided by the intrabar loop instead (see engine.py module docstring).
         """
         ...
 
