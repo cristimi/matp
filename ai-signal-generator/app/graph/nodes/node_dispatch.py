@@ -12,6 +12,7 @@ logger = logging.getLogger(__name__)
 def _data_sources_used(sc: dict) -> list[str]:
     sources = []
     if sc.get('use_technical'):    sources.append('technical')
+    if sc.get('use_geometry'):     sources.append('geometry')
     if sc.get('use_fear_greed'):   sources.append('fear_greed')
     if sc.get('use_funding_rate'): sources.append('funding_rate')
     if sc.get('use_open_interest'): sources.append('open_interest')
