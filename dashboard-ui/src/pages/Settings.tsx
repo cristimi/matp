@@ -6,6 +6,101 @@ interface ConfigEntry {
   updated_at: string;
 }
 
+function urlBase64ToUint8Array(base64Url: string): Uint8Array<ArrayBuffer> {
+  const padding = '='.repeat((4 - (base64Url.length % 4)) % 4);
+  const base64 = (base64Url + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const raw = atob(base64);
+  const array = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) array[i] = raw.charCodeAt(i);
+  return array;
+}
+
+function NotificationsSection() {
+  const [supported] = useState(() => 'serviceWorker' in navigator && 'PushManager' in window);
+  const [permission, setPermission] = useState<NotificationPermission>(
+    supported ? Notification.permission : 'denied'
+  );
+  const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState<'idle' | 'enabled' | 'error'>('idle');
+  const [error, setError] = useState('');
+
+  async function enableNotifications() {
+    setBusy(true);
+    setError('');
+    try {
+      const perm = await Notification.requestPermission();
+      setPermission(perm);
+      if (perm !== 'granted') {
+        throw new Error('Notification permission was not granted');
+      }
+
+      const registration = await navigator.serviceWorker.ready;
+      const keyRes = await fetch('/api/notifications/vapid-public-key');
+      if (!keyRes.ok) throw new Error('Failed to fetch VAPID public key');
+      const { public_key } = await keyRes.json();
+
+      const subscription = await registration.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(public_key),
+      });
+
+      const json = subscription.toJSON();
+      const res = await fetch('/api/notifications/subscriptions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          endpoint: json.endpoint,
+          keys: json.keys,
+          user_agent: navigator.userAgent,
+        }),
+      });
+      if (!res.ok) throw new Error('Failed to register subscription');
+
+      setStatus('enabled');
+    } catch (e: any) {
+      setStatus('error');
+      setError(e.message || String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (!supported) {
+    return (
+      <section className="stat-card space-y-2 shadow-sm transition-colors">
+        <h3 className="font-semibold text-gray-700 dark:text-gray-200">Push Notifications</h3>
+        <p className="text-xs text-gray-500">This browser does not support push notifications.</p>
+      </section>
+    );
+  }
+
+  return (
+    <section className="stat-card space-y-4 shadow-sm transition-colors">
+      <h3 className="font-semibold text-gray-700 dark:text-gray-200">Push Notifications</h3>
+      <p className="text-xs text-gray-500">
+        Get notified on this device when a position opens or closes, or when the exchange feed
+        or a critical service goes down.
+      </p>
+      <button
+        className="btn-primary text-sm shadow-sm"
+        onClick={enableNotifications}
+        disabled={busy || permission === 'denied'}
+      >
+        {busy ? 'Enabling…' : status === 'enabled' ? 'Re-enable notifications' : 'Enable notifications'}
+      </button>
+      {status === 'enabled' && (
+        <span className="ml-3 text-emerald-600 dark:text-emerald-400 text-sm font-bold">✓ Enabled</span>
+      )}
+      {permission === 'denied' && (
+        <p className="text-xs text-amber-600 dark:text-amber-500">
+          Notifications are blocked for this site in your browser settings.
+        </p>
+      )}
+      {status === 'error' && <p className="text-xs text-red-500">{error}</p>}
+    </section>
+  );
+}
+
 export default function SettingsPage() {
   const [config, setConfig] = useState<Record<string, ConfigEntry>>({});
   const [loading, setLoading] = useState(true);
@@ -124,6 +219,8 @@ export default function SettingsPage() {
           Refer to the TradingView guide in <code className="text-gray-400">docs/</code> for details.
         </p>
       </section>
+
+      <NotificationsSection />
 
       {/* System info */}
       <section className="stat-card space-y-4 shadow-sm transition-colors">

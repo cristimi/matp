@@ -111,6 +111,29 @@ Changes required: DB migration, one line in `node_ingest.py`, `ai.ts` GET/PUT, U
   leftover. Do a matching cleanup migration for `tester.*`, and update the strategy-tester
   copy/migrate code that still references those columns. Deferred intentionally during the live
   sweep to keep blast radius small.
+- **notification-service: iOS web push**: v1 (`notification-service/`, 2026-07-04) only targets
+  Android/Chrome web push. iOS Safari's web-push support (PWA installed to home screen, iOS
+  16.4+) has different registration quirks; needs its own verification pass.
+- **notification-service: `TelegramSink`**: the `Sink` abstract base
+  (`notification-service/app/sinks/base.py`) is designed for this — add a new class +
+  bot-token env var, register it in the sinks list in `consumer.py`, zero publisher changes.
+- **notification-service: live/threshold PnL updates**: v1 only notifies on open/close;
+  no periodic or threshold-crossing (e.g. "position down 10%") notification while a position
+  is open.
+- **notification-service: per-account auth-ping health**: no notification today if an
+  exchange API key/secret starts failing auth (as opposed to the feed just going stale).
+- **notification-service: health beyond executor+listener**: `health_watcher.py` only polls
+  `order-executor` and `order-listener`. Other services (`dashboard-api`, `ai-signal-generator`,
+  `strategy-tester`) have no heartbeat/health signal wired into the notification stream yet.
+- **notification-service: multi-device onboarding UI**: v1's "Enable notifications" button
+  (`dashboard-ui/src/pages/Settings.tsx`) registers one device with no way to see/manage/revoke
+  multiple registered `push_subscriptions` rows from the UI.
+- **notification-service: notification-history dashboard view**: `notification_log` is written
+  on every event (audit/dedup) but nothing in `dashboard-ui` surfaces it — no way to see past
+  notifications without querying Postgres directly.
+- **notification-service: retention/prune job for `notification_log`**: the table has no
+  TTL/archival; it grows unbounded. Needs a periodic prune (e.g. drop rows older than N days)
+  once volume becomes a concern.
 ### Dynamic strategy allocation (realized-PnL-compounding base)
 
 **Status:** COMPLETE — implemented 2026-06-20 across 5 phases.

@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+asyncpg
+redis[asyncio]
+pywebpush
+py-vapid
+httpx
+pydantic>=2.0
+pydantic-settings

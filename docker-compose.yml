@@ -243,6 +243,30 @@ services:
     networks: [matp_net]
     restart: unless-stopped
 
+  notification-service:
+    build: ./notification-service
+    environment:
+      DATABASE_URL: postgresql://matp:matp@postgres:5432/matp
+      REDIS_URL: redis://redis:6379
+      VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY}
+      VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY}
+      VAPID_SUBJECT: ${VAPID_SUBJECT:-mailto:admin@example.com}
+      EXCHANGES: ${NOTIFICATION_EXCHANGES:-blofin}
+      LISTENER_URL: http://order-listener:8001
+      EXECUTOR_URL: http://order-executor:8004
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks: [matp_net]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8010/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   social-listener:
     build: ./social-listener
     environment:
