@@ -22,8 +22,22 @@ opposite-cross flips are decided by `_intrabar_entry_loop` (polls the forming ba
 calls `evaluate(candles, detect_entries=False)` -- refreshing `last_rsi` for the
 RSI condition-modify exit and appending the closed bar to `candles`, without
 touching `position` or emitting entry/flip signals itself. `entry_trigger='bar_close'`
-(the default, and every strategy today) is untouched: `_entry_loop` calls
-`evaluate(candles)` exactly as before and no intrabar loop is started.
+(the default, and every strategy today) still calls `evaluate(candles)` for entries
+exactly as before and no intrabar loop is started for it.
+
+Same-bar flip/exit ordering (Phase 2 follow-up): a close signal from `evaluate()` is
+always the close leg of a same-call flip (it never emits a standalone close) --
+`evaluate()` has already set `position.side` to the new side by the time the caller
+processes that signal. Two places used to call `strategy.mark_flat()` there, which
+resets `side` back to `None` and can clobber the new side `evaluate()` just set:
+(1) `_entry_loop`'s/`_intrabar_entry_loop`'s own signal-processing loop -- fixed by
+clearing only `position.bracket`/`entry_bar_time` there (matching the warmup loop's
+long-standing pattern), never `mark_flat()`; (2) the RSI condition-modify block, which
+resolves the *previous* bracket using this bar's close+RSI and can legitimately call
+`mark_flat()` for its own exit -- fixed by running it *before* `evaluate()` decides a
+fresh entry/flip for this bar (a cheap `evaluate(candles, detect_entries=False)`
+pre-pass refreshes `last_rsi` first so the RSI-modify step still sees the current
+bar's RSI, not the previous bar's).
 """
 import asyncio
 import logging
@@ -243,15 +257,18 @@ async def run_strategy_stream(
             if len(candles) > settings.warmup_candles + 200:
                 candles = candles[-(settings.warmup_candles + 200):]
 
-            # entry_trigger='intrabar': entries/flips come solely from _intrabar_entry_loop.
-            # Still evaluate here (detect_entries=False) to refresh strategy.last_rsi from
-            # the closed bar for the RSI condition-modify exit below -- but never touch
-            # `position` or emit signals from this loop for these strategies.
-            sigs = strategy.evaluate(candles, detect_entries=not is_intrabar)
-            # last_rsi is now updated on strategy after evaluate()
+            # Refresh last_rsi for this bar first (no position/signal side effects), so the
+            # RSI condition-modify exit below sees this bar's RSI, not the previous bar's.
+            strategy.evaluate(candles, detect_entries=False)
 
-            # (d) RSI condition-modify on 1h close — point price + RSI, no wide bar
-            # Run before processing evaluate's sigs so condition_close clears bracket first.
+            # (d) RSI condition-modify on 1h close — point price + RSI, no wide bar.
+            # Resolve any existing bracket BEFORE evaluate() decides a fresh entry/flip
+            # below: if this exit closes the bracket, mark_flat() runs here, on the OLD
+            # side, before evaluate() has a chance to set a NEW side for this same bar.
+            # Doing this the other way around (as before) meant a same-bar bracket exit's
+            # mark_flat() ran *after* evaluate() and clobbered the side evaluate() had just
+            # set for a same-bar flip -- a phantom-flip bug distinct from (but same root
+            # cause as) the sigs-processing clobber fixed just below.
             bracket = position.bracket
             if bracket is not None and not bracket.closed:
                 c = candle["c"]
@@ -266,6 +283,11 @@ async def run_strategy_stream(
                 if bracket.closed:
                     strategy.mark_flat()
 
+            # entry_trigger='intrabar': entries/flips come solely from _intrabar_entry_loop.
+            # detect_entries=False here means this call never touches `position` or emits
+            # signals for those strategies -- last_rsi is already fresh from the pass above.
+            sigs = strategy.evaluate(candles, detect_entries=not is_intrabar)
+
             for sig in sigs:
                 logger.info(
                     "engine: signal strategy=%s signal=%s bar_time=%d close=%.2f",
@@ -276,7 +298,14 @@ async def run_strategy_stream(
                     position.bracket = BracketState(sig.bracket_spec, sig.bar_close_price)
                     position.entry_bar_time = sig.signal_bar_time
                 elif sig.signal in ("close_long", "close_short"):
-                    strategy.mark_flat()
+                    # NOT strategy.mark_flat() -- a close from evaluate() here is always
+                    # the close leg of a same-call flip (evaluate() never emits a standalone
+                    # close), and evaluate() has already set position.side to the new side
+                    # by the time this loop runs. mark_flat() would clobber that back to
+                    # None (same reasoning as the warmup loop above and _intrabar_entry_loop
+                    # below). Only the engine-owned bracket bookkeeping needs clearing here.
+                    position.bracket = None
+                    position.entry_bar_time = None
 
     async def _intrabar_entry_loop() -> None:
         """Poll the forming 1h candle (~1s) and evaluate entries against it, so a cross
