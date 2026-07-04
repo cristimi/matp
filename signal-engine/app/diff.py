@@ -2,13 +2,19 @@
 Entry/exit shadow-diff harness.
 Usage:
   python -m app.diff replay <strategy_id> <since_iso>
-  python -m app.diff live   <strategy_id>
-  python -m app.diff exits  <strategy_id> [window_min]
+  python -m app.diff live   <strategy_id> [--window <min>] [--since <iso>]
+  python -m app.diff exits  <strategy_id> [window_min] [--since <iso>]
 
 Ground truth = public.orders for the given strategy_id.
+
+`replay` re-derives signals from closed candles only, so it structurally reflects
+closed-bar behavior and cannot reproduce intrabar entries -- use `live` (which reads
+the real shadow_signals rows the engine emitted, including their fired_at) to check
+intrabar entries.
 """
 import asyncio
 import logging
+import statistics
 import sys
 from datetime import datetime, timezone
 
@@ -195,6 +201,8 @@ async def cmd_replay(strategy_id: str, since_iso: str) -> None:
     _print_table(rows_out)
     print()
     print(f"Summary: {matched} matched / {total} total, {total - matched} mismatches")
+    print("NOTE: replay re-derives signals from closed candles only (closed-bar derivation) and "
+          "cannot reproduce intrabar entries — check those via `live` instead.")
 
 
 async def _resolve_since(conn, strategy_id: str, since_iso: str | None):
@@ -208,65 +216,103 @@ async def _resolve_since(conn, strategy_id: str, since_iso: str | None):
     return row["t"]  # datetime or None
 
 
-async def cmd_live(strategy_id: str, since_iso: str | None = None) -> None:
-    """Match existing shadow_signals rows against orders (tv_test) and write verdict back."""
-    tf_ms = _TIMEFRAME_MS["1h"]
-    conn  = await asyncpg.connect(settings.database_url)
+def _print_live_table(rows_out: list[dict], extra_tv: list) -> None:
+    header = f"{'FIRED (UTC)':<26}  {'signal':<14}  {'verdict':<16}  note"
+    print(header)
+    print("-" * 90)
+    for r in rows_out:
+        t_str = _ms_to_dt(r["fired_ms"]).strftime("%Y-%m-%d %H:%M:%S") if r["fired_ms"] else "?"
+        print(f"{t_str:<26}  {r['local_signal']:<14}  {r['verdict']:<16}  {r.get('note', '')}")
+    if extra_tv:
+        print()
+        print("TV-ONLY ENTRIES (entries TradingView made that the engine did not fire):")
+        print(f"  {'received_at (UTC)':<24}  signal")
+        print(f"  {'-' * 40}")
+        for tv in extra_tv:
+            ts_str = tv["received_at"].strftime("%Y-%m-%d %H:%M:%S")
+            print(f"  {ts_str:<24}  {tv['signal']}")
+
+
+async def cmd_live(strategy_id: str, since_iso: str | None = None, window_min: int = 10) -> None:
+    """Match shadow entry signals against TV entry orders by nearest fire-time within a +/-
+    window (mirrors cmd_exits), using shadow.fired_at vs orders.received_at. This is what
+    lets an intrabar entry (fired mid-hour) match a TV entry regardless of the 1h bar it
+    belongs to. Writes verdict back."""
+    window_ms = window_min * 60_000
+    conn = await asyncpg.connect(settings.database_url)
     try:
         since = await _resolve_since(conn, strategy_id, since_iso)
         if since is None:
             print("No TV orders for this strategy yet — nothing to compare.")
             return
-        print(f"Comparing entries since cutover: {since.isoformat()}")
+        print(f"Comparing entries since cutover: {since.isoformat()} (window={window_min}m)")
 
         shadow_rows = await conn.fetch(
             """
-            SELECT id, signal, side, signal_bar_time
+            SELECT id, signal, side, fired_at
             FROM public.shadow_signals
             WHERE strategy_id = $1
               AND signal IN ('open_long', 'open_short')
-              AND signal_bar_time >= $2
-            ORDER BY signal_bar_time
+              AND fired_at >= $2
+            ORDER BY fired_at
+            """,
+            strategy_id,
+            since,
+        )
+        tv_rows = await conn.fetch(
+            """
+            SELECT id, signal, received_at
+            FROM public.orders
+            WHERE strategy_id = $1
+              AND signal IN ('open_long', 'open_short')
+              AND received_at >= $2
+            ORDER BY received_at
             """,
             strategy_id,
             since,
         )
 
+        tv_used: set = set()
         rows_out: list[dict] = []
+        deltas_sec: list[float] = []
         matched = 0
 
         for sr in shadow_rows:
-            bar_dt  = sr["signal_bar_time"]
-            bar_ms  = _dt_to_ms(bar_dt)
+            s_ms    = _dt_to_ms(sr["fired_at"])
             loc_sig = sr["signal"]
 
-            tv_row = await conn.fetchrow(
-                """
-                SELECT id, signal FROM public.orders
-                WHERE strategy_id = $1
-                  AND signal IN ('open_long', 'open_short')
-                  AND received_at >= $2
-                  AND received_at <  $3
-                LIMIT 1
-                """,
-                strategy_id,
-                _ms_to_dt(bar_ms),
-                _ms_to_dt(bar_ms + tf_ms),
-            )
+            # nearest unused TV entry of the same signal within the window
+            best, best_delta = None, None
+            for tv in tv_rows:
+                if tv["id"] in tv_used or tv["signal"] != loc_sig:
+                    continue
+                d = abs(_dt_to_ms(tv["received_at"]) - s_ms)
+                if d <= window_ms and (best_delta is None or d < best_delta):
+                    best, best_delta = tv, d
 
-            if tv_row and tv_row["signal"] == loc_sig:
+            if best:
                 verdict   = VERDICT_MATCHED
-                order_id  = tv_row["id"]
-                diff_note = None
+                order_id  = best["id"]
+                delta_s   = best_delta / 1000
+                diff_note = f"dt={delta_s:.1f}s"
+                tv_used.add(best["id"])
                 matched  += 1
-            elif tv_row:
-                verdict   = VERDICT_SIDE_MISMATCH
-                order_id  = tv_row["id"]
-                diff_note = f"tv={tv_row['signal']} local={loc_sig}"
+                deltas_sec.append(delta_s)
             else:
-                verdict   = VERDICT_MISSING_IN_TV
-                order_id  = None
-                diff_note = "no matching tv_test order in this 1h bar"
+                opp = next(
+                    (tv for tv in tv_rows
+                     if tv["id"] not in tv_used and tv["signal"] != loc_sig
+                     and abs(_dt_to_ms(tv["received_at"]) - s_ms) <= window_ms),
+                    None,
+                )
+                if opp:
+                    verdict   = VERDICT_SIDE_MISMATCH
+                    order_id  = opp["id"]
+                    diff_note = f"tv={opp['signal']} local={loc_sig}"
+                else:
+                    verdict   = VERDICT_MISSING_IN_TV
+                    order_id  = None
+                    diff_note = f"no tv entry within {window_min}m"
 
             await conn.execute(
                 """
@@ -280,16 +326,27 @@ async def cmd_live(strategy_id: str, since_iso: str | None = None) -> None:
             )
 
             rows_out.append({
-                "bar_ms":       bar_ms,
-                "tv_signal":    tv_row["signal"] if tv_row else None,
+                "fired_ms":     s_ms,
                 "local_signal": loc_sig,
                 "verdict":      verdict,
+                "note":         diff_note,
             })
 
-        total = len(rows_out)
-        _print_table(rows_out)
+        extra_tv = [tv for tv in tv_rows if tv["id"] not in tv_used]
+
+        _print_live_table(rows_out, extra_tv)
         print()
-        print(f"Summary: {matched} matched / {total} total, {total - matched} mismatches")
+        print(
+            f"Summary: {matched} matched / {len(shadow_rows)} shadow entries, "
+            f"{len(shadow_rows) - matched} unmatched; {len(extra_tv)} tv-only entries"
+        )
+        if deltas_sec:
+            print(
+                f"Fire-time delta (matched only, n={len(deltas_sec)}): "
+                f"median={statistics.median(deltas_sec):.1f}s max={max(deltas_sec):.1f}s"
+            )
+        else:
+            print("Fire-time delta: no matched entries in this run")
 
     finally:
         await conn.close()
@@ -408,7 +465,7 @@ async def cmd_exits(strategy_id: str, window_min: int = 15, since_iso: str | Non
 if __name__ == "__main__":
     if len(sys.argv) < 3:
         print("Usage: python -m app.diff replay <strategy_id> <since_iso>")
-        print("       python -m app.diff live   <strategy_id> [--since <iso>]")
+        print("       python -m app.diff live   <strategy_id> [--window <min>] [--since <iso>]")
         print("       python -m app.diff exits  <strategy_id> [window_min] [--since <iso>]")
         sys.exit(1)
 
@@ -421,13 +478,20 @@ if __name__ == "__main__":
             return argv[i + 1] if i + 1 < len(argv) else None
         return None
 
+    def _opt_window(argv: list[str], default: int) -> int:
+        if "--window" in argv:
+            i = argv.index("--window")
+            return int(argv[i + 1]) if i + 1 < len(argv) else default
+        return default
+
     if cmd == "replay":
         if len(sys.argv) < 4:
             print("replay requires <since_iso>")
             sys.exit(1)
         asyncio.run(cmd_replay(sid, sys.argv[3]))
     elif cmd == "live":
-        asyncio.run(cmd_live(sid, _opt_since(sys.argv)))
+        win = _opt_window(sys.argv, 10)
+        asyncio.run(cmd_live(sid, _opt_since(sys.argv), win))
     elif cmd == "exits":
         win = next((int(a) for a in sys.argv[3:] if a.isdigit()), 15)
         asyncio.run(cmd_exits(sid, win, _opt_since(sys.argv)))
