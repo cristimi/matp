@@ -20,7 +20,7 @@ from app.config import DEGENERATE_SL_DIST, fallback_mmr
 from app.database import get_pool
 from app.executor_client import get_mark_price, get_maintenance_margin
 from app.models import WebhookPayload, OrderResponse, OrderResult
-from app.redis_client import publish, cache_get, cache_set, cache_delete
+from app.redis_client import publish, cache_get, cache_set, cache_delete, emit_notification
 from app.symbol_validator import resolve_symbol, SymbolMismatchError
 
 logger = logging.getLogger(__name__)
@@ -961,7 +961,7 @@ async def _create_strategy_position(pool, payload: WebhookPayload, strategy: dic
         # Positions use long/short; orders use buy/sell
         pos_side = "long" if payload.side == "buy" else "short"
 
-        await conn.execute(
+        position_id = await conn.fetchval(
             """
             INSERT INTO strategy_positions (
                 strategy_id, exchange, symbol, pair_id, side, entry_price, size,
@@ -970,6 +970,7 @@ async def _create_strategy_position(pool, payload: WebhookPayload, strategy: dic
                 $1, $2, $3, $4, $5, $6, $7,
                 $8, $9, $10, 'open', NOW()
             )
+            RETURNING id
             """,
             strategy['id'],
             strategy.get('exchange', 'auto'),
@@ -982,6 +983,17 @@ async def _create_strategy_position(pool, payload: WebhookPayload, strategy: dic
             effective_margin_mode,
             opening_order_id,
         )
+
+    await emit_notification("position.opened", {
+        "position_id": str(position_id),
+        "strategy_id": strategy['id'],
+        "symbol": f"{payload.base_asset}-{payload.quote_asset}",
+        "side": pos_side,
+        "size": str(db_size),
+        "entry_price": str(entry_price),
+        "leverage": effective_leverage,
+        "opened_at": datetime.now(timezone.utc).isoformat(),
+    })
 
 
 async def _apply_position_fill(
@@ -1068,7 +1080,7 @@ async def close_strategy_position(
     async with pool.acquire() as conn:
         pos = await conn.fetchrow(
             """
-            SELECT id, size, opening_order_id
+            SELECT id, size, opening_order_id, entry_price, opened_at
             FROM strategy_positions
             WHERE strategy_id = $1 AND symbol = $2 AND side = $3 AND status = 'open'
             """,
@@ -1191,6 +1203,21 @@ async def close_strategy_position(
         f"for strategy {strategy['id']} ({symbol} {side}), "
         f"close_size={eff_close_size}, fill={fill_price_f}, pnl={realized_pnl_f}"
     )
+
+    if is_full:
+        await emit_notification("position.closed", {
+            "position_id": str(pos['id']),
+            "strategy_id": strategy['id'],
+            "symbol": symbol,
+            "side": side,
+            "size": str(pos['size']),
+            "entry_price": str(pos['entry_price']),
+            "opened_at": pos['opened_at'].isoformat(),
+            "closing_price": fill_price_f,
+            "pnl_realized": realized_pnl_f,
+            "close_reason": reason,
+            "closed_at": datetime.now(timezone.utc).isoformat(),
+        })
 
     if is_full and realized_pnl_f is not None:
         await _book_realized_pnl(pool, strategy['id'], realized_pnl_f)

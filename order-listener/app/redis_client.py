@@ -53,3 +53,13 @@ async def cache_delete(key: str) -> None:
         await get_redis().delete(key)
     except Exception as e:
         logger.warning(f"Redis cache_delete failed for {key}: {e}")
+
+
+async def emit_notification(event: str, payload: dict) -> None:
+    """xadd onto the notification-service event stream. Never raises — a notification
+    failure must not affect order handling."""
+    try:
+        data = {"event": event, **payload}
+        await get_redis().xadd("notifications:events", {"data": json.dumps(data, default=str)})
+    except Exception as e:
+        logger.warning(f"emit_notification failed for {event}: {e}")

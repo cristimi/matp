@@ -1,7 +1,8 @@
-# notification-service v1 (Android web push) — Phase 1 report
+# notification-service v1 (Android web push) — Phase 1 + Phase 6 report
 
-Branch: `feat/notification-service` (per explicit instruction — not `main` — pending review
-of Phase 1 before the `order-listener` gate is approved).
+Branch: `feat/notification-service`. Phase 1 (the additive build) was pushed and reviewed;
+the user then said "go ahead with the order-listener hooks" — Phase 6 below implements
+exactly the gate proposal from the Phase 1 section further down, with no changes to it.
 
 ## What changed, per file
 
@@ -425,3 +426,130 @@ onboarding UI, notification-history dashboard view, `notification_log` retention
 - Five real bugs (listed above) were found via actual verification and fixed inline as part of
   Phase 1, since they were required to make the pasted verification output true rather than
   aspirational.
+
+## Phase 6 — order-listener hooks (after explicit "go")
+
+Implemented exactly the gate proposal above, no deviations:
+- `order-listener/app/redis_client.py` — added `emit_notification(event, payload)`, wrapped in
+  try/except, never raises.
+- `order-listener/app/webhook_handler.py`:
+  - Import line: added `emit_notification` to the existing `from app.redis_client import ...`.
+  - `_create_strategy_position`: the `INSERT` now has `RETURNING id` (`conn.fetchval` instead
+    of `conn.execute`), followed by `await emit_notification("position.opened", {...})` after
+    the `async with pool.acquire()` block closes.
+  - `close_strategy_position`: the initial `SELECT` now also fetches `entry_price, opened_at`;
+    `await emit_notification("position.closed", {...})` is guarded on `if is_full:`, placed
+    right after the existing `logger.info(...)` call and before `_book_realized_pnl`. Partial
+    closes never reach it.
+
+### Redeploy — clean, no import/startup errors
+
+```
+$ docker compose ps order-listener
+NAME                    IMAGE                 COMMAND                  SERVICE          CREATED          STATUS                    PORTS
+matp-order-listener-1   matp-order-listener   "uvicorn app.main:ap…"   order-listener   30 seconds ago   Up 26 seconds (healthy)   8001/tcp
+
+$ docker compose logs order-listener --tail 30
+...
+2026-07-04 12:03:37,674 [INFO] app.main: Starting Order Listener service...
+2026-07-04 12:03:39,151 [INFO] app.database: Database pool initialized.
+2026-07-04 12:03:39,158 [INFO] app.redis_client: Redis client initialized.
+2026-07-04 12:03:39,161 [INFO] app.main: Order Listener ready.
+2026-07-04 12:03:39,266 [INFO] app.main: Reconciler loop started (interval=60s, threshold=3)
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8001 (Press CTRL+C to quit)
+
+$ curl -sf http://localhost/api/listener/health
+{"status":"ok","service":"order-listener"}
+```
+
+(The `service.down`/`service.up` pair visible in the stream dump below, for `order-listener`,
+is the health-watcher correctly detecting this exact redeploy's brief downtime — an
+incidental real-world proof that edge-triggered service health detection works, not part of
+the planned test.)
+
+### End-to-end verification — real webhook path, not a synthetic `XADD`
+
+Used the pre-existing `tv_test_harness` strategy (`account_id=blofin-blofin-demo-v5vr`, a
+BloFin **demo/paper** account — this strategy has a long history of small BTC-USDT test
+trades in this repo, all previously closed; zero real funds at risk) to drive a real
+`open_long` → `close_long` round trip through the actual `/webhook/{strategy_id}` endpoint,
+not a manual stream injection.
+
+**Open (`signal=open_long`, size 0.002 BTC-USDT):**
+```
+$ curl -s -X POST http://localhost/api/listener/webhook/tv_test_harness \
+  -H "Content-Type: application/json" \
+  -d '{"base_asset":"BTC","quote_asset":"USDT","side":"buy","order_type":"market","size":0.002,
+       "signal":"open_long","timestamp":"...","token":"...","signal_source":"phase6-verification"}'
+{"order_id":"ce49b2f6-5546-4edc-b6ff-fd76c4ce2524","status":"received","message":"OK"}
+
+$ docker compose exec -T postgres psql -U matp -d matp -c \
+  "SELECT id, status, actual_fill_price FROM orders WHERE id='ce49b2f6-5546-4edc-b6ff-fd76c4ce2524';"
+                  id                  | status | actual_fill_price
+--------------------------------------+--------+-------------------
+ ce49b2f6-5546-4edc-b6ff-fd76c4ce2524 | filled |           62524.3
+
+$ docker compose exec -T postgres psql -U matp -d matp -c \
+  "SELECT id, symbol, side, size, entry_price, status FROM strategy_positions WHERE strategy_id='tv_test_harness' AND status='open';"
+                  id                  |  symbol  | side |          size           | entry_price | status
+--------------------------------------+----------+------+-------------------------+-------------+--------
+ c02f2434-a729-452d-bc0d-bf8ed53921c2 | BTC-USDT | long | 0.002000000000000000000 |     62524.3 | open
+```
+
+**Stream entry for the open (`XRANGE notifications:events`):**
+```
+1783166725543-0
+data
+{"event": "position.opened", "position_id": "c02f2434-a729-452d-bc0d-bf8ed53921c2",
+ "strategy_id": "tv_test_harness", "symbol": "BTC-USDT", "side": "long",
+ "size": "0.002000000000000000000", "entry_price": "62524.3", "leverage": 10,
+ "opened_at": "2026-07-04T12:05:25.537570+00:00"}
+```
+
+**Close (`signal=close_long`, same size):**
+```
+$ curl -s -X POST http://localhost/api/listener/webhook/tv_test_harness \
+  -H "Content-Type: application/json" \
+  -d '{"base_asset":"BTC","quote_asset":"USDT","side":"sell","order_type":"market","size":0.002,
+       "signal":"close_long","timestamp":"...","token":"...","signal_source":"phase6-verification"}'
+{"order_id":"63e13808-3902-4177-a33d-580adf0eb254","status":"received","message":"OK"}
+
+$ docker compose exec -T postgres psql -U matp -d matp -c \
+  "SELECT id, status, closing_price, pnl_realized, closed_at FROM strategy_positions WHERE id='c02f2434-a729-452d-bc0d-bf8ed53921c2';"
+                  id                  | status |    closing_price    | pnl_realized |           closed_at
+--------------------------------------+--------+----------------------+--------------+-------------------------------
+ c02f2434-a729-452d-bc0d-bf8ed53921c2 | closed |            62532.9   |       0.0172 | 2026-07-04 12:06:28.350225+00
+```
+
+**Both `notification_log` rows for this position — the close row proves the "complete,
+don't replace" spec (same `tag`/dedup base, body carries both legs):**
+```
+   event_type    |                      dedup_key                       |            title            |                                    body                                    | status
+-----------------+------------------------------------------------------+------------------------------+-----------------------------------------------------------------------------+--------
+ position.opened | position:c02f2434-a729-452d-bc0d-bf8ed53921c2:opened | 🟢 Opened BTC-USDT LONG 10x | 0.002 @ 62524.3000                                                          | failed
+ position.closed | position:c02f2434-a729-452d-bc0d-bf8ed53921c2:closed | 🟢 Closed BTC-USDT LONG      | Entry LONG 0.002 @ 62524.3000 → Exit @ 62532.9000  •  PnL +0.02  •  manual  | failed
+```
+(`status='failed'` on both is expected and correct — the only registered `push_subscriptions`
+row is the fake test device from Phase 1 verification with garbage key material; no real
+phone is subscribed in this environment. The point proven here is the full pipeline —
+webhook → DB write → stream emit → dedup → render → sink dispatch → log — not a successful
+phone delivery.)
+
+**No regression to order handling — listener logs show the exact same flow as any other
+close (executor call, fill, position update), with zero errors/exceptions/warnings across
+the whole test window:**
+```
+2026-07-04 12:06:24,517 [INFO] app.redis_client: Published to Redis channel orders:received: orders:received
+INFO:     172.18.0.15:35782 - "POST /webhook/tv_test_harness HTTP/1.1" 200 OK
+2026-07-04 12:06:24,546 [INFO] app.executor_client: Calling executor close-position: account=blofin-blofin-demo-v5vr symbol=BTC-USDT side=long size=None
+2026-07-04 12:06:28,345 [INFO] httpx: HTTP Request: POST http://order-executor:8004/close-position "HTTP/1.1 200 OK"
+2026-07-04 12:06:28,386 [INFO] app.webhook_handler: Closed position c02f2434-a729-452d-bc0d-bf8ed53921c2 for strategy tv_test_harness (BTC-USDT long), close_size=0.002, fill=62532.9, pnl=0.0172
+2026-07-04 12:06:28,497 [INFO] app.redis_client: Published to Redis channel orders:filled: orders:filled
+
+$ docker compose logs order-listener --since 5m | grep -iE "error|exception|traceback|warning" | grep -v "GET /health"
+(empty)
+```
+
+notification-service is now feature-complete for v1 scope. Remaining gaps are tracked in
+`docs/ROADMAP.md`'s Deferred Backlog (iOS push, TelegramSink, threshold PnL updates, etc.).
