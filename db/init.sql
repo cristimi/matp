@@ -670,7 +670,9 @@ CREATE TABLE public.strategies (
     allocation_peak numeric,
     local_signal_mode character varying(10) DEFAULT 'off'::character varying NOT NULL,
     stop_reason character varying,
-    CONSTRAINT strategies_type_check CHECK (((type)::text = ANY (ARRAY[('internal'::character varying)::text, ('tradingview'::character varying)::text])))
+    entry_trigger character varying(16) DEFAULT 'bar_close'::character varying NOT NULL,
+    CONSTRAINT strategies_type_check CHECK (((type)::text = ANY (ARRAY[('internal'::character varying)::text, ('tradingview'::character varying)::text]))),
+    CONSTRAINT strategies_entry_trigger_chk CHECK (((entry_trigger)::text = ANY (ARRAY[('bar_close'::character varying)::text, ('intrabar'::character varying)::text])))
 );
 
 
@@ -1201,7 +1203,9 @@ CREATE TABLE tester.strategies (
     ai_config_defaulted boolean DEFAULT false NOT NULL,
     initial_allocation numeric,
     allocation_peak numeric,
-    local_signal_mode character varying(10) DEFAULT 'off'::character varying NOT NULL
+    local_signal_mode character varying(10) DEFAULT 'off'::character varying NOT NULL,
+    entry_trigger character varying(16) DEFAULT 'bar_close'::character varying NOT NULL,
+    CONSTRAINT strategies_entry_trigger_chk CHECK (((entry_trigger)::text = ANY (ARRAY[('bar_close'::character varying)::text, ('intrabar'::character varying)::text])))
 );
 
 

@@ -43,6 +43,9 @@ class Strategy(Protocol):
     warmup_bars: int
     # Single source of truth for this strategy's current position (see module docstring).
     position: PositionState
+    # 'bar_close' | 'intrabar' -- when this strategy evaluates ENTRIES (Phase 1: plumbed,
+    # not yet read by evaluate()). Defaults to 'bar_close' for existing behavior.
+    entry_trigger: str
 
     def evaluate(self, closed_candles: list[dict]) -> list[Signal]:
         """

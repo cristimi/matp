@@ -45,7 +45,8 @@ async def load_active_strategies(pool) -> list:
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """
-            SELECT id, symbol, interval, local_signal_mode
+            SELECT id, symbol, interval, local_signal_mode,
+                   COALESCE(entry_trigger, 'bar_close') AS entry_trigger
             FROM public.strategies
             WHERE local_signal_mode <> 'off'
               AND COALESCE(is_deleted, false) = false
@@ -56,9 +57,11 @@ async def load_active_strategies(pool) -> list:
     for row in rows:
         sid = row["id"]
         if sid == STRATEGY_ID:
-            strategies.append((TestHarnessStrategy(), row["local_signal_mode"]))
-            logger.info("engine: loaded strategy=%s symbol=%s tf=%s mode=%s",
-                        sid, row["symbol"], row["interval"], row["local_signal_mode"])
+            strat = TestHarnessStrategy()
+            strat.entry_trigger = row["entry_trigger"]
+            strategies.append((strat, row["local_signal_mode"]))
+            logger.info("engine: loaded strategy=%s symbol=%s tf=%s mode=%s entry_trigger=%s",
+                        sid, row["symbol"], row["interval"], row["local_signal_mode"], row["entry_trigger"])
         else:
             logger.warning("engine: unknown strategy id=%s — no implementation registered, skipping", sid)
 

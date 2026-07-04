@@ -55,6 +55,9 @@ class TestHarnessStrategy:
     timeframe   = TIMEFRAME
     signal_source = SIGNAL_SOURCE
     warmup_bars = WARMUP_BARS
+    # 'bar_close' | 'intrabar' -- set by engine.load_active_strategies() from the DB row.
+    # Phase 1: plumbed only, not yet read anywhere in evaluate().
+    entry_trigger: str = "bar_close"
 
     # One-position-at-a-time: `position` is the single authoritative record of
     # side/bracket/entry_bar_time, shared with the engine (see strategies/base.py).
