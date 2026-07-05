@@ -243,16 +243,31 @@ def _render_geometry(state: dict) -> str:
     sc = state['strategy_config']
     gd = state.get('geometry_data') or {}
 
-    if not sc.get('use_geometry') or not gd or gd.get('shape') == 'no_pattern':
+    if not sc.get('use_geometry') or not gd:
         return ''
 
-    shape = gd.get('shape', '')
-    conv  = gd.get('convergence_pct_per_bar', 0.0)
+    shape       = gd.get('shape', '')
+    fit_quality = gd.get('fit_quality')
+    unclassified = shape == 'no_pattern'
+
+    # A genuinely noisy fit (no_pattern + weak, e.g. too few swings) stays omitted.
+    # A no_pattern shape with a strong trendline fit means the boundaries are real
+    # but don't match any named pattern — surface it labeled as unclassified rather
+    # than silently dropping a strong fit.
+    if unclassified and fit_quality != 'strong':
+        return ''
+
+    conv = gd.get('convergence_pct_per_bar', 0.0)
+
+    label = (
+        'Unclassified Structure (no named pattern, but a strong trendline fit)'
+        if unclassified else shape.replace('_', ' ').title()
+    )
 
     lines = [
         'GEOMETRIC PATTERN:',
-        f"Detected Shape:       {shape.replace('_', ' ').title()}",
-        f"Fit Quality:          {_v(gd.get('fit_quality'))}",
+        f"Detected Shape:       {label}",
+        f"Fit Quality:          {_v(fit_quality)}",
         f"Upper Boundary:       {_v(gd.get('upper_boundary'))}",
         f"Lower Boundary:       {_v(gd.get('lower_boundary'))}",
         f"Upper Touches:        {_v(gd.get('upper_touches'))}",

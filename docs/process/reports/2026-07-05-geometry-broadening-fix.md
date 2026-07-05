@@ -101,6 +101,84 @@ both before conceptually (13 prior) and after (15) this change.
 
 ## Status
 
-Phase 1 complete and pushed to `main`. Phase 2 (surfacing strong-fit-but-unclassified
-structures generically in `_render_geometry`) is deferred pending review, per the task
-spec — not started.
+Phase 1 complete and pushed to `main`.
+
+---
+
+# Phase 2 — stop silently dropping strong fits
+
+## Design
+
+`_render_geometry()` previously bailed out on `shape == 'no_pattern'` unconditionally,
+so *any* future unhandled-but-strong-fit case (not just the broadening gap fixed in
+Phase 1) would be silently dropped from the prompt. Changed the gate: a `no_pattern`
+result is only omitted when `fit_quality != 'strong'` (i.e. genuinely noisy — too few
+swings, or a weak trendline fit). A `no_pattern` result with a **strong** fit is now
+rendered with all the same fields (boundaries, touches, position, divergence/
+convergence rate), but the "Detected Shape" line reads `Unclassified Structure (no
+named pattern, but a strong trendline fit)` instead of a title-cased shape name, so the
+LLM can't mistake it for a recognized chart pattern.
+
+No change to `geometry.py` — this is purely a `builder.py` rendering-gate change.
+
+## Diff summary
+
+- `ai-signal-generator/app/prompt/builder.py` (`_render_geometry`):
+  - Gate changed from `not gd or shape == 'no_pattern'` to `not gd`, with a
+    second check `if unclassified and fit_quality != 'strong': return ''` placed
+    after fetching `shape`/`fit_quality`.
+  - Added `label` computation: unclassified+strong → the "Unclassified Structure"
+    string; otherwise the existing `shape.replace('_', ' ').title()` behavior,
+    unchanged for all named shapes (including `broadening` from Phase 1).
+- `ai-signal-generator/tests/test_builder_geometry.py` (new file): 5 tests exercising
+  `_render_geometry` directly — no_pattern+weak omitted, no_pattern+strong surfaced as
+  Unclassified, a named shape (`broadening`) still renders its title, `use_geometry`
+  off omitted, empty `geometry_data` omitted.
+
+## Verification
+
+Full test run (geometry + new builder tests) in a disposable `python:3.11-slim`
+container with `pytest numpy asyncpg pydantic pydantic-settings` installed (builder.py
+imports `app.prompt.templates`, which imports `asyncpg`):
+
+```
+$ python -m pytest tests/test_geometry.py tests/test_builder_geometry.py -q
+....................                                                     [100%]
+20 passed in 2.33s
+```
+
+(`tests/test_ohlcv.py` was not run in this environment — it imports `ccxt`, which
+wasn't installed for this pure-logic verification; this is an environment gap, not a
+test failure, and is unrelated to this change.)
+
+Before/after of the rendered `GEOMETRIC PATTERN` section for a strong `no_pattern`
+fixture (`upper_boundary=121.85, lower_boundary=83.68, fit_quality='strong',
+convergence_pct_per_bar=-0.2073`, i.e. the Phase 1 anchor case reinterpreted as
+unclassified):
+
+**Before** (ran against the pre-Phase-2 `builder.py`):
+```
+''
+```
+(empty string — the whole section was dropped)
+
+**After**:
+```
+GEOMETRIC PATTERN:
+Detected Shape:       Unclassified Structure (no named pattern, but a strong trendline fit)
+Fit Quality:          strong
+Upper Boundary:       121.85
+Lower Boundary:       83.68
+Upper Touches:        5
+Lower Touches:        5
+Position in Range:    71.43%  (0=at lower boundary, 100=at upper)
+Pattern Age:          58 bars
+Divergence Rate:      -0.2073% of price per bar (boundaries widening)
+```
+
+The weak-fit `no_pattern` case (same fixture with `fit_quality='weak'`) still renders
+`''` before and after — confirmed by the same script.
+
+## Status
+
+Both phases complete, verified, and pushed to `main`.
