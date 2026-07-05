@@ -64,8 +64,10 @@ router.get('/:id', async (req: Request, res: Response) => {
 });
 
 // GET /orders/:id/detail — L4 full order detail (lazy)
-// OEL and signal_log joins are best-effort: null when exchange_order_id is absent
-// (unfilled/failed orders) or when the exec-log row has no signal_log_id.
+// ai_reasoning/ai_confidence/exchange_fee read directly off orders (signal_log_id,
+// exchange_fee), so they resolve for close orders too, not just opens. The OEL join
+// is best-effort and only used for open-only execution-panel fields (requested_price,
+// exchange_order_id, placed_at, filled_at) — those legitimately stay null on closes.
 router.get('/:id/detail', async (req: Request, res: Response) => {
   try {
     const pool = getPool();
@@ -76,8 +78,8 @@ router.get('/:id/detail', async (req: Request, res: Response) => {
           o.raw_webhook,
           o.signal_metadata,
           o.indicator_price,
+          o.exchange_fee,
           oel.requested_price,
-          oel.exchange_fee,
           oel.exchange_order_id AS oel_exchange_order_id,
           oel.placed_at,
           oel.filled_at,
@@ -89,8 +91,8 @@ router.get('/:id/detail', async (req: Request, res: Response) => {
           ON oel.exchange_order_id = o.exchange_order_id
           AND o.exchange_order_id IS NOT NULL
         LEFT JOIN signal_log sl
-          ON sl.id = oel.signal_log_id
-          AND oel.signal_log_id IS NOT NULL
+          ON sl.id = o.signal_log_id
+          AND o.signal_log_id IS NOT NULL
         WHERE o.id = $1
       `, [req.params.id]),
       pool.query(`
