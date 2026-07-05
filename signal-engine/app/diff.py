@@ -381,11 +381,11 @@ async def cmd_exits(strategy_id: str, window_min: int = 15, since_iso: str | Non
         print(f"Comparing exits since cutover: {since.isoformat()}")
 
         shadow_rows = await conn.fetch(
-            """SELECT id, signal, signal_bar_time, exit_reason, size_pct
+            """SELECT id, signal, signal_bar_time, fired_at, exit_reason, size_pct
                FROM public.shadow_signals
                WHERE strategy_id=$1 AND signal IN ('close_long','close_short')
                  AND signal_bar_time >= $2
-               ORDER BY signal_bar_time""",
+               ORDER BY fired_at""",
             strategy_id,
             since,
         )
@@ -404,7 +404,11 @@ async def cmd_exits(strategy_id: str, window_min: int = 15, since_iso: str | Non
         matched = 0
 
         for sr in shadow_rows:
-            s_ms   = _dt_to_ms(sr["signal_bar_time"])
+            # match on the real emit time, not the bar boundary (mirrors cmd_live);
+            # coalesce to signal_bar_time only as a defensive fallback, shouldn't trigger
+            # since migration 042 backfilled fired_at NOT NULL.
+            s_ms   = _dt_to_ms(sr["fired_at"] or sr["signal_bar_time"])
+            bar_ms = _dt_to_ms(sr["signal_bar_time"])
             s_sig  = sr["signal"]
             reason = sr["exit_reason"] or "flip"
 
@@ -443,7 +447,7 @@ async def cmd_exits(strategy_id: str, window_min: int = 15, since_iso: str | Non
                 verdict, order_id, note, sr["id"],
             )
             rows_out.append({
-                "bar_ms":  s_ms,
+                "bar_ms":  bar_ms,
                 "reason":  reason,
                 "side":    s_sig,
                 "verdict": verdict,
