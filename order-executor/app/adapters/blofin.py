@@ -18,6 +18,14 @@ logger = logging.getLogger(__name__)
 
 _INSTRUMENTS_TTL = 86400  # 24 hours
 
+# Fallback fill-recovery tuning (see docs/process/reports/blofin-close-orderid-investigation.md):
+# the close-position endpoint's dict-shaped response never carries an orderId, so a
+# recovered fill is matched against orders-history/fills-history by instId + side +
+# reduceOnly + size, within this window after the close call. The investigation
+# observed a real match at ~359ms; this is generous headroom, not a measured bound.
+_RECOVERY_WINDOW_MS = 5000
+_RECOVERY_SIZE_TOLERANCE = Decimal("0.02")  # relative tolerance on contract count
+
 class BlofinAdapter(ExchangeAdapter):
     # Class-level cache shared across all instances, keyed by base_url
     _instruments: Dict[str, Dict[str, dict]] = {}   # base_url -> instId -> spec
@@ -176,6 +184,111 @@ class BlofinAdapter(ExchangeAdapter):
                 logger.warning(f"Blofin: error fetching order details from {path_tpl}: {e}")
         logger.warning(f"Blofin: could not fetch order details for {order_id}")
         return {}
+
+    async def _recover_close_fill(
+        self, symbol: str, close_side: str, size: Optional[Decimal], since_ms: int
+    ) -> Optional[dict]:
+        """
+        Recover a close's fill from orders-history/fills-history when the close
+        response carried no orderId. Blofin's close-position endpoint returns a
+        dict-shaped response with no orderId field at all on roughly half of full
+        closes (structural, not a timing flake) — but every close, even via that
+        endpoint, still creates an ordinary reduceOnly order in history. Read-only:
+        never places, amends, or cancels anything.
+
+        Matches candidates by instId + reduceOnly=true + side=close_side + state=
+        filled + createTime in [since_ms, since_ms + _RECOVERY_WINDOW_MS], and (if
+        size is known) filledSize within _RECOVERY_SIZE_TOLERANCE of size, converted
+        to contracts. Exactly one match wins. Multiple matches are narrowed by
+        tightest time delta, then exact filledSize; if still tied (e.g. two
+        strategies closing the same instrument at the same size in the same window),
+        this returns None rather than guessing, and logs the tied orderIds.
+        """
+        expected_contracts = None
+        if size is not None:
+            try:
+                expected_contracts = Decimal(str(await self._to_contracts(symbol, size)))
+            except Exception:
+                expected_contracts = None
+
+        for path_tpl in [
+            "/api/v1/trade/orders-history?instId={inst}",
+            "/api/v1/trade/fills-history?instId={inst}",
+        ]:
+            try:
+                full_path = path_tpl.format(inst=symbol)
+                headers = self._headers("GET", full_path, "")
+                async with httpx.AsyncClient(base_url=self.base_url, timeout=10) as client:
+                    response = await client.get(full_path, headers=headers)
+                if response.status_code != 200:
+                    continue
+                data = response.json()
+                if str(data.get("code", "0")) not in ("0", "200"):
+                    continue
+                items = data.get("data", [])
+                if not isinstance(items, list) or not items:
+                    continue
+
+                candidates = []
+                for it in items:
+                    if str(it.get("reduceOnly", "")).lower() != "true":
+                        continue
+                    if it.get("side") != close_side:
+                        continue
+                    if it.get("state") != "filled":
+                        continue
+                    create_ms = int(it.get("createTime") or 0)
+                    if not (since_ms <= create_ms <= since_ms + _RECOVERY_WINDOW_MS):
+                        continue
+                    if expected_contracts is not None:
+                        filled_raw = it.get("filledSize") or it.get("accFillSz") or it.get("fillSz")
+                        if not filled_raw:
+                            continue
+                        try:
+                            filled_contracts = Decimal(str(filled_raw))
+                        except Exception:
+                            continue
+                        if expected_contracts > 0:
+                            rel_diff = abs(filled_contracts - expected_contracts) / expected_contracts
+                            if rel_diff > _RECOVERY_SIZE_TOLERANCE:
+                                continue
+                    candidates.append(it)
+
+                if not candidates:
+                    continue
+                if len(candidates) == 1:
+                    return candidates[0]
+
+                candidates.sort(key=lambda it: abs(int(it.get("createTime") or 0) - since_ms))
+                tightest = abs(int(candidates[0].get("createTime") or 0) - since_ms)
+                tied = [c for c in candidates if abs(int(c.get("createTime") or 0) - since_ms) == tightest]
+                if len(tied) == 1:
+                    return tied[0]
+
+                if expected_contracts is not None:
+                    exact = [
+                        c for c in tied
+                        if Decimal(str(c.get("filledSize") or c.get("accFillSz") or c.get("fillSz") or "-1"))
+                           == expected_contracts
+                    ]
+                    if len(exact) == 1:
+                        return exact[0]
+
+                order_ids = [c.get("orderId") for c in tied]
+                logger.warning(
+                    f"Blofin _recover_close_fill: ambiguous candidates for {symbol} "
+                    f"{close_side} near since_ms={since_ms} — tied orderIds={order_ids}, "
+                    f"leaving exchange_order_id/fill/pnl/fee unresolved"
+                )
+                return None
+            except Exception as e:
+                logger.warning(f"Blofin _recover_close_fill: error querying {path_tpl}: {e}")
+
+        logger.warning(
+            f"Blofin _recover_close_fill: no candidates found for {symbol} "
+            f"side={close_side} size={size} since_ms={since_ms}"
+        )
+        return None
 
     def _parse_fill_price(self, details: dict):
         """Extract fill price from order details, trying all field name variants."""
@@ -493,6 +606,22 @@ class BlofinAdapter(ExchangeAdapter):
             return await self._partial_close(symbol, side, Decimal(str(size)), margin_mode)
 
         # Full close: use the dedicated close-position endpoint
+
+        # Capture the position's current size as a matching hint for
+        # _recover_close_fill in case the close response omits orderId — this
+        # endpoint's response never carries a size, and its dict-shaped variant
+        # never carries an orderId either (see investigation report). Read-only;
+        # never used to size the close call itself (close-position always closes
+        # the whole position).
+        position_size_before = None
+        try:
+            positions = await self.get_open_positions()
+            match = next((p for p in positions if p.symbol == symbol and p.side == side), None)
+            if match:
+                position_size_before = match.size
+        except Exception as e:
+            logger.warning(f"Blofin close_position: pre-close position size lookup failed: {e}")
+
         path = "/api/v1/trade/close-position"
 
         body_data = {
@@ -504,6 +633,7 @@ class BlofinAdapter(ExchangeAdapter):
         body_str = json.dumps(body_data, separators=(",", ":"))
         headers = self._headers("POST", path, body_str)
 
+        since_ms = int(time.time() * 1000)
         async with httpx.AsyncClient(base_url=self.base_url, timeout=10) as client:
             response = await client.post(path, content=body_str, headers=headers)
 
@@ -530,20 +660,34 @@ class BlofinAdapter(ExchangeAdapter):
                 order_info = {}
             exchange_order_id = order_info.get("orderId")
 
-            fill_price = None
-            pnl = None
-            fee = None
-            try:
-                await asyncio.sleep(2.0)
-                details = await self._get_order_details(symbol, exchange_order_id)
-                if details:
-                    fill_price = self._parse_fill_price(details)
-                    pnl_raw = details.get("pnl") or details.get("realizedPnl")
-                    pnl = Decimal(str(pnl_raw)) if pnl_raw is not None else None
-                    fee_raw = details.get("fee")
-                    fee = Decimal(str(fee_raw)) if fee_raw is not None else None
-            except Exception as e:
-                logger.warning(f"Blofin close_position: fill details fetch failed (close still succeeded): {e}")
+            details = None
+            if exchange_order_id:
+                try:
+                    await asyncio.sleep(2.0)
+                    details = await self._get_order_details(symbol, exchange_order_id)
+                except Exception as e:
+                    logger.warning(f"Blofin close_position: fill details fetch failed (close still succeeded): {e}")
+            else:
+                reduce_side = "sell" if side == "long" else "buy"
+                try:
+                    await asyncio.sleep(2.0)
+                    details = await self._recover_close_fill(symbol, reduce_side, position_size_before, since_ms)
+                    if details:
+                        exchange_order_id = details.get("orderId")
+                        logger.info(
+                            f"Blofin close_position: recovered fill for {symbol} via "
+                            f"orders-history, orderId={exchange_order_id}"
+                        )
+                except Exception as e:
+                    logger.warning(f"Blofin close_position: fill recovery failed: {e}")
+
+            fill_price = pnl = fee = None
+            if details:
+                fill_price = self._parse_fill_price(details)
+                pnl_raw = details.get("pnl") or details.get("realizedPnl")
+                pnl = Decimal(str(pnl_raw)) if pnl_raw is not None else None
+                fee_raw = details.get("fee")
+                fee = Decimal(str(fee_raw)) if fee_raw is not None else None
 
             return OrderResult(
                 success=True,
@@ -581,6 +725,7 @@ class BlofinAdapter(ExchangeAdapter):
         body_str = json.dumps(body_data, separators=(",", ":"))
         headers  = self._headers("POST", path, body_str)
 
+        since_ms = int(time.time() * 1000)
         async with httpx.AsyncClient(base_url=self.base_url, timeout=10) as client:
             response = await client.post(path, content=body_str, headers=headers)
 
@@ -609,20 +754,33 @@ class BlofinAdapter(ExchangeAdapter):
             order_info = order_info[0] if order_info else {}
         exchange_order_id = order_info.get("orderId")
 
-        fill_price = None
-        pnl = None
-        fee = None
-        try:
-            await asyncio.sleep(2.0)
-            details = await self._get_order_details(symbol, exchange_order_id)
-            if details:
-                fill_price = self._parse_fill_price(details)
-                pnl_raw = details.get("pnl") or details.get("realizedPnl")
-                pnl = Decimal(str(pnl_raw)) if pnl_raw is not None else None
-                fee_raw = details.get("fee")
-                fee = Decimal(str(fee_raw)) if fee_raw is not None else None
-        except Exception as e:
-            logger.warning(f"Blofin _partial_close: fill details fetch failed (order still filled): {e}")
+        details = None
+        if exchange_order_id:
+            try:
+                await asyncio.sleep(2.0)
+                details = await self._get_order_details(symbol, exchange_order_id)
+            except Exception as e:
+                logger.warning(f"Blofin _partial_close: fill details fetch failed (order still filled): {e}")
+        else:
+            try:
+                await asyncio.sleep(2.0)
+                details = await self._recover_close_fill(symbol, reduce_side, size, since_ms)
+                if details:
+                    exchange_order_id = details.get("orderId")
+                    logger.info(
+                        f"Blofin _partial_close: recovered fill for {symbol} via "
+                        f"orders-history, orderId={exchange_order_id}"
+                    )
+            except Exception as e:
+                logger.warning(f"Blofin _partial_close: fill recovery failed: {e}")
+
+        fill_price = pnl = fee = None
+        if details:
+            fill_price = self._parse_fill_price(details)
+            pnl_raw = details.get("pnl") or details.get("realizedPnl")
+            pnl = Decimal(str(pnl_raw)) if pnl_raw is not None else None
+            fee_raw = details.get("fee")
+            fee = Decimal(str(fee_raw)) if fee_raw is not None else None
 
         return OrderResult(
             success=True,
