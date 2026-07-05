@@ -763,6 +763,7 @@ async def _handle_full_external_close(
     synthetic_order_id: Optional[uuid.UUID] = None
     close_side = "sell" if side == "long" else "buy"
     pnl_float = float(pnl_realized) if pnl_realized is not None and not pnl_unconfirmed else None
+    fee_float = float(history["fee"]) if history.get("fee") is not None else None
     try:
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
@@ -770,11 +771,11 @@ async def _handle_full_external_close(
                 INSERT INTO orders
                   (symbol, side, signal, order_type, size, platform,
                    strategy_id, account_id, status, actual_fill_price,
-                   pnl, raw_webhook, signal_source)
+                   pnl, raw_webhook, signal_source, exchange_fee)
                 VALUES
                   ($1, $2, $3, 'market', $4, 'exchange',
                    $5, $6, 'filled', $7,
-                   $8, '{}'::jsonb, 'reconciler')
+                   $8, '{}'::jsonb, 'reconciler', $9)
                 RETURNING id
                 """,
                 symbol, close_side,
@@ -783,6 +784,7 @@ async def _handle_full_external_close(
                 strategy["id"], acct_id,
                 float(closing_price) if closing_price else None,
                 pnl_float,
+                fee_float,
             )
         synthetic_order_id = row["id"]
     except Exception as e:
@@ -917,6 +919,7 @@ async def _recover_manual_close_pnl(pool) -> None:
                 )
                 # Create a linked synthetic close order if none exists
                 close_side = "sell" if side == "long" else "buy"
+                fee_float = float(history["fee"]) if history.get("fee") is not None else None
                 try:
                     async with pool.acquire() as conn:
                         await conn.execute(
@@ -924,10 +927,10 @@ async def _recover_manual_close_pnl(pool) -> None:
                             INSERT INTO orders
                               (symbol, side, signal, order_type, size, platform,
                                strategy_id, account_id, status, actual_fill_price,
-                               pnl, raw_webhook, signal_source, closes_position_id)
+                               pnl, raw_webhook, signal_source, closes_position_id, exchange_fee)
                             SELECT $1, $2, 'exchange_close', 'market', $3, 'exchange',
                                    $4, $5, 'filled', $6,
-                                   $7, '{}'::jsonb, 'reconciler', $8
+                                   $7, '{}'::jsonb, 'reconciler', $8, $9
                             WHERE NOT EXISTS (
                                 SELECT 1 FROM orders o WHERE o.closes_position_id = $8
                             )
@@ -938,6 +941,7 @@ async def _recover_manual_close_pnl(pool) -> None:
                             float(pos_closing_price) if pos_closing_price else None,
                             pnl_float,
                             pos_id,
+                            fee_float,
                         )
                 except Exception as e:
                     logger.error(f"reconciler: failed to create close order for {pos_id}: {e}")

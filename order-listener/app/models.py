@@ -72,6 +72,7 @@ class OrderResult(BaseModel):
     actual_fill_size:  Optional[Decimal] = None
     pnl:               Optional[Decimal] = None
     realized_pnl:      Optional[Decimal] = None
+    fee:               Optional[Decimal] = None
 
 
 class OrderResponse(BaseModel):

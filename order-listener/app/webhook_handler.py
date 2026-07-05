@@ -315,7 +315,11 @@ async def _finalize_signal_log(
         logger.error(f"Failed to finalize signal_log {signal_log_id}: {e}")
 
 
-async def _log_order(pool, payload: WebhookPayload, order_id: uuid.UUID, strategy_id: str, pair_id: int, symbol: str, effective_leverage: int, effective_margin_mode: str = "isolated") -> None:
+async def _log_order(
+    pool, payload: WebhookPayload, order_id: uuid.UUID, strategy_id: str, pair_id: int,
+    symbol: str, effective_leverage: int, effective_margin_mode: str = "isolated",
+    signal_log_id: Optional[int] = None,
+) -> None:
     """Write initial order record to PostgreSQL."""
     async with pool.acquire() as conn:
         await conn.execute(
@@ -323,11 +327,12 @@ async def _log_order(pool, payload: WebhookPayload, order_id: uuid.UUID, strateg
             INSERT INTO orders (
                 id, received_at, pair_id, symbol, side, signal, order_type, size, price,
                 leverage, margin_mode, tp_price, sl_price, platform, strategy_id,
-                status, raw_webhook, signal_source, signal_metadata, indicator_price
+                status, raw_webhook, signal_source, signal_metadata, indicator_price,
+                signal_log_id
             ) VALUES (
                 $1, $2, $3, $4, $5, $6, $7, $8,
                 $9, $10, $11, $12, $13, $14, $15,
-                'received', $16, $17, $18, $19
+                'received', $16, $17, $18, $19, $20
             )
             """,
             order_id,
@@ -348,7 +353,8 @@ async def _log_order(pool, payload: WebhookPayload, order_id: uuid.UUID, strateg
             json.dumps(payload.model_dump(mode="json", exclude={"token"})),
             payload.signal_source,
             json.dumps(payload.signal_metadata),
-            payload.indicator_price
+            payload.indicator_price,
+            signal_log_id,
         )
 
 async def _update_order_status(
@@ -367,7 +373,8 @@ async def _update_order_status(
                 error_msg = $4,
                 actual_fill_price = $6,
                 pnl = $7,
-                account_id = $8
+                account_id = $8,
+                exchange_fee = $9
             WHERE id = $5
             """,
             status,
@@ -378,6 +385,7 @@ async def _update_order_status(
             result.actual_fill_price if result else None,
             result.realized_pnl if result else None,
             account_id or None,
+            result.fee if result else None,
         )
 
     # Publish status update to Redis
@@ -911,7 +919,7 @@ async def receive_webhook(
         )
 
     await _log_webhook_call(pool, strategy_id, 200)
-    await _log_order(pool, payload, order_id, strategy_id, None, resolved.execution_symbol, effective_leverage, effective_margin_mode)
+    await _log_order(pool, payload, order_id, strategy_id, None, resolved.execution_symbol, effective_leverage, effective_margin_mode, signal_log_id)
 
     _acct_id    = strategy.get("account_id") or ""
     _acct_label = await _get_account_label(pool, _acct_id)
@@ -1125,6 +1133,7 @@ async def close_strategy_position(
                 elif t.get("tpsl") == "sl":
                     pre_sl = float(px)
 
+    fee = None
     if not skip_exchange:
         close_result = await call_executor_close_position(
             account_id=acct_id,
@@ -1136,6 +1145,7 @@ async def close_strategy_position(
             return close_result
         fill_price   = close_result.get('actual_fill_price')
         realized_pnl = close_result.get('realized_pnl')
+        fee          = close_result.get('fee')
 
     fill_price_f   = float(fill_price)   if fill_price   is not None else None
     realized_pnl_f = float(realized_pnl) if realized_pnl is not None else None
@@ -1227,6 +1237,7 @@ async def close_strategy_position(
         "status":            "filled",
         "actual_fill_price": fill_price,
         "realized_pnl":      realized_pnl,
+        "fee":               fee,
         "is_full_close":     is_full,
         "position_id":       str(pos['id']),
     }
@@ -1440,12 +1451,14 @@ async def _process_order(
             if close_result.get("success"):
                 fp = close_result.get("actual_fill_price")
                 rp = close_result.get("realized_pnl")
+                fe = close_result.get("fee")
                 flat_order_result = OrderResult(
                     success=True,
                     status="filled",
                     exchange_order_id=close_result.get("exchange_order_id"),
                     actual_fill_price=Decimal(str(fp)) if fp is not None else None,
                     realized_pnl=Decimal(str(rp))      if rp is not None else None,
+                    fee=Decimal(str(fe))               if fe is not None else None,
                 )
 
             await _update_order_status(
@@ -1485,12 +1498,14 @@ async def _process_order(
             if close_result.get("success"):
                 fp = close_result.get("actual_fill_price")
                 rp = close_result.get("realized_pnl")
+                fe = close_result.get("fee")
                 order_result = OrderResult(
                     success=True,
                     status="filled",
                     exchange_order_id=close_result.get("exchange_order_id"),
                     actual_fill_price=Decimal(str(fp)) if fp is not None else None,
                     realized_pnl=Decimal(str(rp)) if rp is not None else None,
+                    fee=Decimal(str(fe)) if fe is not None else None,
                 )
 
             await _update_order_status(
