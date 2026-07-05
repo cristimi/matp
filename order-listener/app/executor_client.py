@@ -7,6 +7,7 @@ returning 200 to TradingView and writing the final status to the DB.
 """
 import logging
 import os
+import time
 from typing import Optional
 
 import httpx
@@ -29,6 +30,7 @@ async def call_executor(order_request: dict) -> dict:
     order_id = order_request.get("order_id", "unknown")
     logger.info(f"Calling executor for order {order_id}: {url}")
 
+    start = time.monotonic()
     try:
         async with httpx.AsyncClient(timeout=TIMEOUT_SECONDS) as client:
             response = await client.post(url, json=order_request)
@@ -36,7 +38,11 @@ async def call_executor(order_request: dict) -> dict:
             return response.json()
 
     except httpx.TimeoutException as e:
-        logger.error(f"Executor timeout for order {order_id}: {e}")
+        elapsed_ms = int((time.monotonic() - start) * 1000)
+        logger.error(
+            f"Executor timeout for order {order_id} after {elapsed_ms}ms: "
+            f"{type(e).__name__}: {e!r}"
+        )
         return {
             "success": False,
             "status": "route_failed",
@@ -46,8 +52,9 @@ async def call_executor(order_request: dict) -> dict:
         }
 
     except httpx.HTTPStatusError as e:
+        elapsed_ms = int((time.monotonic() - start) * 1000)
         logger.error(
-            f"Executor HTTP error for order {order_id}: "
+            f"Executor HTTP error for order {order_id} after {elapsed_ms}ms: "
             f"{e.response.status_code} {e.response.text}"
         )
         return {
@@ -59,7 +66,11 @@ async def call_executor(order_request: dict) -> dict:
         }
 
     except Exception as e:
-        logger.error(f"Executor call failed for order {order_id}: {e}")
+        elapsed_ms = int((time.monotonic() - start) * 1000)
+        logger.error(
+            f"Executor call failed for order {order_id} after {elapsed_ms}ms: "
+            f"{type(e).__name__}: {e!r}"
+        )
         return {
             "success": False,
             "status": "route_failed",
@@ -151,6 +162,7 @@ async def get_account_positions(account_id: str) -> Optional[list]:
     Never raises.
     """
     url = f"{EXECUTOR_URL}/accounts/{account_id}/positions"
+    start = time.monotonic()
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.get(url)
@@ -158,9 +170,10 @@ async def get_account_positions(account_id: str) -> Optional[list]:
             data = response.json()
             return data if isinstance(data, list) else []
     except Exception as e:
+        elapsed_ms = int((time.monotonic() - start) * 1000)
         logger.warning(
-            f"get_account_positions({account_id}) UNKNOWN "
-            f"(treating as unreachable, NOT as empty): {e}"
+            f"get_account_positions({account_id}) UNKNOWN after {elapsed_ms}ms "
+            f"(treating as unreachable, NOT as empty): {type(e).__name__}: {e!r}"
         )
         return None
 
@@ -178,6 +191,7 @@ async def get_account_open_orders(account_id: str, symbol: Optional[str] = None)
     """
     url = f"{EXECUTOR_URL}/accounts/{account_id}/orders"
     params = {"symbol": symbol} if symbol else None
+    start = time.monotonic()
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.get(url, params=params)
@@ -185,9 +199,10 @@ async def get_account_open_orders(account_id: str, symbol: Optional[str] = None)
             data = response.json()
             return data if isinstance(data, list) else None
     except Exception as e:
+        elapsed_ms = int((time.monotonic() - start) * 1000)
         logger.warning(
-            f"get_account_open_orders({account_id}) UNKNOWN "
-            f"(treating as unreachable, NOT as empty): {e}"
+            f"get_account_open_orders({account_id}) UNKNOWN after {elapsed_ms}ms "
+            f"(treating as unreachable, NOT as empty): {type(e).__name__}: {e!r}"
         )
         return None
 
@@ -296,6 +311,7 @@ async def call_executor_close_position(
     if size is not None:
         body["size"] = str(size)
 
+    start = time.monotonic()
     try:
         async with httpx.AsyncClient(timeout=TIMEOUT_SECONDS) as client:
             response = await client.post(url, json=body)
@@ -303,7 +319,11 @@ async def call_executor_close_position(
             return response.json()
 
     except httpx.TimeoutException as e:
-        logger.error(f"Executor close-position timeout: {e}")
+        elapsed_ms = int((time.monotonic() - start) * 1000)
+        logger.error(
+            f"Executor close-position timeout after {elapsed_ms}ms: "
+            f"{type(e).__name__}: {e!r}"
+        )
         return {
             "success": False,
             "status":  "route_failed",
@@ -311,7 +331,11 @@ async def call_executor_close_position(
         }
 
     except Exception as e:
-        logger.error(f"Executor close-position failed: {e}")
+        elapsed_ms = int((time.monotonic() - start) * 1000)
+        logger.error(
+            f"Executor close-position failed after {elapsed_ms}ms: "
+            f"{type(e).__name__}: {e!r}"
+        )
         return {
             "success": False,
             "status":  "route_failed",
