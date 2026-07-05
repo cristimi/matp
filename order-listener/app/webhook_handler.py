@@ -1243,6 +1243,7 @@ async def close_strategy_position(
     }
     if not skip_exchange:
         ret["exchange_order_id"] = close_result.get('exchange_order_id')
+        ret["raw_response"] = close_result.get('raw_response')
     return ret
 
 
@@ -1456,6 +1457,7 @@ async def _process_order(
                     success=True,
                     status="filled",
                     exchange_order_id=close_result.get("exchange_order_id"),
+                    raw_response=close_result.get("raw_response"),
                     actual_fill_price=Decimal(str(fp)) if fp is not None else None,
                     realized_pnl=Decimal(str(rp))      if rp is not None else None,
                     fee=Decimal(str(fe))               if fe is not None else None,
@@ -1503,6 +1505,7 @@ async def _process_order(
                     success=True,
                     status="filled",
                     exchange_order_id=close_result.get("exchange_order_id"),
+                    raw_response=close_result.get("raw_response"),
                     actual_fill_price=Decimal(str(fp)) if fp is not None else None,
                     realized_pnl=Decimal(str(rp)) if rp is not None else None,
                     fee=Decimal(str(fe)) if fe is not None else None,
