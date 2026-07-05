@@ -150,10 +150,23 @@ def test_falling_wedge():
 
 
 def test_no_pattern_diverging():
-    # Both rising but at different rates and diverging → no parallel, no convergence
+    # Both rising but at different rates and diverging → no parallel, no convergence.
+    # This is same-sign divergence (both boundaries trend up), not a megaphone, so
+    # under the broadening definition (strictly opposite-sign slopes; see geometry.py)
+    # it deliberately stays no_pattern rather than being reclassified.
     candles = _zigzag_candles(80, lambda i: 110 + 0.3 * i, lambda i: 90 + 0.1 * i)
     result  = detect_geometry(candles)
     assert result.get('shape') == 'no_pattern', f"Got: {result}"
+
+
+def test_broadening():
+    # Upper boundary rising, lower boundary falling → classic broadening/megaphone
+    # (opposite-sign slopes), mirrors the reproduced HYPE geometry case.
+    candles = _zigzag_candles(80, lambda i: 110 + 0.15 * i, lambda i: 90 - 0.08 * i)
+    result  = detect_geometry(candles)
+    assert result.get('shape') == 'broadening', f"Got: {result}"
+    assert result.get('fit_quality') == 'strong'
+    assert result.get('convergence_pct_per_bar', 0) < 0
 
 
 def test_position_in_range():

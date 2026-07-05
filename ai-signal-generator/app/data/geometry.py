@@ -12,6 +12,13 @@ Thresholds (adjust here if needed; documented per spec):
   STRONG_R2         = 0.70  both R² ≥ this → fit_quality = "strong"
   MIN_R2_PATTERN    = 0.30  if either R² < this, refuse to classify → no_pattern
 
+Shapes: horizontal_channel, ascending_channel, descending_channel, ascending_triangle,
+descending_triangle, rising_wedge, falling_wedge, broadening, no_pattern.
+  broadening: upper boundary rising AND lower boundary falling (strictly opposite-sign
+  slopes) — the classic widening megaphone. Same-sign-but-diverging series (both
+  boundaries trending the same direction at different rates) are not "broadening" and
+  remain no_pattern; see the comment at the classification site.
+
 Rationale for thresholds:
 - FLAT / PARALLEL: 0.05% per bar means a $100 price moves $0.05 per bar on the boundary
   before it's considered "trending". Tight but prevents mislabelling slow drifts as channels.
@@ -182,6 +189,14 @@ def detect_geometry(candles: list[dict], lookback: int = 120) -> dict:
             shape = 'rising_wedge'
         elif is_converging and _is_negative(upper_pct) and _is_negative(lower_pct):
             shape = 'falling_wedge'
+        elif _is_positive(upper_pct) and _is_negative(lower_pct):
+            # Broadening / megaphone: upper boundary rising, lower boundary falling.
+            # Design decision: "broadening" is defined as strictly opposite-sign
+            # slopes (the classic widening-megaphone shape), not merely a negative
+            # conv_rate. Same-sign-but-diverging series (e.g. both boundaries
+            # rising, upper faster than lower — see test_no_pattern_diverging)
+            # don't form a megaphone and are deliberately left as no_pattern.
+            shape = 'broadening'
         else:
             shape = 'no_pattern'
 
