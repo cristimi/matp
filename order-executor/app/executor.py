@@ -101,8 +101,9 @@ async def _update_order_record(order_id: str, result: OrderResult):
                     error_msg          = $4,
                     actual_fill_price  = $5,
                     pnl                = $6,
+                    exchange_fee       = $7,
                     updated_at         = NOW()
-                WHERE id = $7
+                WHERE id = $8
                 """,
                 result.status,
                 result.exchange_order_id,
@@ -110,6 +111,7 @@ async def _update_order_record(order_id: str, result: OrderResult):
                 result.error_msg,
                 float(result.actual_fill_price) if result.actual_fill_price else None,
                 float(result.realized_pnl) if result.realized_pnl else None,
+                float(result.fee) if result.fee is not None else None,
                 order_id,
             )
     except Exception as e:
@@ -185,6 +187,7 @@ async def _update_execution_log(
                     error_message     = $4,
                     placed_at         = $5,
                     filled_at         = $6,
+                    exchange_fee      = $7,
                     updated_at        = NOW()
                 WHERE id = $1
                 """,
@@ -194,6 +197,7 @@ async def _update_execution_log(
                 result.error_msg,
                 placed_at,
                 filled_at,
+                float(result.fee) if result.fee is not None else None,
             )
     except Exception as e:
         logger.error(f"Failed to update execution log {oel_id}: {e}")

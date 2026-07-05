@@ -574,8 +574,13 @@ class HyperliquidAdapter(ExchangeAdapter):
                         logger.info(f"HL TP/SL leg {i} placed: oid={trig_oid}")
 
         realized_pnl = None
-        if reduce_only and oid and order_status == "filled":
-            realized_pnl = await self._get_fill_pnl(int(oid))
+        fee = None
+        if oid and order_status == "filled":
+            fill_data = await self._get_fill_data(int(oid))
+            if fill_data is not None:
+                fee = fill_data["fee"]
+                if reduce_only:
+                    realized_pnl = fill_data["pnl"]
 
         ts = filled.get("totalSz")
         if ts not in (None, "", "0"):
@@ -590,13 +595,15 @@ class HyperliquidAdapter(ExchangeAdapter):
             actual_fill_price=Decimal(str(avg_px)) if avg_px else None,
             actual_fill_size=actual_fill_size,
             realized_pnl=realized_pnl,
+            fee=fee,
             raw_response=data,
         )
 
-    async def _get_fill_pnl(self, oid: int) -> Optional[Decimal]:
-        """Query userFills and return sum of closedPnl for the given order id.
+    async def _get_fill_data(self, oid: int) -> Optional[dict]:
+        """Query userFills once and return {'pnl': Decimal, 'fee': Decimal} summed across
+        every partial fill matching the given order id.
         Returns None only if no fills are found for the oid (unknown outcome).
-        Returns Decimal('0') if the order generated no closed PnL (e.g. open)."""
+        Returns zeros if the order generated no closed PnL (e.g. open) — fee is still summed."""
         try:
             async with httpx.AsyncClient(timeout=10) as client:
                 resp = await client.post(
@@ -609,9 +616,12 @@ class HyperliquidAdapter(ExchangeAdapter):
             if not matching:
                 logger.warning(f"No fills found for oid {oid} in userFills")
                 return None
-            return sum(Decimal(str(f.get("closedPnl", "0"))) for f in matching)
+            return {
+                "pnl": sum(Decimal(str(f.get("closedPnl", "0"))) for f in matching),
+                "fee": sum(Decimal(str(f.get("fee", "0"))) for f in matching),
+            }
         except Exception as e:
-            logger.warning(f"HyperliquidAdapter._get_fill_pnl failed for oid {oid}: {e}")
+            logger.warning(f"HyperliquidAdapter._get_fill_data failed for oid {oid}: {e}")
             return None
 
     async def _update_leverage(self, asset_index: int, leverage: int, margin_mode: str) -> None:
@@ -768,6 +778,7 @@ class HyperliquidAdapter(ExchangeAdapter):
             is_liquidation = any("Liq" in (f.get("dir") or "") for f in close_fills)
 
             pnl = sum(Decimal(str(f.get("closedPnl", "0"))) for f in close_fills)
+            fee = sum(Decimal(str(f.get("fee", "0"))) for f in close_fills)
             # Weighted-average closing price
             total_sz = sum(float(f.get("sz", 0)) for f in close_fills)
             if total_sz > 0:
@@ -784,6 +795,7 @@ class HyperliquidAdapter(ExchangeAdapter):
                 "close_reason":  "Liquidated" if is_liquidation else "Closed on exchange",
                 "closing_price": Decimal(str(round(avg_px, 6))),
                 "pnl_realized":  pnl,
+                "fee":           fee,
                 "closed_at":     closed_at,
                 "raw":           close_fills,
             }

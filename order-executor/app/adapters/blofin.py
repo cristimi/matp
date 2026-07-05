@@ -141,7 +141,11 @@ class BlofinAdapter(ExchangeAdapter):
         return await self._get_order_details(symbol, order_id)
 
     async def _get_order_details(self, symbol: str, order_id: str) -> dict:
-        # Try orders-history first (completed/filled orders), fall back to fills
+        # Try orders-history first (completed/filled orders), fall back to fills.
+        # Blofin's orderId query param is not a reliable server-side filter — it can
+        # return the account's recent order list for the instrument regardless of the
+        # requested orderId — so match the requested order against the returned items
+        # ourselves rather than trusting items[0].
         for path_tpl in [
             "/api/v1/trade/orders-history?instId={inst}&orderId={oid}",
             "/api/v1/trade/fills-history?instId={inst}&orderId={oid}",
@@ -159,8 +163,15 @@ class BlofinAdapter(ExchangeAdapter):
                     logger.debug(f"Blofin {full_path} returned code {code}: {data.get('msg')}")
                     continue
                 items = data.get("data", [])
-                if isinstance(items, list) and items:
-                    return items[0]
+                if not isinstance(items, list) or not items:
+                    continue
+                match = next((it for it in items if str(it.get("orderId")) == str(order_id)), None)
+                if match:
+                    return match
+                logger.warning(
+                    f"Blofin: {path_tpl.split('?')[0]} returned {len(items)} entries "
+                    f"but none matched orderId={order_id} for {symbol}"
+                )
             except Exception as e:
                 logger.warning(f"Blofin: error fetching order details from {path_tpl}: {e}")
         logger.warning(f"Blofin: could not fetch order details for {order_id}")
@@ -358,6 +369,7 @@ class BlofinAdapter(ExchangeAdapter):
                 actual_fill_price = None
                 actual_fill_size  = None
                 pnl = None
+                fee = None
                 order_status = "filled"
                 if order.order_type == "market":
                     try:
@@ -370,6 +382,8 @@ class BlofinAdapter(ExchangeAdapter):
                             )
                             pnl_raw = details.get("pnl") or details.get("realizedPnl")
                             pnl = Decimal(str(pnl_raw)) if pnl_raw is not None else None
+                            fee_raw = details.get("fee")
+                            fee = Decimal(str(fee_raw)) if fee_raw is not None else None
                     except Exception as e:
                         logger.warning(f"Blofin submit_order: fill details fetch failed (order still filled): {e}")
                 else:
@@ -395,6 +409,8 @@ class BlofinAdapter(ExchangeAdapter):
                             )
                             pnl_raw = state_info.get("pnl") or state_info.get("realizedPnl")
                             pnl = Decimal(str(pnl_raw)) if pnl_raw is not None else None
+                            fee_raw = state_info.get("fee")
+                            fee = Decimal(str(fee_raw)) if fee_raw is not None else None
                     except Exception as e:
                         logger.warning(
                             f"Blofin submit_order: limit state lookup failed, assuming pending: {e}"
@@ -412,6 +428,7 @@ class BlofinAdapter(ExchangeAdapter):
                     actual_fill_price=actual_fill_price,
                     actual_fill_size=actual_fill_size,
                     realized_pnl=pnl,
+                    fee=fee,
                 )
             else:
                 error = data.get("msg", "Unknown error")
@@ -515,6 +532,7 @@ class BlofinAdapter(ExchangeAdapter):
 
             fill_price = None
             pnl = None
+            fee = None
             try:
                 await asyncio.sleep(2.0)
                 details = await self._get_order_details(symbol, exchange_order_id)
@@ -522,6 +540,8 @@ class BlofinAdapter(ExchangeAdapter):
                     fill_price = self._parse_fill_price(details)
                     pnl_raw = details.get("pnl") or details.get("realizedPnl")
                     pnl = Decimal(str(pnl_raw)) if pnl_raw is not None else None
+                    fee_raw = details.get("fee")
+                    fee = Decimal(str(fee_raw)) if fee_raw is not None else None
             except Exception as e:
                 logger.warning(f"Blofin close_position: fill details fetch failed (close still succeeded): {e}")
 
@@ -532,6 +552,7 @@ class BlofinAdapter(ExchangeAdapter):
                 raw_response=data,
                 actual_fill_price=fill_price,
                 realized_pnl=pnl,
+                fee=fee,
             )
         else:
             error = data.get("msg", "Unknown error")
@@ -590,6 +611,7 @@ class BlofinAdapter(ExchangeAdapter):
 
         fill_price = None
         pnl = None
+        fee = None
         try:
             await asyncio.sleep(2.0)
             details = await self._get_order_details(symbol, exchange_order_id)
@@ -597,6 +619,8 @@ class BlofinAdapter(ExchangeAdapter):
                 fill_price = self._parse_fill_price(details)
                 pnl_raw = details.get("pnl") or details.get("realizedPnl")
                 pnl = Decimal(str(pnl_raw)) if pnl_raw is not None else None
+                fee_raw = details.get("fee")
+                fee = Decimal(str(fee_raw)) if fee_raw is not None else None
         except Exception as e:
             logger.warning(f"Blofin _partial_close: fill details fetch failed (order still filled): {e}")
 
@@ -607,6 +631,7 @@ class BlofinAdapter(ExchangeAdapter):
             raw_response=data,
             actual_fill_price=fill_price,
             realized_pnl=pnl,
+            fee=fee,
         )
 
     async def get_balance(self) -> dict:
@@ -736,6 +761,7 @@ class BlofinAdapter(ExchangeAdapter):
                 "close_reason":  "Liquidated" if is_liquidation else "Closed on exchange",
                 "closing_price": Decimal(str(entry.get("closeAveragePrice") or "0")),
                 "pnl_realized":  pnl + fee,
+                "fee":           fee,
                 "closed_at":     closed_at,
                 "raw":           entry,
             }
