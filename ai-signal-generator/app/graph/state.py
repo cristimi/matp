@@ -26,6 +26,7 @@ class AgentState(TypedDict):
     ohlcv_data:          Optional[dict]
     technical_indicators: Optional[dict]
     geometry_data:       Optional[dict]
+    volume_profile:      Optional[dict]
     sentiment_data:      Optional[dict]
     news_data:           Optional[dict]    # {'items': list, 'lookback_hours': int}
     market_context:      Optional[dict]

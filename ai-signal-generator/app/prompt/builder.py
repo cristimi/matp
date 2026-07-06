@@ -239,6 +239,30 @@ def _render_macro(state: dict) -> str:
     return '\n'.join(lines)
 
 
+def _render_volume_profile(state: dict) -> str:
+    sc = state['strategy_config']
+    vp = state.get('volume_profile') or {}
+
+    # Honest absence: when the toggled-on source failed or degraded to None,
+    # the DATA WARNINGS path already tells the LLM — emit nothing rather than
+    # fabricating neutral values (same precedent as _render_geometry).
+    if not sc.get('use_volume_profile') or not vp:
+        return ''
+
+    def _levels(levels: list) -> str:
+        return ', '.join(str(p) for p in levels) if levels else 'none detected'
+
+    lines = [
+        'VOLUME PROFILE (lookback window):',
+        f"POC (Point of Control): {_v(vp.get('poc_price'))}",
+        f"Value Area High:        {_v(vp.get('value_area_high'))}",
+        f"Value Area Low:         {_v(vp.get('value_area_low'))}",
+        f"HVN Levels:             {_levels(vp.get('hvn_levels') or [])}",
+        f"LVN Levels:             {_levels(vp.get('lvn_levels') or [])}",
+    ]
+    return '\n'.join(lines)
+
+
 def _render_geometry(state: dict) -> str:
     sc = state['strategy_config']
     gd = state.get('geometry_data') or {}
@@ -367,6 +391,12 @@ async def build_prompt(state: dict, db_pool) -> str:
     # 2. Technical — only if toggled on and OHLCV data is available
     if sc.get('use_technical') and state.get('ohlcv_data'):
         sections.append(_render_technical(state))
+
+    # 2.4. Volume profile — just before Geometry, so boundary/HVN confluence reads adjacently
+    if sc.get('use_volume_profile'):
+        vp = _render_volume_profile(state)
+        if vp:
+            sections.append(vp)
 
     # 2.5. Geometry — only if toggled on and geometry data is available
     if sc.get('use_geometry'):
