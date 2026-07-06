@@ -1,3 +1,4 @@
+import json
 import logging
 import uuid
 from datetime import datetime, timezone
@@ -37,6 +38,9 @@ async def node_dispatch(state: AgentState) -> AgentState:
     llm_provider = sc.get('llm_provider', 'google')
     llm_model    = sc.get('llm_model',    'gemini-2.0-flash')
 
+    geometry_data = state.get('geometry_data')
+    geometry_data_json = json.dumps(geometry_data) if geometry_data is not None else None
+
     # ── 1. Always write ai_signal_log ────────────────────────────────────
     signal_log_id = None
     try:
@@ -48,8 +52,8 @@ async def node_dispatch(state: AgentState) -> AgentState:
                     prompt_template, data_sources_used, context_tokens,
                     proposed_action, confidence, reasoning,
                     gate_passed, gate_rejection_reason, dry_run,
-                    llm_provider, llm_model
-                ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+                    llm_provider, llm_model, geometry_data
+                ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16::jsonb)
                 RETURNING id
                 """,
                 state['strategy_id'],
@@ -67,6 +71,7 @@ async def node_dispatch(state: AgentState) -> AgentState:
                 bool(sc.get('dry_run', True)),
                 llm_provider,
                 llm_model,
+                geometry_data_json,
             )
     except Exception as exc:
         logger.error("Failed to write ai_signal_log: %s", exc)
