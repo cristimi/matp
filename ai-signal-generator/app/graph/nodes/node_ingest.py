@@ -3,12 +3,14 @@ import logging
 import httpx
 
 from app.config import settings
+from app.data.divergence import detect_momentum_divergence
 from app.data.geometry import detect_geometry
 from app.data.indicators import compute_indicators
 from app.data.macro import fetch_btc_dominance, fetch_macro
 from app.data.news import fetch_news_digest
 from app.data.ohlcv import fetch_ohlcv
 from app.data.sentiment import fetch_fear_greed, fetch_funding_rate, fetch_open_interest
+from app.data.volatility import compute_volatility_regime
 from app.data.volume_profile import compute_volume_profile
 from app.graph.state import AgentState
 
@@ -48,11 +50,14 @@ async def node_ingest(state: AgentState) -> AgentState:
     technical_indicators = None
     geometry_data        = None
     volume_profile       = None
+    momentum_divergence  = None
+    volatility_regime    = None
 
     # Any candle-derived source needs the OHLCV fetch, not just technical/geometry —
     # otherwise its toggle is a dead switch on strategies without those two.
     if (sc.get('use_technical') or sc.get('use_geometry')
-            or sc.get('use_volume_profile')):
+            or sc.get('use_volume_profile') or sc.get('use_momentum_divergence')
+            or sc.get('use_volatility_regime')):
         try:
             ohlcv_data = await fetch_ohlcv(exchange_id, ccxt_symbol, interval, lookback_days)
         except Exception as exc:
@@ -85,6 +90,20 @@ async def node_ingest(state: AgentState) -> AgentState:
                 except Exception as exc:
                     errors.append(f"volume_profile:{exc}")
                     logger.warning("Volume profile computation failed: %s", exc)
+
+            if sc.get('use_momentum_divergence'):
+                try:
+                    momentum_divergence = detect_momentum_divergence(closed_candles)
+                except Exception as exc:
+                    errors.append(f"momentum_divergence:{exc}")
+                    logger.warning("Momentum divergence detection failed: %s", exc)
+
+            if sc.get('use_volatility_regime'):
+                try:
+                    volatility_regime = compute_volatility_regime(closed_candles)
+                except Exception as exc:
+                    errors.append(f"volatility_regime:{exc}")
+                    logger.warning("Volatility regime computation failed: %s", exc)
 
     # ── Sentiment ────────────────────────────────────────────────────────
     fear_greed    = None
@@ -157,6 +176,8 @@ async def node_ingest(state: AgentState) -> AgentState:
         'technical_indicators': technical_indicators,
         'geometry_data':        geometry_data,
         'volume_profile':       volume_profile,
+        'momentum_divergence':  momentum_divergence,
+        'volatility_regime':    volatility_regime,
         'open_orders':          open_orders,
         'sentiment_data':       sentiment_data,
         'news_data':            news_data,

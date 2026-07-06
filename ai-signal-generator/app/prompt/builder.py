@@ -239,6 +239,50 @@ def _render_macro(state: dict) -> str:
     return '\n'.join(lines)
 
 
+def _render_volatility_regime(state: dict) -> str:
+    sc = state['strategy_config']
+    vr = state.get('volatility_regime') or {}
+
+    # Honest absence — same precedent as _render_geometry / _render_volume_profile.
+    if not sc.get('use_volatility_regime') or not vr:
+        return ''
+
+    squeeze = vr.get('squeeze_flag')
+    squeeze_str = (
+        'YES — Bollinger width compressed (bottom of window), expansion likely'
+        if squeeze else 'no'
+    )
+
+    lines = [
+        'VOLATILITY REGIME:',
+        f"ATR(14) Percentile:   {_v(vr.get('atr_percentile'))} (vs trailing window)",
+        f"BB Width Percentile:  {_v(vr.get('bb_width_percentile'))}",
+        f"Squeeze:              {squeeze_str}",
+    ]
+    return '\n'.join(lines)
+
+
+def _render_momentum_divergence(state: dict) -> str:
+    sc = state['strategy_config']
+    md = state.get('momentum_divergence') or {}
+
+    # Honest absence — same precedent as _render_geometry / _render_volume_profile.
+    if not sc.get('use_momentum_divergence') or not md:
+        return ''
+
+    def _line(kind, bars_since) -> str:
+        if kind in (None, 'none'):
+            return 'none detected'
+        return f"{kind} (swing confirmed {_v(bars_since)} bars ago)"
+
+    lines = [
+        'MOMENTUM DIVERGENCE:',
+        f"RSI Divergence:       {_line(md.get('rsi_divergence'), md.get('rsi_divergence_bars_since'))}",
+        f"MACD Divergence:      {_line(md.get('macd_divergence'), md.get('macd_divergence_bars_since'))}",
+    ]
+    return '\n'.join(lines)
+
+
 def _render_volume_profile(state: dict) -> str:
     sc = state['strategy_config']
     vp = state.get('volume_profile') or {}
@@ -391,6 +435,18 @@ async def build_prompt(state: dict, db_pool) -> str:
     # 2. Technical — only if toggled on and OHLCV data is available
     if sc.get('use_technical') and state.get('ohlcv_data'):
         sections.append(_render_technical(state))
+
+    # 2.2. Volatility regime — right after Technical
+    if sc.get('use_volatility_regime'):
+        vr = _render_volatility_regime(state)
+        if vr:
+            sections.append(vr)
+
+    # 2.3. Momentum divergence
+    if sc.get('use_momentum_divergence'):
+        md = _render_momentum_divergence(state)
+        if md:
+            sections.append(md)
 
     # 2.4. Volume profile — just before Geometry, so boundary/HVN confluence reads adjacently
     if sc.get('use_volume_profile'):
