@@ -246,22 +246,34 @@ def _render_geometry(state: dict) -> str:
     if not sc.get('use_geometry') or not gd:
         return ''
 
-    shape       = gd.get('shape', '')
-    fit_quality = gd.get('fit_quality')
+    shape        = gd.get('shape', '')
+    fit_quality  = gd.get('fit_quality')
     unclassified = shape == 'no_pattern'
+    reliable     = fit_quality == 'strong'
 
-    # A genuinely noisy fit (no_pattern + weak, e.g. too few swings) stays omitted.
     # A no_pattern shape with a strong trendline fit means the boundaries are real
     # but don't match any named pattern — surface it labeled as unclassified rather
-    # than silently dropping a strong fit.
-    if unclassified and fit_quality != 'strong':
-        return ''
+    # than silently dropping a strong fit. A genuinely noisy fit (no_pattern + weak,
+    # e.g. too few swings) is now surfaced too, honestly labeled as unreliable,
+    # instead of being dropped — dropping it read to the LLM as "geometry data is
+    # missing" rather than "geometry was checked and found no reliable structure".
+    if unclassified:
+        label = (
+            'Unclassified Structure (no named pattern, but a strong trendline fit)'
+            if reliable else
+            'No Reliable Pattern (weak trendline fit)'
+        )
+    else:
+        label = shape.replace('_', ' ').title()
 
     conv = gd.get('convergence_pct_per_bar', 0.0)
 
-    label = (
-        'Unclassified Structure (no named pattern, but a strong trendline fit)'
-        if unclassified else shape.replace('_', ' ').title()
+    # position_in_range_pct is computed off the fitted boundaries, so when the fit
+    # itself isn't strong the position readout inherits that noise — flag it rather
+    # than presenting it as a dependable 0-100 locator.
+    position_suffix = (
+        '%  (0=at lower boundary, 100=at upper)' if reliable else
+        "%  (UNRELIABLE — fit_quality is not 'strong'; boundary may be noisy)"
     )
 
     lines = [
@@ -272,7 +284,7 @@ def _render_geometry(state: dict) -> str:
         f"Lower Boundary:       {_v(gd.get('lower_boundary'))}",
         f"Upper Touches:        {_v(gd.get('upper_touches'))}",
         f"Lower Touches:        {_v(gd.get('lower_touches'))}",
-        f"Position in Range:    {_v(gd.get('position_in_range_pct'))}%  (0=at lower boundary, 100=at upper)",
+        f"Position in Range:    {_v(gd.get('position_in_range_pct'))}{position_suffix}",
         f"Pattern Age:          {_v(gd.get('pattern_age_bars'))} bars",
     ]
 
@@ -356,7 +368,7 @@ async def build_prompt(state: dict, db_pool) -> str:
     if sc.get('use_technical') and state.get('ohlcv_data'):
         sections.append(_render_technical(state))
 
-    # 2.5. Geometry — only if toggled on and a named pattern was detected
+    # 2.5. Geometry — only if toggled on and geometry data is available
     if sc.get('use_geometry'):
         g = _render_geometry(state)
         if g:
