@@ -56,6 +56,16 @@ Changes required: DB migration, one line in `node_ingest.py`, `ai.ts` GET/PUT, U
 
 ## Deferred Backlog
 - **Minimum order value guard**: before sending to exchange, check notional value (qty × price) against known exchange minimums. Reject with `size_too_small` before hitting the exchange API.
+- **`_render_task` offers an `increase` action the output schema rejects**: when a position
+  is open, `ai-signal-generator/app/prompt/builder.py::_render_task` instructs the model
+  'If the position is showing strong continuation: output "increase" (only if within size
+  limits)' — but the `LLMSignalOutput.action` Literal in
+  `app/graph/nodes/node_analyze.py` has no `increase` member. A model that follows the
+  instruction fails structured-output validation, which lands in `node_analyze`'s error
+  path (`llm_signal = None`) and wastes the cycle. Either add `increase` to the Literal
+  (plus guard/dispatch support for scaling in) or delete the line from `_render_task`;
+  deleting the line is the small safe fix. Found 2026-07-06 during the target-state prompt
+  design audit (`docs/design/ai_prompts/00_audit.md` §2.10).
 - **AI prompt template management page**: no runtime CRUD exists for `ai_prompt_templates` — templates are seed-only (migrations 006/010, `ON CONFLICT DO NOTHING`). `GET /api/ai/templates` is read-only; there is no POST/PUT/DELETE anywhere. Build a create/edit page.
   - **Safety model — clone-to-edit, not edit-in-place.** Templates are shared: every `ai_strategy_config.template_id` points at one. Editing a base template in place silently changes behavior for all strategies referencing it (incl. live ones) and breaks backtest/live parity. Seed templates must stay immutable; user clones one into a custom template and edits that.
   - Needs `is_system` (or `created_by`) flag to distinguish/protect seeded rows; CRUD endpoints; a "N strategies use this" warning before destructive actions.
@@ -111,6 +121,13 @@ Changes required: DB migration, one line in `node_ingest.py`, `ai.ts` GET/PUT, U
   leftover. Do a matching cleanup migration for `tester.*`, and update the strategy-tester
   copy/migrate code that still references those columns. Deferred intentionally during the live
   sweep to keep blast radius small.
+- **`tester.ai_strategy_config` toggle parity**: the tester copy (26 columns on the live DB
+  as of 2026-07-06) is missing the newer data-source toggles that `public.ai_strategy_config`
+  has — `use_geometry` (migration 035) and `use_economic_calendar`. Backtests of a strategy
+  with geometry enabled cannot mirror its live config. Any future data-source toggles widen
+  the gap (the specced-but-unapplied migration 045 in
+  `docs/design/ai_prompts/20_plumbing_specs.md` would add 8 more). Fold the toggle columns
+  into the `tester.*` schema-cleanup migration above rather than doing a separate pass.
 - **notification-service: iOS web push**: v1 (`notification-service/`, 2026-07-04) only targets
   Android/Chrome web push. iOS Safari's web-push support (PWA installed to home screen, iOS
   16.4+) has different registration quirks; needs its own verification pass.
