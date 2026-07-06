@@ -157,6 +157,44 @@ def _render_open_orders(state: dict) -> str:
     return '\n'.join(lines)
 
 
+def _render_orderbook(state: dict) -> str:
+    sc = state['strategy_config']
+    ob = state.get('orderbook_data') or {}
+
+    # Honest absence — same precedent as _render_geometry / _render_volume_profile.
+    if not sc.get('use_orderbook') or not ob:
+        return ''
+
+    def _usd(v) -> str:
+        return f"${v:,.0f}" if v is not None else 'N/A'
+
+    def _wall(w) -> str:
+        if not w:
+            return 'none within band'
+        return f"{_usd(w.get('size_usd'))} @ {_v(w.get('price'))}"
+
+    imb = ob.get('depth_imbalance_ratio')
+    if imb is None:
+        imb_str = 'N/A'
+    elif imb > 1.2:
+        imb_str = f"{imb} (bids heavier)"
+    elif imb < 0.8:
+        imb_str = f"{imb} (asks heavier)"
+    else:
+        imb_str = f"{imb} (balanced)"
+
+    lines = [
+        'ORDER BOOK:',
+        f"Bid Depth (±1% / ±2%):  {_usd(ob.get('bid_depth_1pct_usd'))} / {_usd(ob.get('bid_depth_2pct_usd'))}",
+        f"Ask Depth (±1% / ±2%):  {_usd(ob.get('ask_depth_1pct_usd'))} / {_usd(ob.get('ask_depth_2pct_usd'))}",
+        f"Depth Imbalance (1% bid/ask): {imb_str}",
+        f"Largest Bid Wall:       {_wall(ob.get('largest_bid_wall'))}",
+        f"Largest Ask Wall:       {_wall(ob.get('largest_ask_wall'))}",
+        'Note: snapshot at analysis time — resting walls can be pulled; treat as corroboration only.',
+    ]
+    return '\n'.join(lines)
+
+
 def _render_sentiment(state: dict) -> str:
     sc = state['strategy_config']
     sd = state.get('sentiment_data') or {}
@@ -465,6 +503,12 @@ async def build_prompt(state: dict, db_pool) -> str:
         oo = _render_open_orders(state)
         if oo:
             sections.append(oo)
+
+    # 2.7. Order book — only if toggled on and snapshot is available
+    if sc.get('use_orderbook'):
+        ob = _render_orderbook(state)
+        if ob:
+            sections.append(ob)
 
     # 3. Sentiment — only if at least one sentiment source is toggled on
     if sc.get('use_fear_greed') or sc.get('use_funding_rate') or sc.get('use_open_interest'):

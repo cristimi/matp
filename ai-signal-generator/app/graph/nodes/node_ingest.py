@@ -9,6 +9,7 @@ from app.data.indicators import compute_indicators
 from app.data.macro import fetch_btc_dominance, fetch_macro
 from app.data.news import fetch_news_digest
 from app.data.ohlcv import fetch_ohlcv
+from app.data.orderbook import fetch_orderbook_depth
 from app.data.sentiment import fetch_fear_greed, fetch_funding_rate, fetch_open_interest
 from app.data.volatility import compute_volatility_regime
 from app.data.volume_profile import compute_volume_profile
@@ -170,6 +171,15 @@ async def node_ingest(state: AgentState) -> AgentState:
             logger.warning("Open orders fetch failed: %s", exc)
             open_orders = []
 
+    # ── Order book depth (snapshot at cycle time) ────────────────────────
+    orderbook_data = None
+    if sc.get('use_orderbook'):
+        try:
+            orderbook_data = await fetch_orderbook_depth(exchange_id, ccxt_symbol)
+        except Exception as exc:
+            errors.append(f"orderbook:{exc}")
+            logger.warning("Orderbook fetch failed: %s", exc)
+
     return {
         **state,
         'ohlcv_data':           ohlcv_data,
@@ -179,6 +189,7 @@ async def node_ingest(state: AgentState) -> AgentState:
         'momentum_divergence':  momentum_divergence,
         'volatility_regime':    volatility_regime,
         'open_orders':          open_orders,
+        'orderbook_data':       orderbook_data,
         'sentiment_data':       sentiment_data,
         'news_data':            news_data,
         'market_context':       market_context,
