@@ -74,3 +74,28 @@ Note: `momentum_divergence` and `volatility_regime` are not in `geometric_range`
 consumption table in the Phase-1 design (volume_profile is); they're enabled here for
 live verification. Flip them off if the extra ~10 lines of context aren't wanted
 long-term on this strategy.
+
+## Reverted (same day, 2026-07-06)
+
+The live enablement above was a one-off verification. Reverted so all Wave-1 fields stay
+inert until the Wave 4 template cutover:
+
+```
+$ docker compose exec postgres psql -U matp -d matp -c "UPDATE ai_strategy_config SET use_volume_profile=false, use_momentum_divergence=false, use_volatility_regime=false WHERE strategy_id='ai-btc-6f8c' RETURNING strategy_id, use_volume_profile, use_momentum_divergence, use_volatility_regime;"
+ strategy_id | use_volume_profile | use_momentum_divergence | use_volatility_regime
+-------------+--------------------+-------------------------+-----------------------
+ ai-btc-6f8c | f                  | f                       | f
+(1 row)
+
+UPDATE 1
+```
+
+Cross-check — no strategy has any of the 8 new toggles enabled:
+
+```
+$ docker compose exec postgres psql -U matp -d matp -c "SELECT count(*) AS strategies_with_new_toggles_on FROM ai_strategy_config WHERE use_volume_profile OR use_momentum_divergence OR use_volatility_regime OR use_mtf_structure OR use_orderbook OR use_cvd OR use_funding_history OR use_liquidations;"
+ strategies_with_new_toggles_on
+--------------------------------
+                              0
+(1 row)
+```
