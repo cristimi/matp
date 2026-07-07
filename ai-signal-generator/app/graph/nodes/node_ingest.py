@@ -3,6 +3,7 @@ import logging
 import httpx
 
 from app.config import settings
+from app.data.cvd import fetch_cvd
 from app.data.divergence import detect_momentum_divergence
 from app.data.geometry import detect_geometry
 from app.data.funding import fetch_funding_history
@@ -201,6 +202,15 @@ async def node_ingest(state: AgentState) -> AgentState:
             errors.append(f"orderbook:{exc}")
             logger.warning("Orderbook fetch failed: %s", exc)
 
+    # ── Order flow (CVD from a public-trades snapshot) ───────────────────
+    cvd_data = None
+    if sc.get('use_cvd'):
+        try:
+            cvd_data = await fetch_cvd(exchange_id, ccxt_symbol)
+        except Exception as exc:
+            errors.append(f"cvd:{exc}")
+            logger.warning("CVD fetch failed: %s", exc)
+
     return {
         **state,
         'ohlcv_data':           ohlcv_data,
@@ -212,6 +222,7 @@ async def node_ingest(state: AgentState) -> AgentState:
         'mtf_structure':        mtf_structure,
         'open_orders':          open_orders,
         'orderbook_data':       orderbook_data,
+        'cvd_data':             cvd_data,
         'sentiment_data':       sentiment_data,
         'news_data':            news_data,
         'market_context':       market_context,

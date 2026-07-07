@@ -195,6 +195,34 @@ def _render_orderbook(state: dict) -> str:
     return '\n'.join(lines)
 
 
+def _render_cvd(state: dict) -> str:
+    sc = state['strategy_config']
+    cd = state.get('cvd_data') or {}
+
+    # Honest absence — same precedent as _render_geometry / _render_orderbook.
+    if not sc.get('use_cvd') or not cd:
+        return ''
+
+    def _usd(v) -> str:
+        if v is None:
+            return 'not covered by snapshot'
+        return f"{'+' if v >= 0 else '-'}${abs(v):,.0f}"
+
+    lines = ['ORDER FLOW (CVD):']
+    for key, label in (('cvd_1h', 'CVD (1h window):'), ('cvd_4h', 'CVD (4h window):')):
+        if key in cd:
+            lines.append(f"{label:<22}{_usd(cd[key])}")
+    lines += [
+        f"{'CVD (full snapshot):':<22}{_usd(cd.get('cvd_window_usd'))}",
+        f"{'CVD Trend:':<22}{_v(cd.get('cvd_trend'))}",
+        f"{'CVD/Price Divergence:':<22}{_v(cd.get('cvd_divergence'))}",
+        f"Coverage:             {_v(cd.get('trades_count'))} trades spanning "
+        f"{_v(cd.get('coverage_minutes'))} min (single snapshot, one API call — "
+        'short coverage is a data limit, not low activity).',
+    ]
+    return '\n'.join(lines)
+
+
 def _render_funding_history(sd: dict) -> list[str]:
     """
     Funding-history lines rendered inside the SENTIMENT section, under the
@@ -553,6 +581,12 @@ async def build_prompt(state: dict, db_pool) -> str:
         ob = _render_orderbook(state)
         if ob:
             sections.append(ob)
+
+    # 2.8. Order flow (CVD) — only if toggled on and snapshot is available
+    if sc.get('use_cvd'):
+        cv = _render_cvd(state)
+        if cv:
+            sections.append(cv)
 
     # 3. Sentiment — only if at least one sentiment source is toggled on
     # (funding_history counts: it renders inside this section, so without it
