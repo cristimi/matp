@@ -30,6 +30,7 @@ class AgentState(TypedDict):
     momentum_divergence: Optional[dict]
     volatility_regime:   Optional[dict]
     orderbook_data:      Optional[dict]
+    mtf_structure:       Optional[list]
     sentiment_data:      Optional[dict]
     news_data:           Optional[dict]    # {'items': list, 'lookback_hours': int}
     market_context:      Optional[dict]

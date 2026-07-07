@@ -195,6 +195,24 @@ def _render_orderbook(state: dict) -> str:
     return '\n'.join(lines)
 
 
+def _render_funding_history(sd: dict) -> list[str]:
+    """
+    Funding-history lines rendered inside the SENTIMENT section, under the
+    Funding Rate line — the deliberate exception to one-renderer-one-section
+    (a split funding read across two sections would be worse for the LLM).
+    Returns [] when the data is absent — honest absence.
+    """
+    fh = sd.get('funding_history')
+    if not fh:
+        return []
+    streak = fh.get('funding_streak')
+    direction = fh.get('streak_direction', '?')
+    return [
+        f"Funding Percentile:   {_v(fh.get('funding_percentile'))} (vs trailing 30d window)",
+        f"Funding Streak:       {_v(streak)} consecutive {direction} settlements",
+    ]
+
+
 def _render_sentiment(state: dict) -> str:
     sc = state['strategy_config']
     sd = state.get('sentiment_data') or {}
@@ -210,6 +228,9 @@ def _render_sentiment(state: dict) -> str:
         fr = sd.get('funding_rate')
         if fr:
             body.append(f"Funding Rate:         {fr['rate']}% ({fr['interpretation']})")
+
+    if sc.get('use_funding_history'):
+        body += _render_funding_history(sd)
 
     if sc.get('use_open_interest'):
         oi = sd.get('open_interest')
@@ -274,6 +295,23 @@ def _render_macro(state: dict) -> str:
             if 'us10y' in m:
                 lines.append(f"US10Y:                {m['us10y']}% ({m.get('us10y_trend', 'N/A')})")
 
+    return '\n'.join(lines)
+
+
+def _render_mtf_structure(state: dict) -> str:
+    sc  = state['strategy_config']
+    mtf = state.get('mtf_structure') or []
+
+    # Honest absence — same precedent as _render_geometry / _render_volume_profile.
+    if not sc.get('use_mtf_structure') or not mtf:
+        return ''
+
+    lines = ['MULTI-TIMEFRAME STRUCTURE:']
+    for entry in mtf:
+        lines.append(
+            f"{entry.get('tf', '?'):>4}: {_v(entry.get('trend_direction')):<9} — "
+            f"{_v(entry.get('ema_posture'))}; swings {_v(entry.get('swing_structure'))}"
+        )
     return '\n'.join(lines)
 
 
@@ -474,6 +512,12 @@ async def build_prompt(state: dict, db_pool) -> str:
     if sc.get('use_technical') and state.get('ohlcv_data'):
         sections.append(_render_technical(state))
 
+    # 2.1. Multi-timeframe structure — immediately after Technical
+    if sc.get('use_mtf_structure'):
+        mtf = _render_mtf_structure(state)
+        if mtf:
+            sections.append(mtf)
+
     # 2.2. Volatility regime — right after Technical
     if sc.get('use_volatility_regime'):
         vr = _render_volatility_regime(state)
@@ -511,7 +555,10 @@ async def build_prompt(state: dict, db_pool) -> str:
             sections.append(ob)
 
     # 3. Sentiment — only if at least one sentiment source is toggled on
-    if sc.get('use_fear_greed') or sc.get('use_funding_rate') or sc.get('use_open_interest'):
+    # (funding_history counts: it renders inside this section, so without it
+    # in the gate the toggle would be dead on a strategy with the trio off)
+    if (sc.get('use_fear_greed') or sc.get('use_funding_rate')
+            or sc.get('use_open_interest') or sc.get('use_funding_history')):
         s = _render_sentiment(state)
         if s:
             sections.append(s)

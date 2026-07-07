@@ -5,8 +5,10 @@ import httpx
 from app.config import settings
 from app.data.divergence import detect_momentum_divergence
 from app.data.geometry import detect_geometry
+from app.data.funding import fetch_funding_history
 from app.data.indicators import compute_indicators
 from app.data.macro import fetch_btc_dominance, fetch_macro
+from app.data.mtf import fetch_mtf_structure
 from app.data.news import fetch_news_digest
 from app.data.ohlcv import fetch_ohlcv
 from app.data.orderbook import fetch_orderbook_depth
@@ -106,6 +108,15 @@ async def node_ingest(state: AgentState) -> AgentState:
                     errors.append(f"volatility_regime:{exc}")
                     logger.warning("Volatility regime computation failed: %s", exc)
 
+    # ── Multi-timeframe structure (own OHLCV fetches, fixed TFs) ─────────
+    mtf_structure = None
+    if sc.get('use_mtf_structure'):
+        try:
+            mtf_structure = await fetch_mtf_structure(exchange_id, ccxt_symbol)
+        except Exception as exc:
+            errors.append(f"mtf_structure:{exc}")
+            logger.warning("MTF structure fetch failed: %s", exc)
+
     # ── Sentiment ────────────────────────────────────────────────────────
     fear_greed    = None
     funding_rate  = None
@@ -129,10 +140,20 @@ async def node_ingest(state: AgentState) -> AgentState:
         except Exception as exc:
             errors.append(f"open_interest:{exc}")
 
+    # Sentiment-class data — grouped with the trio above, renders inside
+    # the SENTIMENT section rather than as its own top-level section.
+    funding_history = None
+    if sc.get('use_funding_history'):
+        try:
+            funding_history = await fetch_funding_history(exchange_id, ccxt_symbol)
+        except Exception as exc:
+            errors.append(f"funding_history:{exc}")
+
     sentiment_data = {
-        'fear_greed':    fear_greed,
-        'funding_rate':  funding_rate,
-        'open_interest': open_interest,
+        'fear_greed':      fear_greed,
+        'funding_rate':    funding_rate,
+        'open_interest':   open_interest,
+        'funding_history': funding_history,
     }
 
     # ── News ─────────────────────────────────────────────────────────────
@@ -188,6 +209,7 @@ async def node_ingest(state: AgentState) -> AgentState:
         'volume_profile':       volume_profile,
         'momentum_divergence':  momentum_divergence,
         'volatility_regime':    volatility_regime,
+        'mtf_structure':        mtf_structure,
         'open_orders':          open_orders,
         'orderbook_data':       orderbook_data,
         'sentiment_data':       sentiment_data,
