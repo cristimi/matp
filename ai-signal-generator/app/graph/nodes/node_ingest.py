@@ -15,7 +15,11 @@ from app.data.mtf import fetch_mtf_structure
 from app.data.news import fetch_news_digest
 from app.data.ohlcv import fetch_ohlcv
 from app.data.orderbook import fetch_orderbook_depth
-from app.data.sentiment import fetch_fear_greed, fetch_funding_rate, fetch_open_interest
+from app.data.sentiment import (
+    fetch_fear_greed,
+    fetch_funding_rate,
+    fetch_open_interest_aggregate,
+)
 from app.data.volatility import compute_volatility_regime
 from app.data.volume_profile import compute_volume_profile
 from app.graph.state import AgentState
@@ -139,7 +143,7 @@ async def node_ingest(state: AgentState) -> AgentState:
 
     if sc.get('use_open_interest'):
         try:
-            open_interest = await fetch_open_interest(exchange_id, ccxt_symbol)
+            open_interest = await fetch_open_interest_aggregate(exchange_id, ccxt_symbol)
         except Exception as exc:
             errors.append(f"open_interest:{exc}")
 

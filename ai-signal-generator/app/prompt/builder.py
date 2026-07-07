@@ -268,7 +268,14 @@ def _render_sentiment(state: dict) -> str:
             ch        = oi.get('change_24h_pct', 0)
             ls_ratio  = oi.get('long_short_ratio')
             ls_interp = oi.get('ls_interpretation', 'data unavailable')
-            body.append(f"Open Interest:        ${oi_b:.2f}B ({ch}% 24h)")
+            venues    = oi.get('venues')
+            label     = f"Open Interest ({'+'.join(venues)}):" if venues else 'Open Interest:'
+            label     = f"{label:<22}"
+            if not label.endswith(' '):
+                label += ' '
+            own_usd   = oi.get('own_venue_usd')
+            suffix    = f"  [own venue: ${own_usd / 1_000_000_000:.2f}B]" if own_usd else ''
+            body.append(f"{label}${oi_b:.2f}B ({ch}% 24h){suffix}")
             body.append(f"Long/Short Ratio:     {_v(ls_ratio)} ({ls_interp})")
 
     if not body:

@@ -10,6 +10,7 @@ import httpx
 import ccxt.async_support as ccxt_async
 
 from app.data.ohlcv import resolve_ccxt_symbol
+from app.data.signal_sources import resolve_signal_venues, venue_has
 
 logger = logging.getLogger(__name__)
 
@@ -136,6 +137,113 @@ async def fetch_open_interest(exchange_id: str, symbol: str) -> dict | None:
                 pass
 
 
+async def _fetch_venue_oi(venue: str, venue_symbol: str) -> dict | None:
+    """One venue's perp OI in USD (+ previous-day value where history exists)."""
+    exchange = None
+    try:
+        cls = getattr(ccxt_async, venue, None)
+        if cls is None:
+            raise ValueError(f"Unknown venue: {venue}")
+        exchange = cls({'enableRateLimit': True})
+        await exchange.load_markets()
+
+        oi = await exchange.fetch_open_interest(venue_symbol)
+        value  = oi.get('openInterestValue')
+        amount = oi.get('openInterestAmount') or oi.get('openInterest')
+        px = None
+        if not value and amount:
+            # Stage-A probe: binance/bybit report OI in contracts/base amount —
+            # normalize to USD via last price so venues can be summed.
+            ticker = await exchange.fetch_ticker(venue_symbol)
+            px = float(ticker.get('last') or 0)
+            value = float(amount) * px if px else None
+        if not value:
+            return None
+        value = float(value)
+
+        prev = None
+        try:
+            hist = await exchange.fetch_open_interest_history(venue_symbol, '1d', limit=2)
+            if hist and len(hist) >= 2:
+                h = hist[-2]
+                prev = h.get('openInterestValue')
+                if not prev:
+                    h_amt = h.get('openInterestAmount') or h.get('openInterest')
+                    if h_amt and px:
+                        prev = float(h_amt) * px  # same-price approximation
+                prev = float(prev) if prev else None
+        except Exception:
+            pass
+
+        return {'venue': venue, 'oi_usd': value, 'prev_oi_usd': prev}
+
+    except Exception as exc:
+        logger.warning("_fetch_venue_oi error [%s %s]: %s", venue, venue_symbol, exc)
+        return None
+
+    finally:
+        if exchange:
+            try:
+                await exchange.close()
+            except Exception:
+                pass
+
+
+async def fetch_open_interest_aggregate(exchange_id: str, symbol: str) -> dict | None:
+    """
+    Market-wide open interest: sum of perp OI (USD) across the configured
+    signal venues (venues that error or don't list the symbol drop out and the
+    label shrinks). The execution venue's own OI is attached as a suffix when
+    it responds; long/short ratio keeps today's execution-venue behavior.
+
+    Returns the legacy shape plus: {'venues': [...], 'own_venue_usd': float|None}.
+    None when zero venues respond AND the execution venue has nothing either
+    (honest absence).
+    """
+    try:
+        targets = await resolve_signal_venues(symbol, 'fetchOpenInterest')
+        results = await asyncio.gather(
+            *(_fetch_venue_oi(v, s) for v, s in targets), return_exceptions=True,
+        )
+        per_venue = [r for r in results if isinstance(r, dict)]
+
+        total = sum(r['oi_usd'] for r in per_venue)
+        with_prev = [r for r in per_venue if r.get('prev_oi_usd')]
+        change_24h_pct = 0.0
+        if with_prev:
+            curr = sum(r['oi_usd'] for r in with_prev)
+            prev = sum(r['prev_oi_usd'] for r in with_prev)
+            if prev > 0:
+                change_24h_pct = round((curr - prev) / prev * 100, 2)
+
+        # Own-venue suffix + long/short ratio via the existing single-venue path.
+        own = None
+        if exchange_id not in [r['venue'] for r in per_venue] and venue_has(exchange_id, 'fetchOpenInterest'):
+            own = await fetch_open_interest(exchange_id, symbol)
+
+        long_short_ratio  = own.get('long_short_ratio') if own else None
+        ls_interpretation = own.get('ls_interpretation') if own else 'data unavailable'
+        own_usd = float(own['open_interest_usd']) if own and own.get('open_interest_usd') else None
+
+        if not per_venue:
+            if own_usd:
+                return {**own, 'venues': [exchange_id], 'own_venue_usd': None}
+            return None
+
+        return {
+            'open_interest_usd': total,
+            'change_24h_pct':    change_24h_pct,
+            'long_short_ratio':  long_short_ratio,
+            'ls_interpretation': ls_interpretation,
+            'venues':            [r['venue'] for r in per_venue],
+            'own_venue_usd':     own_usd,
+        }
+
+    except Exception as exc:
+        logger.warning("fetch_open_interest_aggregate error [%s %s]: %s", exchange_id, symbol, exc)
+        return None
+
+
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 
@@ -148,5 +256,8 @@ if __name__ == "__main__":
 
         oi = await fetch_open_interest("binance", "BTC/USDT")
         print(f"Open Interest: {oi}")
+
+        agg = await fetch_open_interest_aggregate("hyperliquid", "BTC/USDT")
+        print(f"OI Aggregate:  {agg}")
 
     asyncio.run(_test())
