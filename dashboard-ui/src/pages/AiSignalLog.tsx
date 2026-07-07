@@ -13,6 +13,9 @@ interface AiSignalRow {
   prompt_template:       string | null;
   data_sources_used:     string[] | null;
   context_tokens:        number | null;
+  input_tokens:          number | null;
+  output_tokens:         number | null;
+  total_tokens:          number | null;
   proposed_action:       string | null;
   confidence:            number | null;
   reasoning:             string | null;
@@ -220,6 +223,10 @@ function AiSignalCard({ row }: { row: AiSignalRow }) {
               { label: 'LLM',           value: row.llm_model ?? row.llm_provider },
               { label: 'Template',      value: row.prompt_template },
               { label: 'Context tokens',value: row.context_tokens != null ? String(row.context_tokens) : null },
+              { label: 'Tokens (actual)',
+                value: row.total_tokens != null
+                  ? `${row.total_tokens} (in ${row.input_tokens ?? '?'} / out ${row.output_tokens ?? '?'})`
+                  : null },
               { label: 'Cycle interval',value: row.cycle_interval },
               { label: 'Trigger',       value: row.trigger_reason?.replace(/_/g, ' ') },
               { label: 'Dry run',       value: row.dry_run ? 'yes' : 'no' },

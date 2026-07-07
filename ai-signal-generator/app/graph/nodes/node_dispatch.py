@@ -52,8 +52,10 @@ async def node_dispatch(state: AgentState) -> AgentState:
                     prompt_template, data_sources_used, context_tokens,
                     proposed_action, confidence, reasoning,
                     gate_passed, gate_rejection_reason, dry_run,
-                    llm_provider, llm_model, geometry_data
-                ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16::jsonb)
+                    llm_provider, llm_model, geometry_data,
+                    input_tokens, output_tokens, total_tokens
+                ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16::jsonb,
+                          $17,$18,$19)
                 RETURNING id
                 """,
                 state['strategy_id'],
@@ -72,6 +74,9 @@ async def node_dispatch(state: AgentState) -> AgentState:
                 llm_provider,
                 llm_model,
                 geometry_data_json,
+                (state.get('llm_usage') or {}).get('input_tokens'),
+                (state.get('llm_usage') or {}).get('output_tokens'),
+                (state.get('llm_usage') or {}).get('total_tokens'),
             )
     except Exception as exc:
         logger.error("Failed to write ai_signal_log: %s", exc)

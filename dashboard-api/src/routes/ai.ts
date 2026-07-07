@@ -93,6 +93,66 @@ router.get('/models', async (req: Request, res: Response) => {
   }
 });
 
+// ── GET /usage — actual LLM token spend (total / per strategy / per model) ────
+// Actuals come from ai_signal_log.input/output/total_tokens (provider-reported,
+// migration 047; NULL on pre-047 rows and calls that failed before a response).
+
+router.get('/usage', async (req: Request, res: Response) => {
+  const from = (req.query.from as string) || '1970-01-01';
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(from)) {
+    return res.status(400).json({ error: 'from must be YYYY-MM-DD' });
+  }
+  try {
+    const totalQ = getPool().query(
+      `SELECT COUNT(*) FILTER (WHERE total_tokens IS NOT NULL) AS tracked_calls,
+              COUNT(*)                                         AS llm_calls,
+              COALESCE(SUM(input_tokens), 0)  AS input_tokens,
+              COALESCE(SUM(output_tokens), 0) AS output_tokens,
+              COALESCE(SUM(total_tokens), 0)  AS total_tokens
+       FROM ai_signal_log
+       WHERE triggered_at >= $1 AND context_tokens > 0`,
+      [from]
+    );
+    const perStrategyQ = getPool().query(
+      `SELECT strategy_id,
+              COUNT(*) FILTER (WHERE total_tokens IS NOT NULL) AS tracked_calls,
+              COALESCE(SUM(input_tokens), 0)  AS input_tokens,
+              COALESCE(SUM(output_tokens), 0) AS output_tokens,
+              COALESCE(SUM(total_tokens), 0)  AS total_tokens
+       FROM ai_signal_log
+       WHERE triggered_at >= $1 AND context_tokens > 0
+       GROUP BY strategy_id
+       ORDER BY SUM(total_tokens) DESC NULLS LAST`,
+      [from]
+    );
+    const perModelQ = getPool().query(
+      `SELECT llm_provider, llm_model,
+              COUNT(*) FILTER (WHERE total_tokens IS NOT NULL) AS tracked_calls,
+              COALESCE(SUM(input_tokens), 0)  AS input_tokens,
+              COALESCE(SUM(output_tokens), 0) AS output_tokens,
+              COALESCE(SUM(total_tokens), 0)  AS total_tokens
+       FROM ai_signal_log
+       WHERE triggered_at >= $1 AND context_tokens > 0
+       GROUP BY llm_provider, llm_model
+       ORDER BY SUM(total_tokens) DESC NULLS LAST`,
+      [from]
+    );
+    const [total, perStrategy, perModel] = await Promise.all([totalQ, perStrategyQ, perModelQ]);
+    const num = (r: any) => Object.fromEntries(
+      Object.entries(r).map(([k, v]) => [k, typeof v === 'string' && /^\d+$/.test(v) ? Number(v) : v])
+    );
+    res.json({
+      from,
+      note: 'actuals from provider usage_metadata; rows before 2026-07-07 (migration 047) have no actuals',
+      total:        num(total.rows[0]),
+      per_strategy: perStrategy.rows.map(num),
+      per_model:    perModel.rows.map(num),
+    });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ── Register specific sub-paths BEFORE parent paths ──────────────────────────
 // (Express ordering: more-specific routes first)
 
@@ -255,7 +315,10 @@ router.get('/strategies/:id/signals/stats', async (req: Request, res: Response) 
          COUNT(*) FILTER (WHERE proposed_action = 'close_short')  AS close_short_count,
          COUNT(*) FILTER (WHERE gate_rejection_reason = 'llm_failed') AS llm_failures,
          COUNT(*) FILTER (WHERE gate_rejection_reason = 'confidence_below_threshold') AS low_confidence_rejections,
-         COUNT(*) FILTER (WHERE gate_rejection_reason = 'cooldown_active') AS cooldown_rejections
+         COUNT(*) FILTER (WHERE gate_rejection_reason = 'cooldown_active') AS cooldown_rejections,
+         COALESCE(SUM(input_tokens), 0)  AS input_tokens,
+         COALESCE(SUM(output_tokens), 0) AS output_tokens,
+         COALESCE(SUM(total_tokens), 0)  AS total_tokens
        FROM ai_signal_log
        WHERE strategy_id = $1`,
       [req.params.id]
@@ -279,6 +342,9 @@ router.get('/strategies/:id/signals/stats', async (req: Request, res: Response) 
       llm_failures:              Number(r.llm_failures),
       low_confidence_rejections: Number(r.low_confidence_rejections),
       cooldown_rejections:       Number(r.cooldown_rejections),
+      input_tokens:              Number(r.input_tokens),
+      output_tokens:             Number(r.output_tokens),
+      total_tokens:              Number(r.total_tokens),
     });
   } catch (e: any) {
     res.status(500).json({ error: e.message });

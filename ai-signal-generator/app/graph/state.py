@@ -41,7 +41,8 @@ class AgentState(TypedDict):
 
     # LLM output (Node 2 output)
     llm_signal:         Optional[dict]     # LLMSignalOutput as dict
-    context_tokens:     Optional[int]
+    context_tokens:     Optional[int]      # chars/4 input estimate (pre-call)
+    llm_usage:          Optional[dict]     # provider-reported actuals: input/output/total tokens
 
     # Gate result (Node 3 output)
     gate_passed:           bool

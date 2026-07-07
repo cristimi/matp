@@ -71,20 +71,47 @@ async def node_analyze(state: AgentState) -> AgentState:
         provider = state['strategy_config'].get('llm_provider', _DEFAULT_PROVIDER)
         model    = state['strategy_config'].get('llm_model',    _DEFAULT_MODEL)
 
-        llm            = _get_llm(provider, model)
-        structured_llm = llm.with_structured_output(LLMSignalOutput)
-        signal: LLMSignalOutput = await asyncio.wait_for(
+        llm = _get_llm(provider, model)
+        # include_raw: the plain structured wrapper returns only the parsed
+        # Pydantic object and discards usage_metadata — raw is needed to
+        # account actual token spend (input/output incl. thinking).
+        structured_llm = llm.with_structured_output(LLMSignalOutput, include_raw=True)
+        resp = await asyncio.wait_for(
             structured_llm.ainvoke(prompt), timeout=_LLM_TIMEOUT
         )
 
+        raw    = resp.get('raw')
+        signal = resp.get('parsed')
+        usage  = getattr(raw, 'usage_metadata', None) or {}
+        llm_usage = {
+            'input_tokens':  usage.get('input_tokens'),
+            'output_tokens': usage.get('output_tokens'),
+            'total_tokens':  usage.get('total_tokens'),
+        } if usage else None
+
+        if signal is None:
+            # Tokens were spent even though parsing failed — keep the usage.
+            logger.error(
+                "node_analyze structured-output parse failed [%s/%s]: %s",
+                provider, model, resp.get('parsing_error'),
+            )
+            return {
+                **state,
+                'llm_signal':     None,
+                'llm_usage':      llm_usage,
+                'context_tokens': tokens,
+            }
+
         logger.info(
-            "LLM [%s/%s] → action=%s confidence=%.3f",
+            "LLM [%s/%s] → action=%s confidence=%.3f tokens=%s",
             provider, model, signal.action, signal.confidence,
+            llm_usage.get('total_tokens') if llm_usage else 'n/a',
         )
 
         return {
             **state,
             'llm_signal':     signal.model_dump(),
+            'llm_usage':      llm_usage,
             'context_tokens': tokens,
         }
 
@@ -93,5 +120,6 @@ async def node_analyze(state: AgentState) -> AgentState:
         return {
             **state,
             'llm_signal':     None,
+            'llm_usage':      None,
             'context_tokens': state.get('context_tokens'),
         }
