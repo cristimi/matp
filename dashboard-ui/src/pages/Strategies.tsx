@@ -699,8 +699,8 @@ const DATA_SOURCES: { key: keyof AiFormState; label: string }[] = [
   { key:'use_orderbook',           label:'Order Book Depth' },
   { key:'use_cvd',                 label:'Order Flow (CVD)' },
   { key:'use_funding_history',     label:'Funding History' },
-  { key:'use_economic_calendar',   label:'Economic Calendar (needs API key)' },
-  { key:'use_liquidations',        label:'Liquidations (no source yet)' },
+  { key:'use_economic_calendar',   label:'Economic Calendar (provider paid-tier — dormant)' },
+  { key:'use_liquidations',        label:'Liquidations (stream aggregate)' },
 ];
 
 // Per-template data-source consumption (docs/design/ai_prompts/1*.md headers).

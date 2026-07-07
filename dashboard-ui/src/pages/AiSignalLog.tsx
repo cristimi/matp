@@ -300,6 +300,64 @@ function FilterSelect({
   );
 }
 
+// ── Token usage rollup (30d, from /api/ai/usage) ─────────────────────────────
+
+interface UsageTotals   { tracked_calls: number; llm_calls: number; input_tokens: number; output_tokens: number; total_tokens: number; }
+interface UsageStrategy { strategy_id: string; tracked_calls: number; input_tokens: number; output_tokens: number; total_tokens: number; }
+
+function fmtTokens(n: number): string {
+  if (n >= 1_000_000) return (n / 1_000_000).toFixed(2) + 'M';
+  if (n >= 1_000)     return (n / 1_000).toFixed(1) + 'k';
+  return String(n);
+}
+
+function UsagePanel() {
+  const [usage, setUsage] = useState<{ total: UsageTotals; per_strategy: UsageStrategy[] } | null>(null);
+
+  useEffect(() => {
+    const from = new Date(Date.now() - 30 * 86_400_000).toISOString().slice(0, 10);
+    const load = () =>
+      fetch(`/api/ai/usage?from=${from}`).then(r => r.json()).then(setUsage).catch(() => {});
+    load();
+    const id = setInterval(load, 60_000);
+    return () => clearInterval(id);
+  }, []);
+
+  if (!usage || !usage.total || usage.total.tracked_calls === 0) return null;
+  const t = usage.total;
+
+  const pill: React.CSSProperties = {
+    fontFamily: 'JetBrains Mono, monospace', fontSize: '10px', fontWeight: 600,
+    background: 'var(--bg2)', border: '1px solid var(--border)',
+    borderRadius: 'var(--pill-r)', padding: '3px 8px', whiteSpace: 'nowrap',
+  };
+
+  return (
+    <div style={{
+      display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap',
+      padding: '8px 14px', borderBottom: '1px solid var(--border)', flexShrink: 0,
+    }}>
+      <span style={{
+        fontSize: '9px', fontWeight: 700, textTransform: 'uppercase',
+        letterSpacing: '.08em', color: 'var(--dim)',
+      }}>
+        Tokens (30d)
+      </span>
+      <span style={{ ...pill, color: 'var(--blue)', background: 'var(--blue-a)', border: '1px solid var(--blue-b)' }}>
+        {fmtTokens(t.total_tokens)} total · in {fmtTokens(t.input_tokens)} / out {fmtTokens(t.output_tokens)} · {t.tracked_calls} calls
+      </span>
+      {usage.per_strategy.filter(s => s.total_tokens > 0).map(s => (
+        <span key={s.strategy_id} style={{ ...pill, color: 'var(--muted)' }}>
+          {s.strategy_id}: {fmtTokens(s.total_tokens)}
+        </span>
+      ))}
+      <span style={{ fontSize: '9px', color: 'var(--dim)' }}>
+        actuals since 2026-07-07 — earlier calls untracked
+      </span>
+    </div>
+  );
+}
+
 // ── Page ──────────────────────────────────────────────────────────────────────
 
 const PAGE_SIZE = 50;
@@ -434,6 +492,9 @@ export default function AiSignalLog() {
           </span>
         )}
       </div>
+
+      {/* ── Token usage rollup ── */}
+      <UsagePanel />
 
       {/* ── List ── */}
       <div style={{

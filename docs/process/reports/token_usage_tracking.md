@@ -57,3 +57,27 @@ provider-side anomaly is attributable in one query.
 Follow-up candidates (not built): explicit thinking budget on flash calls (biggest
 lever now that thinking is measurably the cost majority), probe throttling, and a UI
 usage rollup card. Ask before scheduling.
+
+## Addendum (same day) — usage rollup exposed in the UI + label refresh
+
+- **AI Signal Log page** now shows a "Tokens (30d)" strip under the filters:
+  total (in/out, call count) plus one pill per strategy with spend, auto-refreshing
+  every 60s from `/api/ai/usage`, with an explicit "actuals since 2026-07-07 — earlier
+  calls untracked" note. Hidden entirely while there are no tracked calls.
+- **Strategy-modal data-source labels** refreshed to match reality post-Phase-2:
+  "Liquidations (stream aggregate)" (was "no source yet") and
+  "Economic Calendar (provider paid-tier — dormant)" (was "needs API key" — the key
+  exists; the endpoint is paid-tier). The per-template auto-preset map
+  (`TEMPLATE_DATA_SOURCES`) needed no change — consumption sets are unchanged and
+  `scalper` already presets `use_liquidations`, which now points at a live field.
+
+Verified in the served bundle:
+
+```
+$ docker compose exec -T dashboard-ui grep -rlo "Tokens (30d)" /usr/share/nginx/html
+/usr/share/nginx/html/assets/index-FzT8KY5x.js
+$ docker compose exec -T dashboard-ui grep -rlo "Liquidations (stream aggregate)" /usr/share/nginx/html
+/usr/share/nginx/html/assets/index-FzT8KY5x.js
+$ curl -s http://localhost/ | grep -oE 'index-[A-Za-z0-9_-]+\.js'
+index-FzT8KY5x.js
+```
