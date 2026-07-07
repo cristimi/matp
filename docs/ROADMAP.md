@@ -55,6 +55,7 @@ Changes required: DB migration, one line in `node_ingest.py`, `ai.ts` GET/PUT, U
 ---
 
 ## Deferred Backlog
+- **`liquidation_data` source unavailable on configured exchanges**: Wave-3 probe (2026-07-07) found ccxt `has['fetchLiquidations']` = False (hyperliquid) / None (blofin), so `ai-signal-generator/app/data/liquidations.py` is a documented no-op (returns None, LIQUIDATIONS section absent). Revisit if a supporting exchange is configured or a paid aggregator (Coinglass) is approved.
 - **Minimum order value guard**: before sending to exchange, check notional value (qty × price) against known exchange minimums. Reject with `size_too_small` before hitting the exchange API.
 - **`_render_task` offers an `increase` action the output schema rejects**: when a position
   is open, `ai-signal-generator/app/prompt/builder.py::_render_task` instructs the model

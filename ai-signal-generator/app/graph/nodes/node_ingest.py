@@ -5,9 +5,11 @@ import httpx
 from app.config import settings
 from app.data.cvd import fetch_cvd
 from app.data.divergence import detect_momentum_divergence
+from app.data.econ_calendar import fetch_economic_calendar
 from app.data.geometry import detect_geometry
 from app.data.funding import fetch_funding_history
 from app.data.indicators import compute_indicators
+from app.data.liquidations import fetch_liquidations
 from app.data.macro import fetch_btc_dominance, fetch_macro
 from app.data.mtf import fetch_mtf_structure
 from app.data.news import fetch_news_digest
@@ -165,6 +167,15 @@ async def node_ingest(state: AgentState) -> AgentState:
         except Exception as exc:
             errors.append(f"news:{exc}")
 
+    # ── Economic calendar (scheduled events; dormant without FINNHUB key) ─
+    calendar_data = None
+    if sc.get('use_economic_calendar'):
+        try:
+            calendar_data = await fetch_economic_calendar()
+        except Exception as exc:
+            errors.append(f"economic_calendar:{exc}")
+            logger.warning("Economic calendar fetch failed: %s", exc)
+
     # ── Macro ────────────────────────────────────────────────────────────
     btc_dominance = None
     macro_data    = None
@@ -211,6 +222,15 @@ async def node_ingest(state: AgentState) -> AgentState:
             errors.append(f"cvd:{exc}")
             logger.warning("CVD fetch failed: %s", exc)
 
+    # ── Liquidations (documented no-op on current exchanges — see fetcher) ─
+    liquidation_data = None
+    if sc.get('use_liquidations'):
+        try:
+            liquidation_data = await fetch_liquidations(exchange_id, ccxt_symbol)
+        except Exception as exc:
+            errors.append(f"liquidations:{exc}")
+            logger.warning("Liquidations fetch failed: %s", exc)
+
     return {
         **state,
         'ohlcv_data':           ohlcv_data,
@@ -225,6 +245,8 @@ async def node_ingest(state: AgentState) -> AgentState:
         'cvd_data':             cvd_data,
         'sentiment_data':       sentiment_data,
         'news_data':            news_data,
+        'calendar_data':        calendar_data,
+        'liquidation_data':     liquidation_data,
         'market_context':       market_context,
         'data_fetch_errors':    errors,
     }

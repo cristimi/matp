@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     openai_api_key:         str = ""
     anthropic_api_key:      str = ""
     cryptopanic_api_key:    str = ""
+    finnhub_api_key:        str = ""   # economic calendar; unset = field dormant
     matp_listener_url:      str = "http://order-listener:8001"
     matp_executor_url:      str = "http://order-executor:8004"
 

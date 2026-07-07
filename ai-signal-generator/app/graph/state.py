@@ -32,6 +32,8 @@ class AgentState(TypedDict):
     orderbook_data:      Optional[dict]
     mtf_structure:       Optional[list]
     cvd_data:            Optional[dict]
+    calendar_data:       Optional[dict]
+    liquidation_data:    Optional[dict]
     sentiment_data:      Optional[dict]
     news_data:           Optional[dict]    # {'items': list, 'lookback_hours': int}
     market_context:      Optional[dict]

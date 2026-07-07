@@ -301,6 +301,56 @@ def _render_news(state: dict) -> str:
     return '\n'.join(lines)
 
 
+def _render_liquidations(state: dict) -> str:
+    sc = state['strategy_config']
+    ld = state.get('liquidation_data') or {}
+
+    # Honest absence — currently always absent: no configured exchange exposes
+    # liquidation data (see app/data/liquidations.py docstring / ROADMAP).
+    if not sc.get('use_liquidations') or not ld:
+        return ''
+
+    def _usd(v) -> str:
+        return f"${v:,.0f}" if v is not None else 'N/A'
+
+    lines = [
+        'LIQUIDATIONS:',
+        f"Long Liqs (4h):       {_usd(ld.get('liq_long_volume_4h'))}",
+        f"Short Liqs (4h):      {_usd(ld.get('liq_short_volume_4h'))}",
+    ]
+    clusters = ld.get('liq_clusters') or []
+    if clusters:
+        lines.append('Clusters near price:')
+        for c in clusters:
+            lines.append(f"  {_usd(c.get('volume_usd'))} @ {_v(c.get('price'))}")
+    return '\n'.join(lines)
+
+
+def _render_calendar(state: dict) -> str:
+    sc = state['strategy_config']
+    cd = state.get('calendar_data')
+
+    # Honest absence: None = data missing (no key / provider error) → ''.
+    # An empty events list is different — data present, genuinely quiet window —
+    # and must say so: templates gate entries on this, so silence has to be
+    # distinguishable from missing data.
+    if not sc.get('use_economic_calendar') or cd is None:
+        return ''
+
+    horizon = cd.get('horizon_hours', 48)
+    lines = [f"SCHEDULED EVENTS (next {horizon}h):"]
+    events = cd.get('events') or []
+    if not events:
+        lines.append('No high-impact events in the window.')
+    else:
+        for ev in events:
+            impact = (ev.get('impact') or '?').upper()
+            lines.append(
+                f"[{impact}] {_v(ev.get('event_name'))} — in {_v(ev.get('time_until_hours'))}h"
+            )
+    return '\n'.join(lines)
+
+
 def _render_macro(state: dict) -> str:
     sc = state['strategy_config']
     mc = state.get('market_context') or {}
@@ -588,6 +638,13 @@ async def build_prompt(state: dict, db_pool) -> str:
         if cv:
             sections.append(cv)
 
+    # 2.9. Liquidations — only if toggled on and data is available
+    # (currently never: no configured exchange exposes it — see ROADMAP)
+    if sc.get('use_liquidations'):
+        lq = _render_liquidations(state)
+        if lq:
+            sections.append(lq)
+
     # 3. Sentiment — only if at least one sentiment source is toggled on
     # (funding_history counts: it renders inside this section, so without it
     # in the gate the toggle would be dead on a strategy with the trio off)
@@ -600,6 +657,12 @@ async def build_prompt(state: dict, db_pool) -> str:
     # 4. News — only if toggled on and digest is available
     if sc.get('use_news') and state.get('news_data'):
         sections.append(_render_news(state))
+
+    # 4.5. Scheduled events — right after News (past news, then future events)
+    if sc.get('use_economic_calendar'):
+        cal = _render_calendar(state)
+        if cal:
+            sections.append(cal)
 
     # 5. Macro — only if at least one macro source is toggled on
     if sc.get('use_btc_dominance') or sc.get('use_macro'):
