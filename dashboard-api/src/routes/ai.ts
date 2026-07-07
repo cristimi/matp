@@ -19,6 +19,9 @@ const ALLOWED_CONFIG_FIELDS = [
   'trigger_funding_spike', 'trigger_key_level', 'trigger_liquidation',
   'volume_spike_threshold', 'funding_spike_threshold', 'dry_run',
   'llm_provider', 'llm_model',
+  'use_mtf_structure', 'use_orderbook', 'use_volume_profile', 'use_cvd',
+  'use_momentum_divergence', 'use_volatility_regime', 'use_funding_history',
+  'use_liquidations',
 ];
 
 const RISK_FIELDS = [
@@ -128,6 +131,15 @@ router.get('/strategies/:id/config/preview-prompt', async (req: Request, res: Re
         use_btc_dominance:   aiConfig.use_btc_dominance,
         use_macro:           aiConfig.use_macro,
         use_geometry:        aiConfig.use_geometry,
+        use_economic_calendar:   aiConfig.use_economic_calendar,
+        use_mtf_structure:       aiConfig.use_mtf_structure,
+        use_orderbook:           aiConfig.use_orderbook,
+        use_volume_profile:      aiConfig.use_volume_profile,
+        use_cvd:                 aiConfig.use_cvd,
+        use_momentum_divergence: aiConfig.use_momentum_divergence,
+        use_volatility_regime:   aiConfig.use_volatility_regime,
+        use_funding_history:     aiConfig.use_funding_history,
+        use_liquidations:        aiConfig.use_liquidations,
         indicators:          aiConfig.indicators,
         lookback_days:       aiConfig.lookback_days,
       },

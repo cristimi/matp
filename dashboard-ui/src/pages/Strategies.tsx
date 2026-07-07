@@ -685,14 +685,50 @@ const PROVIDERS = [
 ];
 
 const DATA_SOURCES: { key: keyof AiFormState; label: string }[] = [
-  { key:'use_technical',    label:'Technical Indicators' },
-  { key:'use_fear_greed',   label:'Fear & Greed Index' },
-  { key:'use_funding_rate', label:'Funding Rate & OI' },
-  { key:'use_news',         label:'Crypto News' },
-  { key:'use_btc_dominance',label:'BTC Dominance' },
-  { key:'use_macro',        label:'Macro (DXY, US10Y)' },
-  { key:'use_geometry',     label:'Geometric Pattern Detection' },
+  { key:'use_technical',           label:'Technical Indicators' },
+  { key:'use_fear_greed',          label:'Fear & Greed Index' },
+  { key:'use_funding_rate',        label:'Funding Rate & OI' },
+  { key:'use_news',                label:'Crypto News' },
+  { key:'use_btc_dominance',       label:'BTC Dominance' },
+  { key:'use_macro',               label:'Macro (DXY, US10Y)' },
+  { key:'use_geometry',            label:'Geometric Pattern Detection' },
+  { key:'use_mtf_structure',       label:'Multi-Timeframe Structure' },
+  { key:'use_volatility_regime',   label:'Volatility Regime' },
+  { key:'use_momentum_divergence', label:'Momentum Divergence' },
+  { key:'use_volume_profile',      label:'Volume Profile (HVN/LVN)' },
+  { key:'use_orderbook',           label:'Order Book Depth' },
+  { key:'use_cvd',                 label:'Order Flow (CVD)' },
+  { key:'use_funding_history',     label:'Funding History' },
+  { key:'use_economic_calendar',   label:'Economic Calendar (needs API key)' },
+  { key:'use_liquidations',        label:'Liquidations (no source yet)' },
 ];
+
+// Per-template data-source consumption (docs/design/ai_prompts/1*.md headers).
+// Selecting a template presets these so strategies don't drift from what their
+// prompt's rules actually read — the toggles stay editable afterwards.
+const TEMPLATE_DATA_SOURCES: Record<string, Array<keyof AiFormState>> = {
+  trend_following: ['use_mtf_structure', 'use_momentum_divergence', 'use_cvd', 'use_volatility_regime'],
+  mean_reversion:  ['use_momentum_divergence', 'use_funding_history', 'use_volume_profile', 'use_volatility_regime'],
+  breakout:        ['use_volatility_regime', 'use_volume_profile', 'use_orderbook', 'use_cvd', 'use_mtf_structure'],
+  scalper:         ['use_orderbook', 'use_cvd', 'use_economic_calendar', 'use_liquidations', 'use_funding_history'],
+  conservative:    ['use_mtf_structure', 'use_economic_calendar', 'use_funding_history', 'use_momentum_divergence'],
+  range_rotation:  ['use_volume_profile', 'use_orderbook', 'use_economic_calendar', 'use_funding_history'],
+  geometric_range: ['use_volume_profile', 'use_orderbook', 'use_economic_calendar', 'use_cvd', 'use_mtf_structure', 'use_geometry'],
+};
+
+const TEMPLATE_PRESET_KEYS: Array<keyof AiFormState> = [
+  'use_geometry', 'use_mtf_structure', 'use_volatility_regime', 'use_momentum_divergence',
+  'use_volume_profile', 'use_orderbook', 'use_cvd', 'use_funding_history',
+  'use_economic_calendar', 'use_liquidations',
+];
+
+function templateDataSourcePresets(templateId: string): Partial<AiFormState> {
+  const consumed = TEMPLATE_DATA_SOURCES[templateId];
+  if (!consumed) return {};
+  const presets: any = {};
+  for (const key of TEMPLATE_PRESET_KEYS) presets[key] = consumed.includes(key);
+  return presets;
+}
 
 function TemplatePreview({
   tmpl,
@@ -766,6 +802,15 @@ interface AiFormState {
   use_btc_dominance:      boolean;
   use_macro:              boolean;
   use_geometry:           boolean;
+  use_mtf_structure:       boolean;
+  use_volatility_regime:   boolean;
+  use_momentum_divergence: boolean;
+  use_volume_profile:      boolean;
+  use_orderbook:           boolean;
+  use_cvd:                 boolean;
+  use_funding_history:     boolean;
+  use_economic_calendar:   boolean;
+  use_liquidations:        boolean;
   confidence_threshold:   string;
   cooldown_entry_minutes: string;
   llm_provider:           string;
@@ -787,6 +832,15 @@ const AI_FORM_DEFAULTS: AiFormState = {
   use_btc_dominance:      false,
   use_macro:              false,
   use_geometry:           false,
+  use_mtf_structure:       false,
+  use_volatility_regime:   false,
+  use_momentum_divergence: false,
+  use_volume_profile:      false,
+  use_orderbook:           false,
+  use_cvd:                 false,
+  use_funding_history:     false,
+  use_economic_calendar:   false,
+  use_liquidations:        false,
   confidence_threshold:   '0.72',
   cooldown_entry_minutes: '240',
   llm_provider:           'google',
@@ -992,6 +1046,15 @@ export default function Strategies() {
           use_btc_dominance:      config.use_btc_dominance      ?? false,
           use_macro:              config.use_macro              ?? false,
           use_geometry:           config.use_geometry           ?? false,
+          use_mtf_structure:       config.use_mtf_structure       ?? false,
+          use_volatility_regime:   config.use_volatility_regime   ?? false,
+          use_momentum_divergence: config.use_momentum_divergence ?? false,
+          use_volume_profile:      config.use_volume_profile      ?? false,
+          use_orderbook:           config.use_orderbook           ?? false,
+          use_cvd:                 config.use_cvd                 ?? false,
+          use_funding_history:     config.use_funding_history     ?? false,
+          use_economic_calendar:   config.use_economic_calendar   ?? false,
+          use_liquidations:        config.use_liquidations        ?? false,
           confidence_threshold:   String(config.confidence_threshold   ?? '0.72'),
           cooldown_entry_minutes: String(config.cooldown_entry_minutes ?? '240'),
           llm_provider:           config.llm_provider           ?? 'google',
@@ -1068,6 +1131,15 @@ export default function Strategies() {
             use_btc_dominance:      aiEditForm.use_btc_dominance,
             use_macro:              aiEditForm.use_macro,
             use_geometry:           aiEditForm.use_geometry,
+            use_mtf_structure:       aiEditForm.use_mtf_structure,
+            use_volatility_regime:   aiEditForm.use_volatility_regime,
+            use_momentum_divergence: aiEditForm.use_momentum_divergence,
+            use_volume_profile:      aiEditForm.use_volume_profile,
+            use_orderbook:           aiEditForm.use_orderbook,
+            use_cvd:                 aiEditForm.use_cvd,
+            use_funding_history:     aiEditForm.use_funding_history,
+            use_economic_calendar:   aiEditForm.use_economic_calendar,
+            use_liquidations:        aiEditForm.use_liquidations,
             confidence_threshold:   parseFloat(aiEditForm.confidence_threshold),
             cooldown_entry_minutes: parseInt(aiEditForm.cooldown_entry_minutes),
             llm_provider:           aiEditForm.llm_provider,
@@ -1216,6 +1288,15 @@ export default function Strategies() {
             use_btc_dominance:      aiForm.use_btc_dominance,
             use_macro:              aiForm.use_macro,
             use_geometry:           aiForm.use_geometry,
+            use_mtf_structure:       aiForm.use_mtf_structure,
+            use_volatility_regime:   aiForm.use_volatility_regime,
+            use_momentum_divergence: aiForm.use_momentum_divergence,
+            use_volume_profile:      aiForm.use_volume_profile,
+            use_orderbook:           aiForm.use_orderbook,
+            use_cvd:                 aiForm.use_cvd,
+            use_funding_history:     aiForm.use_funding_history,
+            use_economic_calendar:   aiForm.use_economic_calendar,
+            use_liquidations:        aiForm.use_liquidations,
             confidence_threshold:   parseFloat(aiForm.confidence_threshold),
             cooldown_entry_minutes: parseInt(aiForm.cooldown_entry_minutes),
             llm_provider:           aiForm.llm_provider,
@@ -1597,7 +1678,7 @@ export default function Strategies() {
                 <div style={{ marginBottom:'14px' }}>
                   <label style={labelStyle}>Base Template</label>
                   <select value={aiForm.template_id}
-                    onChange={e => setAiForm(f => ({ ...f, template_id: e.target.value }))}
+                    onChange={e => setAiForm(f => ({ ...f, template_id: e.target.value, ...templateDataSourcePresets(e.target.value) }))}
                     style={inputStyle}>
                     <option value="">— No template —</option>
                     {aiTemplates.map(t => (
@@ -1828,7 +1909,7 @@ export default function Strategies() {
                 <div style={{ marginBottom:'14px' }}>
                   <label style={labelStyle}>Base Template</label>
                   <select value={aiEditForm.template_id}
-                    onChange={e => setAiEditForm(f => ({ ...f, template_id: e.target.value }))}
+                    onChange={e => setAiEditForm(f => ({ ...f, template_id: e.target.value, ...templateDataSourcePresets(e.target.value) }))}
                     style={inputStyle}>
                     <option value="">— No template —</option>
                     {aiTemplates.map(t => (
