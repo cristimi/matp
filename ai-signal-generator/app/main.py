@@ -55,15 +55,21 @@ async def lifespan(app: FastAPI):
 
     probe_task = asyncio.create_task(_model_probe_loop(), name="model_probe_loop")
 
-    app.state.schedulers    = schedulers
-    app.state.watcher_tasks = watcher_tasks
-    app.state.graph         = graph
-    app.state.probe_task    = probe_task
+    from app.collector import collector
+    collector_task = asyncio.create_task(collector.run(), name="stream_collector")
+
+    app.state.schedulers     = schedulers
+    app.state.watcher_tasks  = watcher_tasks
+    app.state.graph          = graph
+    app.state.probe_task     = probe_task
+    app.state.collector_task = collector_task
 
     yield
 
     # ── Shutdown ──────────────────────────────────────────────────────────────
     probe_task.cancel()
+    collector_task.cancel()
+    await collector.stop()
     await stop_all_schedulers(schedulers)
 
     for task in watcher_tasks.values():
@@ -83,7 +89,8 @@ app = FastAPI(
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "service": "ai-signal-generator"}
+    from app.collector import collector
+    return {"status": "ok", "service": "ai-signal-generator", "collector": collector.status()}
 
 
 # ── /internal/preview-prompt ─────────────────────────────────────────────────

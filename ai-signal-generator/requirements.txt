@@ -13,6 +13,7 @@ pandas-ta
 pydantic>=2.0
 pydantic-settings
 httpx
+redis
 python-dotenv
 yfinance
 requests

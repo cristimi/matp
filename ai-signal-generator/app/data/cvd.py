@@ -130,23 +130,92 @@ async def _fetch_cvd_klines_binance(
                 pass
 
 
+async def _fetch_cvd_stream_aggregate(
+    symbol: str,
+    windows_hours: tuple[int, ...] = (1, 4),
+) -> dict | None:
+    """
+    True multi-venue CVD from the Phase-2 stream collector's Redis buckets
+    (plan §4.2 stream_aggregate). The venue set is whoever covers the SMALLEST
+    requested window; larger windows are only claimed when that same set covers
+    them too — no silently shrinking denominators. Returns None when no venue
+    covers even the smallest window (collector cold/down) so the caller falls
+    back to the Phase-1 methods.
+    """
+    from app.collector import read_cvd_window
+
+    smallest = min(windows_hours)
+    base = await read_cvd_window(symbol, smallest * 60)
+    if not base:
+        return None
+    venues = base['venues']
+
+    result: dict = {f'cvd_{smallest}h': round(base['delta_usd'], 2)}
+    largest_covered = base
+    for w in sorted(windows_hours):
+        if w == smallest:
+            continue
+        win = await read_cvd_window(symbol, w * 60)
+        # Claim the window only if the base venue set fully carried over.
+        if win and set(venues).issubset(set(win['venues'])):
+            result[f'cvd_{w}h'] = round(win['delta_usd'], 2)
+            largest_covered = win
+        else:
+            result[f'cvd_{w}h'] = None
+
+    # Trend from the most recent hour (or the smallest window if sub-hour).
+    recent = await read_cvd_window(symbol, min(60, smallest * 60))
+    trend = 'flat'
+    if recent and recent['gross_usd'] > 0:
+        if abs(recent['delta_usd']) / recent['gross_usd'] * 100 >= FLAT_THR_PCT:
+            trend = 'rising' if recent['delta_usd'] > 0 else 'falling'
+
+    # Divergence over the largest covered window: CVD sign vs price direction.
+    divergence = 'none'
+    lc = largest_covered
+    if (lc['first_price'] and lc['last_price'] and lc['gross_usd'] > 0
+            and abs(lc['delta_usd']) / lc['gross_usd'] * 100 >= FLAT_THR_PCT):
+        price_up = lc['last_price'] > lc['first_price']
+        if price_up and lc['delta_usd'] < 0:
+            divergence = 'bearish'
+        elif not price_up and lc['delta_usd'] > 0:
+            divergence = 'bullish'
+
+    result.update({
+        'cvd_window_usd':   round(lc['delta_usd'], 2),
+        'cvd_trend':        trend,
+        'cvd_divergence':   divergence,
+        'coverage_minutes': float(lc['covered_minutes']),
+        'trades_count':     lc['trades'],
+        'source':           '+'.join(venues),
+        'method':           'stream_aggregate',
+    })
+    return result
+
+
 async def fetch_cvd(
     exchange_id: str,
     symbol: str,
     windows_hours: tuple[int, ...] = (1, 4),
 ) -> dict | None:
     """
-    Taker-side CVD, sourced per plan §4.2 (multi-venue Phase 1):
-      1. Binance klines taker-volume — full 1h/4h windows, one call — when a
+    Taker-side CVD, sourced per plan §4.2 (multi-venue Phase 2):
+      1. stream_aggregate — true multi-venue windows from the collector's
+         Redis buckets, when coverage exists;
+      2. Binance klines taker-volume — full 1h/4h windows, one call — when a
          signal venue resolves the symbol on binance;
-      2. else trades snapshot on the first resolving signal venue;
-      3. else trades snapshot on the execution venue (Wave-3 behavior);
-      4. else None (honest absence).
+      3. else trades snapshot on the first resolving signal venue;
+      4. else trades snapshot on the execution venue (Wave-3 behavior);
+      5. else None (honest absence).
 
-    Returns the Wave-3 shape plus {'source': venue, 'method':
-    'klines_taker' | 'trades_snapshot'}.
+    Returns the Wave-3 shape plus {'source', 'method':
+    'stream_aggregate' | 'klines_taker' | 'trades_snapshot'}.
     """
     try:
+        result = await _fetch_cvd_stream_aggregate(symbol, windows_hours)
+        if result:
+            return result
+
         from app.data.signal_sources import resolve_signal_venues
         venues = await resolve_signal_venues(symbol)
 

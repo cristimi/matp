@@ -32,7 +32,9 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-CACHE_TTL_S = 3600.0
+CACHE_TTL_S         = 3600.0
+FAILURE_CACHE_TTL_S = 120.0   # transient venue/REST failures must not park a
+                              # venue out of the aggregate for a whole hour
 
 # (venue, requested_symbol) -> (expires_epoch, resolved_symbol | None)
 _resolve_cache: dict[tuple[str, str], tuple[float, str | None]] = {}
@@ -78,6 +80,7 @@ async def _resolve_on_venue(venue: str, symbol: str) -> str | None:
         return hit[1]
 
     resolved: str | None = None
+    failed = False
     exchange = None
     try:
         cls = getattr(ccxt_async, venue, None)
@@ -87,8 +90,8 @@ async def _resolve_on_venue(venue: str, symbol: str) -> str | None:
         await exchange.load_markets()
         resolved = _resolve_perp_first(exchange, symbol)
     except Exception as exc:
+        failed = True
         logger.warning("signal_sources resolve error [%s %s]: %s", venue, symbol, exc)
-        # Cache the failure too — a down venue shouldn't be re-probed every cycle.
     finally:
         if exchange:
             try:
@@ -96,7 +99,11 @@ async def _resolve_on_venue(venue: str, symbol: str) -> str | None:
             except Exception:
                 pass
 
-    _resolve_cache[key] = (now + CACHE_TTL_S, resolved)
+    # Successful lookups (incl. genuine not-listed) cache long; transient
+    # failures cache short so one REST hiccup doesn't park the venue out of
+    # every aggregate for an hour.
+    ttl = FAILURE_CACHE_TTL_S if failed else CACHE_TTL_S
+    _resolve_cache[key] = (now + ttl, resolved)
     return resolved
 
 

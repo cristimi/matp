@@ -213,7 +213,13 @@ def _render_cvd(state: dict) -> str:
         if key in cd:
             lines.append(f"{label:<22}{_usd(cd[key])}")
     method = cd.get('method')
-    if method == 'klines_taker':
+    if method == 'stream_aggregate':
+        coverage = (
+            f"Coverage:             {_v(cd.get('coverage_minutes'))} min of stream data, "
+            f"{_v(cd.get('trades_count'))} trades."
+        )
+        source = f"Source:               aggregate {_v(cd.get('source'))} (stream-collected)"
+    elif method == 'klines_taker':
         window_h = (cd.get('coverage_minutes') or 0) / 60
         coverage = (
             f"Coverage:             full {window_h:.0f}h window, "
@@ -345,6 +351,13 @@ def _render_liquidations(state: dict) -> str:
         lines.append('Clusters near price:')
         for c in clusters:
             lines.append(f"  {_usd(c.get('volume_usd'))} @ {_v(c.get('price'))}")
+    venues = ld.get('venues')
+    if venues:
+        lines.append(
+            f"Source:               aggregate {'+'.join(venues)} (stream-collected, "
+            f"{_v(ld.get('covered_hours'))}h covered; may under-report during cascades — "
+            'venue stream throttling).'
+        )
     return '\n'.join(lines)
 
 
