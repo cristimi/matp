@@ -567,7 +567,6 @@ def _render_task(state: dict) -> str:
             'If the thesis is intact: output "hold" or "adjust_stops" with updated levels.',
             'If the thesis is weakening: output "partial_close".',
             f'If the thesis is invalidated or a new risk is present: output "{close_action}".',
-            'If the position is showing strong continuation: output "increase" (only if within size limits).',
         ]
     else:
         lines += [

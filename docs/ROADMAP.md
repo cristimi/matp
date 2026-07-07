@@ -51,6 +51,7 @@ Changes required: DB migration, one line in `node_ingest.py`, `ai.ts` GET/PUT, U
 | 2026-06-10 | `volume_vs_avg_pct` always showed -70 to -99% because Binance returns the current incomplete candle as the last OHLCV entry | Fixed by computing volume average and current value from `volume.iloc[:-1]` (completed candles only) |
 | 2026-06-10 | On service restart, schedulers slept a full interval before the first cycle, leaving strategies idle for hours | Added immediate startup cycle before the sleep loop in `AdaptiveScheduler._loop()` |
 | 2026-06-20 | `capital_allocation` was static; drawdown used an anchor-PnL delta model (doubled Guard 5 bug) | Dynamic allocation: `capital_allocation` compounds on close, `initial_allocation` + `allocation_peak` added, Guard 5 replaced with high-water peak model |
+| 2026-07-07 | `_render_task` instructed the model to output "increase" when a position shows strong continuation, but `LLMSignalOutput.action` has no `increase` member — models following the instruction failed structured-output validation (`llm_signal=None`, logged as `llm_failed`, ~5-7%/day with a position open) | Deleted the instruction line from `_render_task` (the backlog's designated small safe fix); every action the position-open task offers is now schema-valid. Scaling-in support (Literal + guard sizing + dispatch) remains unbuilt by choice |
 
 ---
 
@@ -58,16 +59,6 @@ Changes required: DB migration, one line in `node_ingest.py`, `ai.ts` GET/PUT, U
 - **`economic_calendar` blocked on provider access — Finnhub calendar is paid-tier**: verified 2026-07-07 with a valid free-tier key (`/quote` → 200, `/calendar/economic` → 403 "You don't have access to this resource"); the spec's free-tier assumption is outdated. `FINNHUB_API_KEY` is plumbed (.env → compose → container) and the fetcher degrades to None, so the SCHEDULED EVENTS section stays honestly absent. Activates with zero code changes on a Finnhub plan upgrade; free alternatives surveyed and rejected (Trading Economics free tier excludes US data, others paywalled/scraping). Wave 4 must not assume this field is available.
 - **`liquidation_data` source unavailable on configured exchanges**: Wave-3 probe (2026-07-07) found ccxt `has['fetchLiquidations']` = False (hyperliquid) / None (blofin), so `ai-signal-generator/app/data/liquidations.py` is a documented no-op (returns None, LIQUIDATIONS section absent). Stage-A multi-venue probe (2026-07-07) extended this: REST liquidations are unusable market-wide (only bitfinex/bitmex/deribit/gate/htx implement it; 4h BTC window: 0 entries on four, 6 (~$6k) on htx). Path forward is the Phase-2 websocket collector (`watchLiquidations` native on binance+bybit, emulated on okx) per `docs/design/ai_prompts/21_reference_exchange_sourcing.md` §3.2/§4.3 — or paid Coinglass.
 - **Minimum order value guard**: before sending to exchange, check notional value (qty × price) against known exchange minimums. Reject with `size_too_small` before hitting the exchange API.
-- **`_render_task` offers an `increase` action the output schema rejects**: when a position
-  is open, `ai-signal-generator/app/prompt/builder.py::_render_task` instructs the model
-  'If the position is showing strong continuation: output "increase" (only if within size
-  limits)' — but the `LLMSignalOutput.action` Literal in
-  `app/graph/nodes/node_analyze.py` has no `increase` member. A model that follows the
-  instruction fails structured-output validation, which lands in `node_analyze`'s error
-  path (`llm_signal = None`) and wastes the cycle. Either add `increase` to the Literal
-  (plus guard/dispatch support for scaling in) or delete the line from `_render_task`;
-  deleting the line is the small safe fix. Found 2026-07-06 during the target-state prompt
-  design audit (`docs/design/ai_prompts/00_audit.md` §2.10).
 - **AI prompt template management page**: no runtime CRUD exists for `ai_prompt_templates` — templates are seed-only (migrations 006/010, `ON CONFLICT DO NOTHING`). `GET /api/ai/templates` is read-only; there is no POST/PUT/DELETE anywhere. Build a create/edit page.
   - **Safety model — clone-to-edit, not edit-in-place.** Templates are shared: every `ai_strategy_config.template_id` points at one. Editing a base template in place silently changes behavior for all strategies referencing it (incl. live ones) and breaks backtest/live parity. Seed templates must stay immutable; user clones one into a custom template and edits that.
   - Needs `is_system` (or `created_by`) flag to distinguish/protect seeded rows; CRUD endpoints; a "N strategies use this" warning before destructive actions.
