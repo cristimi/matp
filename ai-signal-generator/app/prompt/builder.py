@@ -212,13 +212,28 @@ def _render_cvd(state: dict) -> str:
     for key, label in (('cvd_1h', 'CVD (1h window):'), ('cvd_4h', 'CVD (4h window):')):
         if key in cd:
             lines.append(f"{label:<22}{_usd(cd[key])}")
+    method = cd.get('method')
+    if method == 'klines_taker':
+        window_h = (cd.get('coverage_minutes') or 0) / 60
+        coverage = (
+            f"Coverage:             full {window_h:.0f}h window, "
+            f"{_v(cd.get('trades_count'))} trades (per-candle taker volume)."
+        )
+        source = f"Source:               {_v(cd.get('source'))} (klines taker-volume — largest single venue)"
+    else:
+        coverage = (
+            f"Coverage:             {_v(cd.get('trades_count'))} trades spanning "
+            f"{_v(cd.get('coverage_minutes'))} min (single snapshot, one API call — "
+            'short coverage is a data limit, not low activity).'
+        )
+        source = f"Source:               {_v(cd.get('source'))} (trades snapshot — coverage-limited)"
+
     lines += [
-        f"{'CVD (full snapshot):':<22}{_usd(cd.get('cvd_window_usd'))}",
+        f"{'CVD (full window):':<22}{_usd(cd.get('cvd_window_usd'))}",
         f"{'CVD Trend:':<22}{_v(cd.get('cvd_trend'))}",
         f"{'CVD/Price Divergence:':<22}{_v(cd.get('cvd_divergence'))}",
-        f"Coverage:             {_v(cd.get('trades_count'))} trades spanning "
-        f"{_v(cd.get('coverage_minutes'))} min (single snapshot, one API call — "
-        'short coverage is a data limit, not low activity).',
+        coverage,
+        source,
     ]
     return '\n'.join(lines)
 

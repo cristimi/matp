@@ -127,16 +127,16 @@ service, no new port), using `ccxt.pro` websocket streams:
 - Coverage honesty: if any venue has a gap inside the window, the label lists venues
   actually covered; if aggregate coverage < window, fall back to Phase-1 method.
 
-### 4.3 `liquidation_data` v2 (Phase 1) / v3 (Phase 2)
+### 4.3 `liquidation_data` — Phase 1 DROPPED (probe outcome; deferral approved 2026-07-07)
 
-**Phase 1 — OKX REST proxy:** OKX is the only major venue with a public REST
-liquidations endpoint compatible with the poll-per-cycle fetcher pattern (Binance killed
-its REST endpoint in 2021; Bybit never had one — both are ws-only). Implement spec §9's
-aggregation (`liq_long_volume_4h`, `liq_short_volume_4h`, price-binned `liq_clusters`
-near current price) over `okx.fetch_liquidations`, rendered with:
-`Source: okx public liquidations — single-venue proxy, not a market-wide total.`
-Converts the Wave-3 no-op into a live field. The existing ROADMAP entry stays until
-Phase 2 lands.
+**Stage-A probe falsified the Phase-1 REST plan:** okx `fetch_liquidations` is
+`NotSupported` in the shipped ccxt (4.5.59) — the v2 doc's claim was wrong. The ccxt-wide
+survey found only `bitfinex, bitmex, deribit, gate, htx` implement it, and a live 4h BTC
+window returned 0 entries on four of them and 6 entries (~$6k notional) on htx — not a
+usable signal. **Liquidations therefore skip Phase 1 entirely and land with the Phase-2
+collector**, which the probe confirmed viable (`watchLiquidations` native on
+binance+bybit, emulated on okx). The Wave-3 no-op fetcher and ROADMAP entry stand
+unchanged until then.
 
 **Phase 2 — collector aggregate:** windows/clusters computed from the Redis liquidation
 events across all covered venues. **Known caveat to verify, not assert (§9 probe):**
@@ -199,8 +199,8 @@ stage; reports to `docs/process/reports/`.
 - **Stage A (Phase 1a):** probes (§9) + `signal_sources.py` + aggregate OI. Exemplar —
   **push, hard stop for review.** (Chosen as exemplar: smallest blast radius, fixes a
   live bug, exercises the venue-resolution core every later stage reuses.)
-- **Stage B (Phase 1b):** CVD klines method + OKX liquidations proxy + renderer labels.
-  Push.
+- **Stage B (Phase 1b):** CVD klines method + renderer labels. (Liquidations dropped
+  from Phase 1 per §4.3 probe outcome — deferral approved.) Push.
 - **Stage C (Phase 1 report).** Push. **Validation checkpoint before Phase 2** — decide
   whether Phase-1 CVD quality already suffices before paying for the collector.
 - **Stage D (Phase 2):** collector + Redis accumulation + CVD/liq aggregate methods +

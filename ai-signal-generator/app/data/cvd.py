@@ -50,23 +50,132 @@ def _delta_usd(trades: list[dict]) -> tuple[float, float]:
     return net, gross
 
 
+async def _fetch_cvd_klines_binance(
+    venue_symbol: str,
+    windows_hours: tuple[int, ...] = (1, 4),
+) -> dict | None:
+    """
+    Full-window CVD from Binance USDⓈ-M klines taker-buy volume — one API call.
+
+    Binance kline rows carry takerBuyQuoteAssetVolume (index 10) next to total
+    quote volume (index 7), so per-candle taker delta = 2*takerBuyQuote - total.
+    ccxt's generic fetch_ohlcv drops those fields → this uses the implicit API
+    (fapiPublicGetKlines), deliberately confined to this one function (plan
+    §4.2); any shape change falls through to the trades-snapshot fallback.
+    """
+    exchange = None
+    try:
+        exchange = ccxt_async.binance({'enableRateLimit': True})
+        await exchange.load_markets()
+        market_id = exchange.market(venue_symbol)['id']
+
+        max_w   = max(windows_hours)
+        buckets = max_w * 12  # 5m candles per window
+        raw = await exchange.fapiPublicGetKlines({
+            'symbol': market_id, 'interval': '5m', 'limit': buckets,
+        })
+        if not raw or len(raw) < 12:
+            return None
+
+        deltas = [2 * float(r[10]) - float(r[7]) for r in raw]
+        gross  = [float(r[7]) for r in raw]
+        trades = sum(int(r[8]) for r in raw)
+
+        result: dict = {}
+        for w in windows_hours:
+            n = w * 12
+            result[f'cvd_{w}h'] = round(sum(deltas[-n:]), 2) if len(deltas) >= n else None
+
+        # Trend = direction of the most recent hour's flow, flat-guarded vs gross.
+        recent_net   = sum(deltas[-12:])
+        recent_gross = sum(gross[-12:])
+        if recent_gross > 0 and abs(recent_net) / recent_gross * 100 < FLAT_THR_PCT:
+            trend = 'flat'
+        else:
+            trend = 'rising' if recent_net > 0 else 'falling'
+
+        # Divergence: full-window CVD sign vs price direction, flat-guarded.
+        full_net    = sum(deltas)
+        full_gross  = sum(gross)
+        first_open  = float(raw[0][1])
+        last_close  = float(raw[-1][4])
+        divergence = 'none'
+        if first_open > 0 and full_gross > 0 and abs(full_net) / full_gross * 100 >= FLAT_THR_PCT:
+            price_up = last_close > first_open
+            if price_up and full_net < 0:
+                divergence = 'bearish'
+            elif not price_up and full_net > 0:
+                divergence = 'bullish'
+
+        result.update({
+            'cvd_window_usd':   round(full_net, 2),
+            'cvd_trend':        trend,
+            'cvd_divergence':   divergence,
+            'coverage_minutes': round(len(raw) * 5.0, 1),
+            'trades_count':     trades,
+            'source':           'binance',
+            'method':           'klines_taker',
+        })
+        return result
+
+    except Exception as exc:
+        logger.warning("_fetch_cvd_klines_binance error [%s]: %s", venue_symbol, exc)
+        return None
+
+    finally:
+        if exchange:
+            try:
+                await exchange.close()
+            except Exception:
+                pass
+
+
 async def fetch_cvd(
     exchange_id: str,
     symbol: str,
     windows_hours: tuple[int, ...] = (1, 4),
 ) -> dict | None:
     """
-    Compute taker-side CVD from one public-trades snapshot.
+    Taker-side CVD, sourced per plan §4.2 (multi-venue Phase 1):
+      1. Binance klines taker-volume — full 1h/4h windows, one call — when a
+         signal venue resolves the symbol on binance;
+      2. else trades snapshot on the first resolving signal venue;
+      3. else trades snapshot on the execution venue (Wave-3 behavior);
+      4. else None (honest absence).
 
-    Returns:
-        {'cvd_1h', 'cvd_4h', ...:  float | None,   # None when the snapshot
-                                                    # doesn't span that window
-         'cvd_window_usd': float,                   # delta over the full snapshot
-         'cvd_trend': 'rising|falling|flat',
-         'cvd_divergence': 'bullish|bearish|none',  # CVD vs price over the snapshot
-         'coverage_minutes': float,
-         'trades_count': int}
-    or None on error / unclassifiable or too few trades.
+    Returns the Wave-3 shape plus {'source': venue, 'method':
+    'klines_taker' | 'trades_snapshot'}.
+    """
+    try:
+        from app.data.signal_sources import resolve_signal_venues
+        venues = await resolve_signal_venues(symbol)
+
+        for venue, vsym in venues:
+            if venue == 'binance':
+                result = await _fetch_cvd_klines_binance(vsym, windows_hours)
+                if result:
+                    return result
+
+        for venue, vsym in venues:
+            result = await _fetch_cvd_trades(venue, vsym, windows_hours)
+            if result:
+                return result
+
+        return await _fetch_cvd_trades(exchange_id, symbol, windows_hours)
+
+    except Exception as exc:
+        logger.warning("fetch_cvd error [%s %s]: %s", exchange_id, symbol, exc)
+        return None
+
+
+async def _fetch_cvd_trades(
+    exchange_id: str,
+    symbol: str,
+    windows_hours: tuple[int, ...] = (1, 4),
+) -> dict | None:
+    """
+    Wave-3 fallback: taker-side CVD from one public-trades snapshot
+    (windows that the snapshot doesn't span stay None — labeled, not faked).
     """
     exchange = None
     try:
@@ -126,11 +235,13 @@ async def fetch_cvd(
             'cvd_divergence':   divergence,
             'coverage_minutes': coverage_minutes,
             'trades_count':     len(trades),
+            'source':           exchange_id,
+            'method':           'trades_snapshot',
         })
         return result
 
     except Exception as exc:
-        logger.warning("fetch_cvd error [%s %s]: %s", exchange_id, symbol, exc)
+        logger.warning("_fetch_cvd_trades error [%s %s]: %s", exchange_id, symbol, exc)
         return None
 
     finally:
