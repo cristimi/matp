@@ -13,6 +13,12 @@ class Settings(BaseSettings):
     tg_channel: str = "AstronomerZero"
     backfill_limit: int = 50
 
+    # Periodic reconciliation: closes gaps left by messages the live event
+    # handler never received (reconnect races, missed updates). Runs the
+    # normal "live" path (mark price + staleness gate), not backfill-replay.
+    catchup_interval_seconds: int = 60
+    catchup_limit: int = 200
+
     # Extractor LLM (transcriber role). DO NOT point this at a Flash-Lite class model.
     extractor_provider: str = "anthropic"   # anthropic | google | openai
     extractor_model: str = "claude-sonnet-4-6"

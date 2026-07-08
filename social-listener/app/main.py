@@ -79,6 +79,37 @@ async def handle(msg, phase: str):
         )
 
 
+async def _catchup_loop(client, channel):
+    """Periodically reconcile Telegram's message history against what's recorded.
+
+    The live NewMessage handler can silently miss events (Telethon reconnects,
+    dropped updates) without the process ever crashing or restarting — the only
+    recovery used to be the one-shot backfill at process startup, which could
+    leave a real gap open for days. This closes that gap continuously, and
+    replays anything found via the "live" phase (mark price + staleness gate),
+    not "backfill" (which acts unconditionally and would skip that gate).
+    """
+    while True:
+        await asyncio.sleep(settings.catchup_interval_seconds)
+        try:
+            last_id = await db.max_channel_msg_id()
+            if last_id is None:
+                continue
+
+            gap = []
+            async for m in client.iter_messages(
+                channel, min_id=last_id, limit=settings.catchup_limit, reverse=True
+            ):
+                gap.append(m)
+
+            if gap:
+                log.warning("catchup: recovering %d missed message(s) after id %s", len(gap), last_id)
+                for m in gap:
+                    await handle(m, "live")
+        except Exception:  # noqa: BLE001
+            log.exception("catchup loop error")
+
+
 async def main():
     await db.init_db()
     client = build_client()
@@ -102,6 +133,8 @@ async def main():
             await handle(event.message, "live")
         except Exception:  # noqa: BLE001
             log.exception("live handler error")
+
+    asyncio.create_task(_catchup_loop(client, channel))
 
     log.info("Listening for new messages...")
     await client.run_until_disconnected()

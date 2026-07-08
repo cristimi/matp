@@ -21,6 +21,15 @@ def pool() -> asyncpg.Pool:
     return _pool
 
 
+async def max_channel_msg_id() -> int | None:
+    async with pool().acquire() as c:
+        row = await c.fetchrow(
+            "SELECT max(channel_msg_id) AS m FROM public.social_signal_log WHERE source=$1",
+            settings.source_tag,
+        )
+        return row["m"] if row else None
+
+
 async def already_seen(channel_msg_id: int) -> bool:
     async with pool().acquire() as c:
         row = await c.fetchrow(
