@@ -40,3 +40,16 @@ CONFIDENCE CALIBRATION (strategy-specific nuance only):
 - Missing the divergence confirmation but all else aligned: cap at 0.70.
 - Fading against a strong EMA-trend read `[DELIVERED]`: cap at 0.70 regardless of other signals.
 - High-severity items in the NEWS DIGEST `[DELIVERED]` driving the extension (news moves do not mean-revert on schedule): reduce confidence by 0.05 or output hold.
+
+---
+
+## Addendum — resting-limit execution (migration 048, applied)
+
+Migration `048_limit_orders_expansion.sql` appended **PHASE 4 — RESTING LIMIT
+EXECUTION** to the live prompt: when the strategy has `use_limit_orders` (or
+`use_geometry`) enabled, an OPEN ORDERS section renders and the template may rest the
+fade at the exhaustion level via `place_limit_long/short`, amend on level re-fit, and
+must cancel when the Phase-1 gate dies or a high-impact event approaches. The block is
+conditional on the OPEN ORDERS section being present — with the toggle off, the prompt
+behaves exactly as the text above. Rationale in `17_regime_router.md`; applied text in
+the migration.

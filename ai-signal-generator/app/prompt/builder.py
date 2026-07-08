@@ -137,7 +137,7 @@ def _render_open_orders(state: dict) -> str:
     sc     = state['strategy_config']
     orders = state.get('open_orders')
 
-    if not sc.get('use_geometry') or orders is None:
+    if not (sc.get('use_geometry') or sc.get('use_limit_orders')) or orders is None:
         return ''
 
     lines = ['OPEN ORDERS (this strategy\'s resting limit orders):']
@@ -654,8 +654,9 @@ async def build_prompt(state: dict, db_pool) -> str:
         if g:
             sections.append(g)
 
-    # 2.6. Open orders — only if toggled on (geometry gates the range-working actions)
-    if sc.get('use_geometry'):
+    # 2.6. Open orders — geometry strategies keep it implicitly; use_limit_orders
+    # grants the resting-order actions to non-geometry strategies
+    if sc.get('use_geometry') or sc.get('use_limit_orders'):
         oo = _render_open_orders(state)
         if oo:
             sections.append(oo)

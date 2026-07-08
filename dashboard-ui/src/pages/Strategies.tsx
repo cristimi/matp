@@ -701,6 +701,7 @@ const DATA_SOURCES: { key: keyof AiFormState; label: string }[] = [
   { key:'use_funding_history',     label:'Funding History' },
   { key:'use_economic_calendar',   label:'Economic Calendar (provider paid-tier — dormant)' },
   { key:'use_liquidations',        label:'Liquidations (stream aggregate)' },
+  { key:'use_limit_orders',        label:'Resting Limit Orders (place/amend/cancel)' },
 ];
 
 // Per-template data-source consumption (docs/design/ai_prompts/1*.md headers).
@@ -708,18 +709,20 @@ const DATA_SOURCES: { key: keyof AiFormState; label: string }[] = [
 // prompt's rules actually read — the toggles stay editable afterwards.
 const TEMPLATE_DATA_SOURCES: Record<string, Array<keyof AiFormState>> = {
   trend_following: ['use_mtf_structure', 'use_momentum_divergence', 'use_cvd', 'use_volatility_regime'],
-  mean_reversion:  ['use_momentum_divergence', 'use_funding_history', 'use_volume_profile', 'use_volatility_regime'],
+  mean_reversion:  ['use_momentum_divergence', 'use_funding_history', 'use_volume_profile', 'use_volatility_regime', 'use_limit_orders'],
   breakout:        ['use_volatility_regime', 'use_volume_profile', 'use_orderbook', 'use_cvd', 'use_mtf_structure'],
   scalper:         ['use_orderbook', 'use_cvd', 'use_economic_calendar', 'use_liquidations', 'use_funding_history'],
   conservative:    ['use_mtf_structure', 'use_economic_calendar', 'use_funding_history', 'use_momentum_divergence'],
-  range_rotation:  ['use_volume_profile', 'use_orderbook', 'use_economic_calendar', 'use_funding_history'],
-  geometric_range: ['use_volume_profile', 'use_orderbook', 'use_economic_calendar', 'use_cvd', 'use_mtf_structure', 'use_geometry'],
+  range_rotation:  ['use_volume_profile', 'use_orderbook', 'use_economic_calendar', 'use_funding_history', 'use_limit_orders'],
+  geometric_range: ['use_volume_profile', 'use_orderbook', 'use_economic_calendar', 'use_cvd', 'use_mtf_structure', 'use_geometry', 'use_limit_orders'],
+  regime_router:   ['use_mtf_structure', 'use_volatility_regime', 'use_momentum_divergence', 'use_volume_profile',
+                    'use_orderbook', 'use_cvd', 'use_funding_history', 'use_economic_calendar', 'use_geometry', 'use_limit_orders'],
 };
 
 const TEMPLATE_PRESET_KEYS: Array<keyof AiFormState> = [
   'use_geometry', 'use_mtf_structure', 'use_volatility_regime', 'use_momentum_divergence',
   'use_volume_profile', 'use_orderbook', 'use_cvd', 'use_funding_history',
-  'use_economic_calendar', 'use_liquidations',
+  'use_economic_calendar', 'use_liquidations', 'use_limit_orders',
 ];
 
 function templateDataSourcePresets(templateId: string): Partial<AiFormState> {
@@ -811,6 +814,7 @@ interface AiFormState {
   use_funding_history:     boolean;
   use_economic_calendar:   boolean;
   use_liquidations:        boolean;
+  use_limit_orders:        boolean;
   confidence_threshold:   string;
   cooldown_entry_minutes: string;
   llm_provider:           string;
@@ -841,6 +845,7 @@ const AI_FORM_DEFAULTS: AiFormState = {
   use_funding_history:     false,
   use_economic_calendar:   false,
   use_liquidations:        false,
+  use_limit_orders:        false,
   confidence_threshold:   '0.72',
   cooldown_entry_minutes: '240',
   llm_provider:           'google',
@@ -1055,6 +1060,7 @@ export default function Strategies() {
           use_funding_history:     config.use_funding_history     ?? false,
           use_economic_calendar:   config.use_economic_calendar   ?? false,
           use_liquidations:        config.use_liquidations        ?? false,
+          use_limit_orders:        config.use_limit_orders        ?? false,
           confidence_threshold:   String(config.confidence_threshold   ?? '0.72'),
           cooldown_entry_minutes: String(config.cooldown_entry_minutes ?? '240'),
           llm_provider:           config.llm_provider           ?? 'google',
@@ -1140,6 +1146,7 @@ export default function Strategies() {
             use_funding_history:     aiEditForm.use_funding_history,
             use_economic_calendar:   aiEditForm.use_economic_calendar,
             use_liquidations:        aiEditForm.use_liquidations,
+            use_limit_orders:        aiEditForm.use_limit_orders,
             confidence_threshold:   parseFloat(aiEditForm.confidence_threshold),
             cooldown_entry_minutes: parseInt(aiEditForm.cooldown_entry_minutes),
             llm_provider:           aiEditForm.llm_provider,
@@ -1297,6 +1304,7 @@ export default function Strategies() {
             use_funding_history:     aiForm.use_funding_history,
             use_economic_calendar:   aiForm.use_economic_calendar,
             use_liquidations:        aiForm.use_liquidations,
+            use_limit_orders:        aiForm.use_limit_orders,
             confidence_threshold:   parseFloat(aiForm.confidence_threshold),
             cooldown_entry_minutes: parseInt(aiForm.cooldown_entry_minutes),
             llm_provider:           aiForm.llm_provider,

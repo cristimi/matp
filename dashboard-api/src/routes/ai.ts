@@ -21,7 +21,7 @@ const ALLOWED_CONFIG_FIELDS = [
   'llm_provider', 'llm_model',
   'use_mtf_structure', 'use_orderbook', 'use_volume_profile', 'use_cvd',
   'use_momentum_divergence', 'use_volatility_regime', 'use_funding_history',
-  'use_liquidations',
+  'use_liquidations', 'use_limit_orders',
 ];
 
 const RISK_FIELDS = [
@@ -200,6 +200,7 @@ router.get('/strategies/:id/config/preview-prompt', async (req: Request, res: Re
         use_volatility_regime:   aiConfig.use_volatility_regime,
         use_funding_history:     aiConfig.use_funding_history,
         use_liquidations:        aiConfig.use_liquidations,
+        use_limit_orders:        aiConfig.use_limit_orders,
         indicators:          aiConfig.indicators,
         lookback_days:       aiConfig.lookback_days,
       },

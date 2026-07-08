@@ -199,8 +199,10 @@ async def node_ingest(state: AgentState) -> AgentState:
     market_context = {'btc_dominance': btc_dominance, 'macro': macro_data}
 
     # ── Open orders (resting limits) — feeds the range-working actions ────
+    # use_geometry keeps its historical coupling (geometric_range predates the
+    # flag); use_limit_orders grants the same capability without geometry.
     open_orders = None
-    if sc.get('use_geometry'):
+    if sc.get('use_geometry') or sc.get('use_limit_orders'):
         try:
             open_orders = await _fetch_open_orders(state['strategy_id'])
         except Exception as exc:

@@ -38,3 +38,16 @@ CONFIDENCE CALIBRATION (strategy-specific nuance only):
 - Boundary + `hvn_levels` backing + intact wall `[REQUIRES PLUMBING: orderbook_depth]` all confirming: top of the in-range band.
 - Order-book or volume-profile sections absent from context or under DATA WARNINGS `[DELIVERED]`: fall back to the scalar Phase-1/2 checks and cap confidence at 0.70.
 - `funding_percentile` `[REQUIRES PLUMBING: funding_history]` drifting toward an extreme while the range holds: reduce confidence by 0.05 on new rotations — pressure is building toward a resolution.
+
+---
+
+## Addendum — resting-limit execution (migration 048, applied)
+
+Migration `048_limit_orders_expansion.sql` inserted **PHASE 2B — WORKING THE EDGES WITH
+RESTING LIMITS** into the live prompt (and a break-detection rule: cancel the resting
+order on the broken side first): when `use_limit_orders` (or `use_geometry`) is enabled,
+an OPEN ORDERS section renders and the template may rest fades at the proven range
+edges, amend on boundary re-fit, and must cancel when Phase 1 stops qualifying or an
+event approaches. Conditional on the OPEN ORDERS section being present — toggle off ⇒
+identical to the text above. Rationale in `17_regime_router.md`; applied text in the
+migration.
