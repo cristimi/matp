@@ -70,7 +70,10 @@ _llm = None
 def _get_llm():
     global _llm
     if _llm is None:
-        _llm = _build_llm().with_structured_output(SocialExtraction)
+        # include_raw: the plain structured wrapper returns only the parsed
+        # Pydantic object and discards usage_metadata — raw is needed to
+        # account actual token spend (input/output incl. thinking).
+        _llm = _build_llm().with_structured_output(SocialExtraction, include_raw=True)
     return _llm
 
 
@@ -82,10 +85,27 @@ async def extract(raw_text: str, preview_text: str) -> dict:
         f"NATIVE POST:\n{raw_text or '(none)'}\n\n"
         f"LINKED POST PREVIEW:\n{preview_text or '(none)'}"
     )
+    llm_usage = None
     try:
-        result: SocialExtraction = await _get_llm().ainvoke(
+        resp: dict = await _get_llm().ainvoke(
             [("system", SYSTEM_PROMPT), ("human", combined)]
         )
+        raw = resp.get("raw")
+        result: Optional[SocialExtraction] = resp.get("parsed")
+        usage = getattr(raw, "usage_metadata", None) or {}
+        if usage:
+            llm_usage = {
+                "input_tokens":  usage.get("input_tokens"),
+                "output_tokens": usage.get("output_tokens"),
+                "total_tokens":  usage.get("total_tokens"),
+            }
+        if result is None:
+            # Tokens were spent even though structured parsing failed — keep the usage.
+            log.warning("extraction parse failed: %s", resp.get("parsing_error"))
+            result = SocialExtraction(
+                is_actionable=False, action_type="NONE", confidence=0.0,
+                reasoning=f"parse_error: {resp.get('parsing_error')}",
+            )
     except Exception as e:  # noqa: BLE001
         log.warning("extraction failed: %s", e)
         result = SocialExtraction(
@@ -107,4 +127,7 @@ async def extract(raw_text: str, preview_text: str) -> dict:
         "model": f"{settings.extractor_provider}:{settings.extractor_model}",
         "extractor_version": EXTRACTOR_VERSION,
         "raw_llm_json": result.model_dump(),
+        "input_tokens":  llm_usage.get("input_tokens")  if llm_usage else None,
+        "output_tokens": llm_usage.get("output_tokens") if llm_usage else None,
+        "total_tokens":  llm_usage.get("total_tokens")  if llm_usage else None,
     }

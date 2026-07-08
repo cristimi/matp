@@ -105,8 +105,9 @@ async def insert_signal(rec: dict) -> bool:
             INSERT INTO public.social_signal_log
               (source, channel_msg_id, posted_at, raw_text, preview_text, x_url,
                is_actionable, action_type, asset, direction, reference_price,
-               confidence, in_whitelist, model, extractor_version, raw_llm_json)
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+               confidence, in_whitelist, model, extractor_version, raw_llm_json,
+               input_tokens, output_tokens, total_tokens)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
             ON CONFLICT (source, channel_msg_id) DO NOTHING
             """,
             settings.source_tag, rec["channel_msg_id"], rec["posted_at"],
@@ -115,5 +116,6 @@ async def insert_signal(rec: dict) -> bool:
             rec["direction"], rec["reference_price"], rec["confidence"],
             rec["in_whitelist"], rec["model"], rec["extractor_version"],
             json.dumps(rec["raw_llm_json"]),
+            rec.get("input_tokens"), rec.get("output_tokens"), rec.get("total_tokens"),
         )
         return result.endswith("1")
