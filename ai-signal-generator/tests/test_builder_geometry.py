@@ -59,6 +59,22 @@ def test_no_pattern_strong_is_surfaced_as_unclassified():
     assert 'Position in Range:    71.43%  (0=at lower boundary, 100=at upper)' in rendered
 
 
+def test_moderate_fit_is_tradeable_but_flagged():
+    gd = {
+        'shape': 'descending_channel', 'fit_quality': 'moderate',
+        'upper_boundary': 1733.94, 'lower_boundary': 1687.64,
+        'upper_touches': 3, 'lower_touches': 4,
+        'convergence_pct_per_bar': 0.0007, 'pattern_age_bars': 38,
+        'position_in_range_pct': 100.0,
+    }
+    rendered = _render_geometry(_state(gd))
+    assert rendered != ''
+    assert 'Descending Channel' in rendered
+    assert 'Fit Quality:          moderate' in rendered
+    assert 'UNRELIABLE' not in rendered
+    assert 'moderate fit — boundaries carry some noise' in rendered
+
+
 def test_named_shape_renders_title_not_unclassified():
     gd = {
         'shape': 'broadening', 'fit_quality': 'strong',

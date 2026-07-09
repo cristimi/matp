@@ -212,4 +212,4 @@ def test_output_keys_present():
 def test_fit_quality_values():
     candles = _zigzag_candles(80, lambda i: 110.0, lambda i: 90.0)
     result  = detect_geometry(candles)
-    assert result.get('fit_quality') in ('strong', 'weak')
+    assert result.get('fit_quality') in ('strong', 'moderate', 'weak')

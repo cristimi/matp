@@ -1,7 +1,8 @@
 """
 Unit tests for should_skip_llm_no_range (app/graph/gating.py) — the Phase 3
 predicate that lets the geometric_range template skip the LLM entirely when
-there's no strong-fit range to trade and no open position to evaluate an exit for.
+there's no tradeable-fit (strong/moderate) range to trade and no open position
+to evaluate an exit for.
 """
 import sys
 import os
@@ -37,6 +38,13 @@ def test_geometric_range_position_open_weak_fit_does_not_skip():
 
 def test_geometric_range_strong_fit_does_not_skip():
     gd = {'shape': 'horizontal_channel', 'fit_quality': 'strong'}
+    assert should_skip_llm_no_range(_state('geometric_range', False, gd)) is False
+
+
+def test_geometric_range_moderate_fit_does_not_skip():
+    # Moderate fits reach the LLM; the template trades them with stricter
+    # touch counts and a lower confidence cap (migration 051).
+    gd = {'shape': 'descending_channel', 'fit_quality': 'moderate'}
     assert should_skip_llm_no_range(_state('geometric_range', False, gd)) is False
 
 

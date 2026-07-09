@@ -7,22 +7,22 @@ logger = logging.getLogger(__name__)
 
 async def node_skip_geometry(state: AgentState) -> AgentState:
     """
-    Deterministic-HOLD terminal for should_skip_llm_no_range: no strong-fit
-    geometric range to trade and no open position, so the LLM call is skipped
-    entirely rather than run just to confirm the template's own HOLD rule.
+    Deterministic-HOLD terminal for should_skip_llm_no_range: no tradeable-fit
+    (strong/moderate) geometric range and no open position, so the LLM call is
+    skipped entirely rather than run just to confirm the template's own HOLD rule.
     """
     gd          = state.get('geometry_data') or {}
     fit_quality = gd.get('fit_quality')
     shape       = gd.get('shape')
 
     reasoning = (
-        "Geometric Range & Breakout template requires a strong-fit range/pattern; "
-        f"none detected (fit_quality={fit_quality}, shape={shape}). "
+        "Geometric Range & Breakout template requires a strong- or moderate-fit "
+        f"range/pattern; none detected (fit_quality={fit_quality}, shape={shape}). "
         "LLM skipped to conserve tokens; auto-HOLD."
     )
 
     logger.info(
-        "strategy=%s geometric_range: no strong-fit range (fit_quality=%s shape=%s) "
+        "strategy=%s geometric_range: no tradeable-fit range (fit_quality=%s shape=%s) "
         "— skipping LLM, auto-HOLD",
         state.get('strategy_id'), fit_quality, shape,
     )

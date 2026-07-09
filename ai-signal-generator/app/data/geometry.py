@@ -10,6 +10,7 @@ Thresholds (adjust here if needed; documented per spec):
   CONV_THR_PCT      = 0.01  convergence rate > this % per bar → classified as converging
   TOUCH_TOL_PCT     = 0.60  swing within this % of trendline counts as a touch
   STRONG_R2         = 0.70  both R² ≥ this → fit_quality = "strong"
+  MODERATE_R2       = 0.50  both R² ≥ this (but < STRONG_R2) → fit_quality = "moderate"
   MIN_R2_PATTERN    = 0.30  if either R² < this, refuse to classify → no_pattern
 
 Shapes: horizontal_channel, ascending_channel, descending_channel, ascending_triangle,
@@ -25,6 +26,8 @@ Rationale for thresholds:
 - CONV_THR: 0.01% per bar is the minimum convergence rate that would produce a meaningful
   apex within a reasonable number of bars (~1000 bars before completely closed).
 - STRONG_R2 = 0.70: standard "good fit" threshold; weak R² is flagged but not blocked.
+- MODERATE_R2 = 0.50: middle tier — structure is real but noisier; the geometric_range
+  template trades it only with stricter touch counts and a lower confidence cap.
 - MIN_R2_PATTERN = 0.30: below this the trendline is essentially noise — don't classify.
 """
 import logging
@@ -42,6 +45,7 @@ PARALLEL_THR_PCT = 0.04
 CONV_THR_PCT     = 0.01
 TOUCH_TOL_PCT    = 0.60
 STRONG_R2        = 0.70
+MODERATE_R2      = 0.50
 MIN_R2_PATTERN   = 0.30
 
 
@@ -200,7 +204,13 @@ def detect_geometry(candles: list[dict], lookback: int = 120) -> dict:
         else:
             shape = 'no_pattern'
 
-        fit_quality   = 'strong' if min(upper_r2, lower_r2) >= STRONG_R2 else 'weak'
+        min_r2 = min(upper_r2, lower_r2)
+        if min_r2 >= STRONG_R2:
+            fit_quality = 'strong'
+        elif min_r2 >= MODERATE_R2:
+            fit_quality = 'moderate'
+        else:
+            fit_quality = 'weak'
         upper_touches = _count_touches(swing_highs, upper_slope, upper_intercept, current_price)
         lower_touches = _count_touches(swing_lows,  lower_slope, lower_intercept, current_price)
 

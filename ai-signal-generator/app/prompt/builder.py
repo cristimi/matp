@@ -506,18 +506,19 @@ def _render_geometry(state: dict) -> str:
     shape        = gd.get('shape', '')
     fit_quality  = gd.get('fit_quality')
     unclassified = shape == 'no_pattern'
-    reliable     = fit_quality == 'strong'
+    tradeable    = fit_quality in ('strong', 'moderate')
 
-    # A no_pattern shape with a strong trendline fit means the boundaries are real
-    # but don't match any named pattern — surface it labeled as unclassified rather
-    # than silently dropping a strong fit. A genuinely noisy fit (no_pattern + weak,
-    # e.g. too few swings) is now surfaced too, honestly labeled as unreliable,
-    # instead of being dropped — dropping it read to the LLM as "geometry data is
-    # missing" rather than "geometry was checked and found no reliable structure".
+    # A no_pattern shape with a strong/moderate trendline fit means the boundaries
+    # are real but don't match any named pattern — surface it labeled as
+    # unclassified rather than silently dropping a usable fit. A genuinely noisy
+    # fit (no_pattern + weak, e.g. too few swings) is now surfaced too, honestly
+    # labeled as unreliable, instead of being dropped — dropping it read to the LLM
+    # as "geometry data is missing" rather than "geometry was checked and found no
+    # reliable structure".
     if unclassified:
         label = (
-            'Unclassified Structure (no named pattern, but a strong trendline fit)'
-            if reliable else
+            f'Unclassified Structure (no named pattern, but a {fit_quality} trendline fit)'
+            if tradeable else
             'No Reliable Pattern (weak trendline fit)'
         )
     else:
@@ -528,10 +529,12 @@ def _render_geometry(state: dict) -> str:
     # position_in_range_pct is computed off the fitted boundaries, so when the fit
     # itself isn't strong the position readout inherits that noise — flag it rather
     # than presenting it as a dependable 0-100 locator.
-    position_suffix = (
-        '%  (0=at lower boundary, 100=at upper)' if reliable else
-        "%  (UNRELIABLE — fit_quality is not 'strong'; boundary may be noisy)"
-    )
+    if fit_quality == 'strong':
+        position_suffix = '%  (0=at lower boundary, 100=at upper)'
+    elif fit_quality == 'moderate':
+        position_suffix = '%  (0=at lower boundary, 100=at upper; moderate fit — boundaries carry some noise)'
+    else:
+        position_suffix = "%  (UNRELIABLE — fit_quality is 'weak'; boundary may be noisy)"
 
     lines = [
         'GEOMETRIC PATTERN:',
