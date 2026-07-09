@@ -45,6 +45,27 @@ function useLongPress(onTap: () => void, onHold: () => void) {
   };
 }
 
+// ---- container width (drives the desktop layout switch off the actual
+// content area, not the window — matters because the sidebar can be
+// expanded/collapsed independent of viewport width) ----
+
+const DESKTOP_MIN_WIDTH = 860;
+
+function useContainerWidth<T extends HTMLElement>(): [React.RefObject<T>, number] {
+  const ref = useRef<T>(null);
+  const [width, setWidth] = useState(0);
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const ro = new ResizeObserver(entries => setWidth(entries[0].contentRect.width));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  return [ref, width];
+}
+
 // ---- tiny shared pieces ----
 
 function Metric({ label, value, color }: { label: string; value: string; color?: string }) {
@@ -195,6 +216,8 @@ export default function StrategyTreePage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const livePnl = useLivePnl();
+  const [wrapRef, wrapWidth] = useContainerWidth<HTMLDivElement>();
+  const isDesktop = wrapWidth >= DESKTOP_MIN_WIDTH;
 
   // filter state — persisted in sessionStorage
   const [filterSymbol,  setFilterSymbolRaw]  = useState<string>(() => ssGet(SS_SYMBOL,   'all'));
@@ -310,7 +333,7 @@ export default function StrategyTreePage() {
   const dirArrow = (key: SortKey) => sortKey === key ? (sortDir === 'asc' ? ' ↑' : ' ↓') : '';
 
   return (
-    <div style={{ maxWidth: 1720, margin: '0 auto', paddingBottom: 70 }}>
+    <div ref={wrapRef} style={{ maxWidth: isDesktop ? 1160 : 460, margin: '0 auto', paddingBottom: 70 }}>
       {/* Filter + sort bar */}
       <div style={{
         display: 'flex', gap: 6, padding: '8px 10px', alignItems: 'center',
@@ -378,15 +401,15 @@ export default function StrategyTreePage() {
       </div>
 
       {/* Cards */}
-      <div className="card-flow" style={{ padding: '14px 10px 0' }}>
-        {loading && <div className="col-span-all" style={{ padding: 24, color: 'var(--muted)', textAlign: 'center', fontSize: 13 }}>Loading…</div>}
-        {error && <div className="col-span-all" style={{ padding: 24, color: 'var(--red)', fontSize: 13 }}>{error}</div>}
+      <div style={{ padding: '14px 10px 0' }}>
+        {loading && <div style={{ padding: 24, color: 'var(--muted)', textAlign: 'center', fontSize: 13 }}>Loading…</div>}
+        {error && <div style={{ padding: 24, color: 'var(--red)', fontSize: 13 }}>{error}</div>}
         {!loading && !error && sorted.length === 0 && (
-          <div className="col-span-all" style={{ padding: 24, color: 'var(--muted)', textAlign: 'center', fontSize: 13 }}>
+          <div style={{ padding: 24, color: 'var(--muted)', textAlign: 'center', fontSize: 13 }}>
             {strategies.length === 0 ? 'No strategies' : 'No strategies match the current filters'}
           </div>
         )}
-        {sorted.map(s => <StrategyCard key={s.id} strategy={s} onL1Refresh={loadStrategies} livePnl={livePnl} />)}
+        {sorted.map(s => <StrategyCard key={s.id} strategy={s} onL1Refresh={loadStrategies} livePnl={livePnl} isDesktop={isDesktop} />)}
       </div>
     </div>
   );
@@ -396,7 +419,7 @@ export default function StrategyTreePage() {
 
 type ExpandState = 'collapsed' | 'open' | 'all';
 
-function StrategyCard({ strategy: s, onL1Refresh, livePnl }: { strategy: StrategyTreeItem; onL1Refresh: () => void; livePnl: PnlSnapshot | null }) {
+function StrategyCard({ strategy: s, onL1Refresh, livePnl, isDesktop }: { strategy: StrategyTreeItem; onL1Refresh: () => void; livePnl: PnlSnapshot | null; isDesktop: boolean }) {
   const livePids = livePnl?.strategies[s.id]?.position_ids;
   const hasOpen = livePids ? livePids.length > 0 : s.open_positions_count > 0;
   const pidKey = livePids ? [...livePids].sort().join(',') : null;
@@ -408,6 +431,7 @@ function StrategyCard({ strategy: s, onL1Refresh, livePnl }: { strategy: Strateg
   const [allPositions, setAllPositions]   = useState<TreePosition[] | null>(null);
   const [loadingPos, setLoadingPos] = useState(false);
   const [closedShown, setClosedShown] = useState(CLOSED_STEP);
+  const [closedOpenDesktop, setClosedOpenDesktop] = useState(false);
   const [actionInFlight, setActionInFlight] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [showDetail, setShowDetail] = useState(false);
@@ -430,6 +454,14 @@ function StrategyCard({ strategy: s, onL1Refresh, livePnl }: { strategy: Strateg
     catch { setAllPositions([]); }
     finally { setLoadingPos(false); }
   }, [s.id, allPositions]);
+
+  // Desktop shows open positions by default — no click needed to see what's live.
+  useEffect(() => {
+    if (isDesktop && expandState === 'collapsed') {
+      doFetchOpen();
+      setExpandState('open');
+    }
+  }, [isDesktop, expandState, doFetchOpen]);
 
   // Refetch open positions when the live snapshot reports a position-set membership change.
   // Keyed on pidKey (sorted id join) so it fires once per membership change, not once per tick.
@@ -544,19 +576,30 @@ function StrategyCard({ strategy: s, onL1Refresh, livePnl }: { strategy: Strateg
     navigate('/strategies', { state: { editId: s.id } });
   }, [navigate, s.id]);
 
-  // derive visible lists
-  const shownOpen = expandState === 'open'
+  // derive visible lists.
+  // Desktop always shows open positions (no click needed); the closed column
+  // is an independent show/hide toggle instead of being tied to expandState.
+  const shownOpen = isDesktop
     ? (openPositions ?? [])
-    : expandState === 'all'
-      ? (allPositions ?? []).filter(p => p.status === 'open')
-      : [];
+    : expandState === 'open'
+      ? (openPositions ?? [])
+      : expandState === 'all'
+        ? (allPositions ?? []).filter(p => p.status === 'open')
+        : [];
 
-  const allClosed     = expandState === 'all' ? (allPositions ?? []).filter(p => p.status === 'closed') : [];
+  const showClosedSection = isDesktop ? closedOpenDesktop : expandState === 'all';
+  const allClosed     = showClosedSection ? (allPositions ?? []).filter(p => p.status === 'closed') : [];
   const shownClosed   = allClosed.slice(0, closedShown);
   const hasMoreClosed = allClosed.length > closedShown;
 
+  const handleToggleClosedDesktop = useCallback(() => {
+    const opening = !closedOpenDesktop;
+    setClosedOpenDesktop(opening);
+    if (opening) doFetchAll();
+  }, [closedOpenDesktop, doFetchAll]);
+
   return (
-    <div className="col-break-avoid" style={{
+    <div style={{
       background: 'var(--bg2)', border: '1px solid var(--border)',
       borderRadius: 11, marginBottom: 11, overflow: 'hidden',
       position: 'relative', boxShadow: '0 1px 2px rgba(20,30,50,.04)',
@@ -589,47 +632,85 @@ function StrategyCard({ strategy: s, onL1Refresh, livePnl }: { strategy: Strateg
         </button>
       </div>
 
-      {/* Rows 1 + 2 + 3 (tap/long-press target) */}
+      {/* Rows 1 + 2 + 3 (tap/long-press target on mobile; desktop is always expanded) */}
       <div
-        role="button"
-        tabIndex={0}
-        aria-label={`${s.name} — tap to expand`}
-        style={{ padding: '9px 6px 9px 12px', paddingRight: 84, cursor: 'pointer', userSelect: 'none', WebkitUserSelect: 'none' }}
-        {...pressHandlers}
+        role={isDesktop ? undefined : 'button'}
+        tabIndex={isDesktop ? undefined : 0}
+        aria-label={isDesktop ? undefined : `${s.name} — tap to expand`}
+        style={{
+          padding: '9px 6px 9px 12px', paddingRight: 84,
+          cursor: isDesktop ? 'default' : 'pointer',
+          userSelect: 'none', WebkitUserSelect: 'none',
+        }}
+        {...(isDesktop ? {} : pressHandlers)}
       >
-        {/* Row 1 */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 7, flexWrap: 'wrap' }}>
-          {hasOpen && <GreenDot />}
-          <HeaderPill
-            variant="neutral"
-            style={{ fontWeight: 700, background: 'var(--bg3)', color: 'var(--text)', borderColor: 'var(--border-hi)' }}
-          >
-            {s.symbol}
-          </HeaderPill>
-          <span style={{ fontWeight: 700, fontSize: 14, letterSpacing: '-.01em', color: isStopped ? 'var(--muted)' : 'var(--text)' }}>
-            {s.name}
-          </span>
-        </div>
+        {isDesktop ? (
+          /* Desktop: identity + metrics share one line — no tap needed to see the numbers */
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 18, flexWrap: 'wrap' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 7, flexWrap: 'wrap' }}>
+              {hasOpen && <GreenDot />}
+              <HeaderPill
+                variant="neutral"
+                style={{ fontWeight: 700, background: 'var(--bg3)', color: 'var(--text)', borderColor: 'var(--border-hi)' }}
+              >
+                {s.symbol}
+              </HeaderPill>
+              <span style={{ fontWeight: 700, fontSize: 14, letterSpacing: '-.01em', color: isStopped ? 'var(--muted)' : 'var(--text)' }}>
+                {s.name}
+              </span>
+              {s.strategy_source === 'ai_engine' && <HeaderPill variant="ai">AI</HeaderPill>}
+              <AccountChip>{s.account_label}</AccountChip>
+              {isStopped && <StopChip reason={s.stop_reason} />}
+              {actionError && (
+                <span style={{ fontSize: 10.5, color: 'var(--red)' }}>{actionError}</span>
+              )}
+            </div>
+            <div style={{ display: 'flex', alignItems: 'flex-start', gap: 18, flexShrink: 0 }}>
+              <Metric label="Allocation" value={Number(s.capital_allocation).toFixed(1)} />
+              <Metric label="Total Return" value={formatPct(s.total_return)} color={pnlColor(s.total_return)} />
+              {hasOpen && (() => {
+                const liveOpenPnl = livePnl?.strategies[s.id]?.open_pnl ?? s.open_pnl;
+                return <Metric label="Open PnL" value={formatPnl(liveOpenPnl)} color={pnlColor(liveOpenPnl)} />;
+              })()}
+            </div>
+          </div>
+        ) : (
+          <>
+            {/* Row 1 */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 7, flexWrap: 'wrap' }}>
+              {hasOpen && <GreenDot />}
+              <HeaderPill
+                variant="neutral"
+                style={{ fontWeight: 700, background: 'var(--bg3)', color: 'var(--text)', borderColor: 'var(--border-hi)' }}
+              >
+                {s.symbol}
+              </HeaderPill>
+              <span style={{ fontWeight: 700, fontSize: 14, letterSpacing: '-.01em', color: isStopped ? 'var(--muted)' : 'var(--text)' }}>
+                {s.name}
+              </span>
+            </div>
 
-        {/* Row 2 */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 6, flexWrap: 'wrap' }}>
-          {s.strategy_source === 'ai_engine' && <HeaderPill variant="ai">AI</HeaderPill>}
-          <AccountChip>{s.account_label}</AccountChip>
-          {isStopped && <StopChip reason={s.stop_reason} />}
-          {actionError && (
-            <span style={{ fontSize: 10.5, color: 'var(--red)' }}>{actionError}</span>
-          )}
-        </div>
+            {/* Row 2 */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 6, flexWrap: 'wrap' }}>
+              {s.strategy_source === 'ai_engine' && <HeaderPill variant="ai">AI</HeaderPill>}
+              <AccountChip>{s.account_label}</AccountChip>
+              {isStopped && <StopChip reason={s.stop_reason} />}
+              {actionError && (
+                <span style={{ fontSize: 10.5, color: 'var(--red)' }}>{actionError}</span>
+              )}
+            </div>
 
-        {/* Row 3 */}
-        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 18, marginTop: 6, flexWrap: 'nowrap' }}>
-          <Metric label="Allocation" value={Number(s.capital_allocation).toFixed(1)} />
-          <Metric label="Total Return" value={formatPct(s.total_return)} color={pnlColor(s.total_return)} />
-          {hasOpen && (() => {
-            const liveOpenPnl = livePnl?.strategies[s.id]?.open_pnl ?? s.open_pnl;
-            return <Metric label="Open PnL" value={formatPnl(liveOpenPnl)} color={pnlColor(liveOpenPnl)} />;
-          })()}
-        </div>
+            {/* Row 3 */}
+            <div style={{ display: 'flex', alignItems: 'flex-start', gap: 18, marginTop: 6, flexWrap: 'nowrap' }}>
+              <Metric label="Allocation" value={Number(s.capital_allocation).toFixed(1)} />
+              <Metric label="Total Return" value={formatPct(s.total_return)} color={pnlColor(s.total_return)} />
+              {hasOpen && (() => {
+                const liveOpenPnl = livePnl?.strategies[s.id]?.open_pnl ?? s.open_pnl;
+                return <Metric label="Open PnL" value={formatPnl(liveOpenPnl)} color={pnlColor(liveOpenPnl)} />;
+              })()}
+            </div>
+          </>
+        )}
       </div>
 
       {/* Detail panel (ⓘ) */}
@@ -671,51 +752,102 @@ function StrategyCard({ strategy: s, onL1Refresh, livePnl }: { strategy: Strateg
       )}
 
       {/* Strategy track */}
-      {expandState !== 'collapsed' && (
-        <div style={{ margin: '2px 9px 11px 13px', padding: '2px 4px 6px' }}>
-          {loadingPos && <Spinner />}
-
-          {shownOpen.length > 0 && (
-            <>
+      {isDesktop ? (
+        <div style={{ margin: '2px 9px 11px 13px', padding: '2px 4px 10px' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20 }}>
+            {/* Open positions column — always visible, no click needed */}
+            <div>
               <SectionLabel text="Open Positions" />
+              {loadingPos && openPositions === null && <Spinner />}
               {shownOpen.map(p => (
                 <PositionCard key={p.id} position={p} stratLabel={s.account_label} stratExchange={s.account_exchange} onClose={handlePositionClose} livePnl={livePnl} />
               ))}
-            </>
-          )}
+              {openPositions !== null && shownOpen.length === 0 && (
+                <div style={{ color: 'var(--muted)', fontSize: 12, padding: '6px 4px' }}>No open positions</div>
+              )}
+            </div>
 
-          {expandState === 'all' && !loadingPos && (
-            <>
-              {allClosed.length > 0 && (
+            {/* Closed positions column — lazy, explicit show/hide */}
+            <div>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <SectionLabel text="Closed Positions" />
+                <span
+                  onClick={handleToggleClosedDesktop}
+                  style={{ fontSize: 10.5, fontWeight: 600, color: 'var(--blue)', cursor: 'pointer', padding: '2px 4px' }}
+                >
+                  {closedOpenDesktop ? 'Hide' : 'Show'}
+                </span>
+              </div>
+              {closedOpenDesktop && (
                 <>
-                  <SectionLabel text="Closed Positions" />
+                  {loadingPos && allPositions === null && <Spinner />}
                   {shownClosed.map(p => (
                     <PositionCard key={p.id} position={p} stratLabel={s.account_label} stratExchange={s.account_exchange} onClose={handlePositionClose} livePnl={livePnl} />
                   ))}
+                  {allPositions !== null && allClosed.length === 0 && (
+                    <div style={{ color: 'var(--muted)', fontSize: 12, padding: '6px 4px' }}>No closed positions</div>
+                  )}
+                  {hasMoreClosed && (
+                    <button
+                      type="button"
+                      onClick={() => setClosedShown(n => n + CLOSED_STEP)}
+                      style={{ ...loadMoreBtn, display: 'block', width: '100%', marginTop: 6 }}
+                    >
+                      Load more
+                    </button>
+                  )}
                 </>
               )}
-              {shownOpen.length === 0 && allClosed.length === 0 && (
-                <div style={{ color: 'var(--muted)', fontSize: 12, padding: '8px 4px' }}>No positions</div>
-              )}
-            </>
-          )}
-
-          {/* Bottom buttons */}
-          <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
-            {expandState === 'all' && hasMoreClosed && (
-              <button type="button" onClick={() => setClosedShown(n => n + CLOSED_STEP)} style={loadMoreBtn}>
-                Load more
-              </button>
-            )}
-            <button
-              type="button"
-              onClick={() => setExpandState('collapsed')}
-              style={{ ...collapseBtn, flex: expandState === 'all' && hasMoreClosed ? '0 0 auto' : 1 }}
-            >
-              Collapse
-            </button>
+            </div>
           </div>
         </div>
+      ) : (
+        expandState !== 'collapsed' && (
+          <div style={{ margin: '2px 9px 11px 13px', padding: '2px 4px 6px' }}>
+            {loadingPos && <Spinner />}
+
+            {shownOpen.length > 0 && (
+              <>
+                <SectionLabel text="Open Positions" />
+                {shownOpen.map(p => (
+                  <PositionCard key={p.id} position={p} stratLabel={s.account_label} stratExchange={s.account_exchange} onClose={handlePositionClose} livePnl={livePnl} />
+                ))}
+              </>
+            )}
+
+            {expandState === 'all' && !loadingPos && (
+              <>
+                {allClosed.length > 0 && (
+                  <>
+                    <SectionLabel text="Closed Positions" />
+                    {shownClosed.map(p => (
+                      <PositionCard key={p.id} position={p} stratLabel={s.account_label} stratExchange={s.account_exchange} onClose={handlePositionClose} livePnl={livePnl} />
+                    ))}
+                  </>
+                )}
+                {shownOpen.length === 0 && allClosed.length === 0 && (
+                  <div style={{ color: 'var(--muted)', fontSize: 12, padding: '8px 4px' }}>No positions</div>
+                )}
+              </>
+            )}
+
+            {/* Bottom buttons */}
+            <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+              {expandState === 'all' && hasMoreClosed && (
+                <button type="button" onClick={() => setClosedShown(n => n + CLOSED_STEP)} style={loadMoreBtn}>
+                  Load more
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => setExpandState('collapsed')}
+                style={{ ...collapseBtn, flex: expandState === 'all' && hasMoreClosed ? '0 0 auto' : 1 }}
+              >
+                Collapse
+              </button>
+            </div>
+          </div>
+        )
       )}
     </div>
   );

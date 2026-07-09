@@ -182,7 +182,7 @@ export default function App() {
   return (
     <div className="flex min-h-screen bg-gray-50 dark:bg-gray-950 transition-colors duration-200">
       <Sidebar dark={dark} toggleTheme={toggleTheme} isCollapsed={isCollapsed} toggleCollapsed={toggleCollapsed} hasFailedOrders={hasFailedOrders} />
-      <main className="flex-1 overflow-auto pb-20 md:pb-0 [container-type:inline-size]">
+      <main className="flex-1 overflow-auto pb-20 md:pb-0">
         <Routes>
           <Route path="/"           element={<StrategyTreePage />} />
           <Route path="/dashboard"  element={<DashboardPage />} />
