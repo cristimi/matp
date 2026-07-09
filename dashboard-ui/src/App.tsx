@@ -14,10 +14,7 @@ import { useNavCounts } from './hooks/useNavCounts';
 
 const NAV = [
   { to: '/tree',       label: 'Tree',       icon: '🌳' },
-  { to: '/strategies', label: 'Strategies', icon: '⚙️' },
   { to: '/accounts',   label: 'Accounts',   icon: '🔑' },
-  { to: '/positions',  label: 'Positions',  icon: '📈' },
-  { to: '/orders',     label: 'Orders',     icon: '📋' },
   { to: '/signals',    label: 'Signals',    icon: '📡' },
   { to: '/ai-signals', label: 'AI Log',     icon: '🤖' },
   { to: '/settings',   label: 'Settings',   icon: '🔧' },
@@ -187,7 +184,8 @@ export default function App() {
       <Sidebar dark={dark} toggleTheme={toggleTheme} isCollapsed={isCollapsed} toggleCollapsed={toggleCollapsed} hasFailedOrders={hasFailedOrders} />
       <main className="flex-1 overflow-auto pb-20 md:pb-0">
         <Routes>
-          <Route path="/"           element={<DashboardPage />} />
+          <Route path="/"           element={<StrategyTreePage />} />
+          <Route path="/dashboard"  element={<DashboardPage />} />
           <Route path="/orders"     element={<OrdersPage />} />
           <Route path="/positions"  element={<PositionsPage />} />
           <Route path="/strategies" element={<StrategiesPage />} />

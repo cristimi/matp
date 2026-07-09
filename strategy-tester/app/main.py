@@ -86,6 +86,9 @@ async def lifespan(app: FastAPI):
     await init_db()
     pool = get_pool()
 
+    from app.config_secrets import apply_llm_key_overrides
+    await apply_llm_key_overrides(pool, settings)
+
     # 2. Verify tester schema exists
     schema_exists = await pool.fetchval(
         "SELECT schema_name FROM information_schema.schemata WHERE schema_name = 'tester'"

@@ -112,6 +112,10 @@ async def _catchup_loop(client, channel):
 
 async def main():
     await db.init_db()
+
+    from app.config_secrets import apply_llm_key_overrides
+    await apply_llm_key_overrides(db.pool(), settings)
+
     client = build_client()
     await client.start()  # StringSession is pre-authorized -> non-interactive
     me = await client.get_me()

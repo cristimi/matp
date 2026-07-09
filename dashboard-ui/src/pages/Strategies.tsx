@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { useLocation } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { SectionHeader } from '../components/shared';
 
 interface Strategy {
@@ -867,7 +867,9 @@ export default function Strategies() {
   const [strategies, setStrategies] = useState<Strategy[]>([]);
   const [loading, setLoading]       = useState(true);
   const location = useLocation();
+  const navigate = useNavigate();
   const [autoEditId] = useState<string | null>(() => (location.state as any)?.editId ?? null);
+  const [autoAdd]    = useState<boolean>(() => (location.state as any)?.openAdd ?? false);
 
   const [filterPair,   setFilterPairRaw]   = useState<string>(() => sessionStorage.getItem('matp_strat_pair')   ?? 'all');
   const [filterStatus, setFilterStatusRaw] = useState<string>(() => sessionStorage.getItem('matp_strat_status') ?? 'all');
@@ -1095,6 +1097,13 @@ export default function Strategies() {
     }
   }, [strategies, autoEditId]);
 
+  // Auto-open add modal when navigated from tree page with state.openAdd
+  useEffect(() => {
+    if (!autoAdd) return;
+    window.history.replaceState({}, '', window.location.pathname);
+    handleOpenAdd();
+  }, [autoAdd]);
+
   const handleEditSubmit = async () => {
     if (!editTarget) return;
     if (parseFloat(editForm.margin_per_trade ?? '0') <= 0) {
@@ -1160,7 +1169,7 @@ export default function Strategies() {
 
         setEditTarget(null);
         setWebhookInfo(null);
-        fetchStrategies();
+        navigate('/tree');
       } else {
         const res = await fetch(`/api/dashboard/strategies/${editTarget.id}`, {
           method:  'PUT',
@@ -1181,7 +1190,7 @@ export default function Strategies() {
         }
         setEditTarget(null);
         setWebhookInfo(null);
-        fetchStrategies();
+        navigate('/tree');
       }
     } catch (e: any) {
       setEditError(e.message);
@@ -1321,7 +1330,7 @@ export default function Strategies() {
         }
 
         resetAddModal();
-        fetchStrategies();
+        navigate('/tree');
       }
     } catch (e: any) {
       setAddError(e.message);
@@ -2252,7 +2261,7 @@ export default function Strategies() {
             </div>
 
             <button
-              onClick={() => setCreatedSecret(null)}
+              onClick={() => { setCreatedSecret(null); navigate('/tree'); }}
               style={{
                 width:'100%', padding:'12px', border:'none',
                 borderRadius:'8px', background:'var(--blue)',

@@ -109,6 +109,42 @@ function Spinner() {
   return <div style={{ color: 'var(--muted)', fontSize: 12, padding: '6px 4px', textAlign: 'center' }}>Loading…</div>;
 }
 
+// ---- filters/sort dropdown ----
+
+function Dropdown({ label, active, children }: { label: string; active: boolean; children: React.ReactNode }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDocClick = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener('mousedown', onDocClick);
+    return () => document.removeEventListener('mousedown', onDocClick);
+  }, [open]);
+
+  return (
+    <div ref={ref} style={{ position: 'relative', flexShrink: 0 }}>
+      <span onClick={() => setOpen(o => !o)} style={treeChip(active)}>
+        {label}{open ? ' ▴' : ' ▾'}
+      </span>
+      {open && (
+        <div style={{
+          position: 'absolute', top: 'calc(100% + 6px)', left: 0, zIndex: 20,
+          background: 'var(--bg2)', border: '1px solid var(--border)',
+          borderRadius: 10, padding: 8,
+          boxShadow: '0 4px 16px rgba(0,0,0,.14)',
+          display: 'flex', flexDirection: 'column', gap: 6,
+          minWidth: 150,
+        }}>
+          {children}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ---- filter/sort helpers ----
 
 type SortKey = 'symbol' | 'last_opened' | 'activity';
@@ -138,9 +174,23 @@ function nullSafeCompare(a: number | null, b: number | null, dir: SortDir): numb
   return dir === 'asc' ? a - b : b - a;
 }
 
+function hasOpenFor(s: StrategyTreeItem, livePnl: PnlSnapshot | null): boolean {
+  const livePids = livePnl?.strategies[s.id]?.position_ids;
+  return livePids ? livePids.length > 0 : s.open_positions_count > 0;
+}
+
+// "Last Change" grouping: strategies with open positions first (by most-recently-opened),
+// then active strategies (by most-recent signal), then inactive strategies (same tiebreak).
+// Group order is fixed; sortDir only flips the recency comparison within each group.
+function lastChangeBucket(s: StrategyTreeItem, livePnl: PnlSnapshot | null): 0 | 1 | 2 {
+  if (hasOpenFor(s, livePnl)) return 0;
+  return s.enabled ? 1 : 2;
+}
+
 // ---- page ----
 
 export default function StrategyTreePage() {
+  const navigate = useNavigate();
   const [strategies, setStrategies] = useState<StrategyTreeItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -181,11 +231,7 @@ export default function StrategyTreePage() {
       if (filterStatus === 'active'   && !s.enabled) return false;
       if (filterStatus === 'inactive' &&  s.enabled) return false;
     }
-    if (filterOpenPos === 'hasopen') {
-      const livePids = livePnl?.strategies[s.id]?.position_ids;
-      const hasOpen = livePids ? livePids.length > 0 : s.open_positions_count > 0;
-      if (!hasOpen) return false;
-    }
+    if (filterOpenPos === 'hasopen' && !hasOpenFor(s, livePnl)) return false;
     if (filterType !== 'all') {
       const src = s.strategy_source ?? 'tradingview';
       if (filterType === 'tradingview' && src !== 'tradingview') return false;
@@ -201,14 +247,22 @@ export default function StrategyTreePage() {
       const cmp = a.symbol.localeCompare(b.symbol);
       return sortDir === 'asc' ? cmp : -cmp;
     }
-    const aT = sortKey === 'last_opened'
-      ? (a.last_position_opened_at ? new Date(a.last_position_opened_at).getTime() : null)
-      : (a.last_activity_at        ? new Date(a.last_activity_at).getTime()        : null);
-    const bT = sortKey === 'last_opened'
-      ? (b.last_position_opened_at ? new Date(b.last_position_opened_at).getTime() : null)
-      : (b.last_activity_at        ? new Date(b.last_activity_at).getTime()        : null);
+
+    if (sortKey === 'activity') {
+      const ba = lastChangeBucket(a, livePnl);
+      const bb = lastChangeBucket(b, livePnl);
+      if (ba !== bb) return ba - bb;
+      // bucket 0 (open): most-recently-opened first. buckets 1/2: most-recent signal first.
+      const field = ba === 0 ? 'last_position_opened_at' : 'last_activity_at';
+      const aT = a[field] ? new Date(a[field]!).getTime() : null;
+      const bT = b[field] ? new Date(b[field]!).getTime() : null;
+      return nullSafeCompare(aT, bT, sortDir);
+    }
+
+    const aT = a.last_position_opened_at ? new Date(a.last_position_opened_at).getTime() : null;
+    const bT = b.last_position_opened_at ? new Date(b.last_position_opened_at).getTime() : null;
     return nullSafeCompare(aT, bT, sortDir);
-  }), [filtered, sortKey, sortDir]);
+  }), [filtered, sortKey, sortDir, livePnl]);
 
   const handleSort = useCallback((key: SortKey) => {
     if (sortKey === key) {
@@ -232,9 +286,10 @@ export default function StrategyTreePage() {
     } catch {}
   }, []);
 
-  const anyNonDefault = filterSymbol !== 'all' || filterStatus !== 'all' ||
-    filterOpenPos !== 'all' || filterType !== 'all' ||
-    sortKey !== DEFAULT_SORT_KEY || sortDir !== DEFAULT_SORT_DIR;
+  const anyFilterActive = filterSymbol !== 'all' || filterStatus !== 'all' ||
+    filterOpenPos !== 'all' || filterType !== 'all';
+  const anySortActive = sortKey !== DEFAULT_SORT_KEY || sortDir !== DEFAULT_SORT_DIR;
+  const anyNonDefault = anyFilterActive || anySortActive;
 
   // cycle helpers
   const cycleStatus = () => {
@@ -258,53 +313,63 @@ export default function StrategyTreePage() {
     <div style={{ maxWidth: 460, margin: '0 auto', paddingBottom: 70 }}>
       {/* Filter + sort bar */}
       <div style={{
-        display: 'flex', gap: 6, padding: '8px 10px',
-        overflowX: 'auto', flexShrink: 0,
+        display: 'flex', gap: 6, padding: '8px 10px', alignItems: 'center',
+        flexWrap: 'wrap', flexShrink: 0,
         borderBottom: '1px solid var(--border)',
-        scrollbarWidth: 'none',
       }}>
-        {/* Symbol select */}
-        <select
-          value={filterSymbol}
-          onChange={e => setFilterSymbol(e.target.value)}
-          style={{
-            background:   filterSymbol !== 'all' ? 'var(--blue-a)' : 'var(--bg2)',
-            border:       `1px solid ${filterSymbol !== 'all' ? 'var(--blue)' : 'var(--border)'}`,
-            borderRadius: '20px', padding: '5px 12px',
-            fontSize: 10, fontWeight: 500,
-            color: filterSymbol !== 'all' ? 'var(--blue)' : 'var(--muted)',
-            cursor: 'pointer', outline: 'none', flexShrink: 0,
-          }}
+        {/* Add strategy */}
+        <button
+          type="button"
+          aria-label="Add strategy"
+          onClick={() => navigate('/strategies', { state: { openAdd: true } })}
+          style={addBtn}
         >
-          <option value="all">All Symbols</option>
-          {uniqueSymbols.map(sym => <option key={sym} value={sym}>{sym}</option>)}
-        </select>
+          ＋
+        </button>
 
-        {/* Status chip (cycles) */}
-        <span onClick={cycleStatus} style={treeChip(filterStatus !== 'all')}>
-          {statusLabel[filterStatus]}
-        </span>
+        {/* Filters dropdown */}
+        <Dropdown label="Filters" active={anyFilterActive}>
+          <select
+            value={filterSymbol}
+            onChange={e => setFilterSymbol(e.target.value)}
+            style={{
+              background:   filterSymbol !== 'all' ? 'var(--blue-a)' : 'var(--bg2)',
+              border:       `1px solid ${filterSymbol !== 'all' ? 'var(--blue)' : 'var(--border)'}`,
+              borderRadius: '20px', padding: '5px 12px',
+              fontSize: 10, fontWeight: 500,
+              color: filterSymbol !== 'all' ? 'var(--blue)' : 'var(--muted)',
+              cursor: 'pointer', outline: 'none',
+            }}
+          >
+            <option value="all">All Symbols</option>
+            {uniqueSymbols.map(sym => <option key={sym} value={sym}>{sym}</option>)}
+          </select>
 
-        {/* Open positions chip (toggle) */}
-        <span onClick={toggleOpenPos} style={treeChip(filterOpenPos !== 'all')}>
-          {filterOpenPos === 'all' ? 'All' : 'Has Open'}
-        </span>
+          <span onClick={cycleStatus} style={treeChip(filterStatus !== 'all')}>
+            {statusLabel[filterStatus]}
+          </span>
 
-        {/* Type chip (cycles) */}
-        <span onClick={cycleType} style={treeChip(filterType !== 'all')}>
-          {typeLabel[filterType] ?? 'All Type'}
-        </span>
+          <span onClick={toggleOpenPos} style={treeChip(filterOpenPos !== 'all')}>
+            {filterOpenPos === 'all' ? 'All' : 'Has Open'}
+          </span>
 
-        {/* Sort chips */}
-        <span onClick={() => handleSort('symbol')}      style={treeChip(sortKey === 'symbol')}>
-          {`Symbol${dirArrow('symbol')}`}
-        </span>
-        <span onClick={() => handleSort('last_opened')} style={treeChip(sortKey === 'last_opened')}>
-          {`Opened${dirArrow('last_opened')}`}
-        </span>
-        <span onClick={() => handleSort('activity')}    style={treeChip(sortKey === 'activity')}>
-          {`Activity${dirArrow('activity')}`}
-        </span>
+          <span onClick={cycleType} style={treeChip(filterType !== 'all')}>
+            {typeLabel[filterType] ?? 'All Type'}
+          </span>
+        </Dropdown>
+
+        {/* Sort dropdown */}
+        <Dropdown label="Sort" active={anySortActive}>
+          <span onClick={() => handleSort('symbol')}      style={treeChip(sortKey === 'symbol')}>
+            {`Symbol${dirArrow('symbol')}`}
+          </span>
+          <span onClick={() => handleSort('last_opened')} style={treeChip(sortKey === 'last_opened')}>
+            {`Opened${dirArrow('last_opened')}`}
+          </span>
+          <span onClick={() => handleSort('activity')}    style={treeChip(sortKey === 'activity')}>
+            {`Last Change${dirArrow('activity')}`}
+          </span>
+        </Dropdown>
 
         {/* Reset */}
         {anyNonDefault && (
@@ -535,7 +600,12 @@ function StrategyCard({ strategy: s, onL1Refresh, livePnl }: { strategy: Strateg
         {/* Row 1 */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 7, flexWrap: 'wrap' }}>
           {hasOpen && <GreenDot />}
-          <HeaderPill variant="neutral" style={{ fontWeight: 700 }}>{s.symbol}</HeaderPill>
+          <HeaderPill
+            variant="neutral"
+            style={{ fontWeight: 700, background: 'var(--bg3)', color: 'var(--text)', borderColor: 'var(--border-hi)' }}
+          >
+            {s.symbol}
+          </HeaderPill>
           <span style={{ fontWeight: 700, fontSize: 14, letterSpacing: '-.01em', color: isStopped ? 'var(--muted)' : 'var(--text)' }}>
             {s.name}
           </span>
@@ -543,6 +613,7 @@ function StrategyCard({ strategy: s, onL1Refresh, livePnl }: { strategy: Strateg
 
         {/* Row 2 */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 6, flexWrap: 'wrap' }}>
+          {s.strategy_source === 'ai_engine' && <HeaderPill variant="ai">AI</HeaderPill>}
           <AccountChip>{s.account_label}</AccountChip>
           {isStopped && <StopChip reason={s.stop_reason} />}
           {actionError && (
@@ -1116,13 +1187,21 @@ function DiffChip({ label }: { label: string }) {
 
 // ---- shared style objects ----
 
+const BAR_ITEM_HEIGHT = 28;
+
 function treeChip(active: boolean, clear = false): CSSProperties {
   return {
     whiteSpace:   'nowrap',
     background:   clear ? 'var(--red-a)' : active ? 'var(--blue-a)' : 'var(--bg2)',
     border:       `1px solid ${clear ? 'var(--red-b)' : active ? 'var(--blue)' : 'var(--border)'}`,
     borderRadius: '20px',
-    padding:      '5px 12px',
+    padding:      '0 12px',
+    height:       BAR_ITEM_HEIGHT,
+    boxSizing:    'border-box',
+    display:      'inline-flex',
+    alignItems:   'center',
+    justifyContent: 'center',
+    lineHeight:   1,
     fontSize:     10,
     fontWeight:   500,
     color:        clear ? 'var(--red)' : active ? 'var(--blue)' : 'var(--muted)',
@@ -1130,6 +1209,15 @@ function treeChip(active: boolean, clear = false): CSSProperties {
     flexShrink:   0,
   };
 }
+
+const addBtn: CSSProperties = {
+  width: BAR_ITEM_HEIGHT, height: BAR_ITEM_HEIGHT, borderRadius: '50%', flexShrink: 0,
+  boxSizing: 'border-box',
+  border: '1px solid var(--blue-b)', background: 'var(--blue-a)', color: 'var(--blue)',
+  fontSize: 14, fontWeight: 600, lineHeight: 1,
+  display: 'flex', alignItems: 'center', justifyContent: 'center',
+  cursor: 'pointer', padding: 0,
+};
 
 const iconBtnBase: CSSProperties = {
   width: 30, height: 30, borderRadius: '50%',

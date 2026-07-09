@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { TopBar } from '../components/shared/TopBar';
 import { formatRelative } from '../utils/datetime';
 
@@ -277,6 +277,29 @@ function AiSignalCard({ row }: { row: AiSignalRow }) {
 
 // ── Filter select ─────────────────────────────────────────────────────────────
 
+const BAR_ITEM_HEIGHT = 28;
+
+function barChip(active: boolean, clear = false): React.CSSProperties {
+  return {
+    whiteSpace: 'nowrap',
+    background:   clear ? 'var(--red-a)' : active ? 'var(--blue-a)' : 'var(--bg2)',
+    border:       `1px solid ${clear ? 'var(--red-b)' : active ? 'var(--blue)' : 'var(--border)'}`,
+    borderRadius: '20px',
+    padding:      '0 12px',
+    height:       BAR_ITEM_HEIGHT,
+    boxSizing:    'border-box',
+    display:      'inline-flex',
+    alignItems:   'center',
+    justifyContent: 'center',
+    lineHeight:   1,
+    fontSize:     10,
+    fontWeight:   500,
+    color:        clear ? 'var(--red)' : active ? 'var(--blue)' : 'var(--muted)',
+    cursor:       'pointer',
+    flexShrink:   0,
+  };
+}
+
 function FilterSelect({
   value, onChange, active, children,
 }: {
@@ -297,6 +320,42 @@ function FilterSelect({
     >
       {children}
     </select>
+  );
+}
+
+// ── Filters dropdown (mirrors the Tree page's grouped Filters/Sort buttons) ──
+
+function FilterDropdown({ label, active, children }: { label: string; active: boolean; children: React.ReactNode }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDocClick = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener('mousedown', onDocClick);
+    return () => document.removeEventListener('mousedown', onDocClick);
+  }, [open]);
+
+  return (
+    <div ref={ref} style={{ position: 'relative', flexShrink: 0 }}>
+      <span onClick={() => setOpen(o => !o)} style={barChip(active)}>
+        {label}{open ? ' ▴' : ' ▾'}
+      </span>
+      {open && (
+        <div style={{
+          position: 'absolute', top: 'calc(100% + 6px)', left: 0, zIndex: 20,
+          background: 'var(--bg2)', border: '1px solid var(--border)',
+          borderRadius: 10, padding: 8,
+          boxShadow: '0 4px 16px rgba(0,0,0,.14)',
+          display: 'flex', flexDirection: 'column', gap: 6,
+          minWidth: 170,
+        }}>
+          {children}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -452,42 +511,36 @@ export default function AiSignalLog() {
 
       {/* ── Filters ── */}
       <div style={{
-        display: 'flex', gap: '6px', padding: '10px 14px',
+        display: 'flex', gap: '6px', padding: '10px 14px', alignItems: 'center',
         borderBottom: '1px solid var(--border)',
-        overflowX: 'auto', flexShrink: 0, scrollbarWidth: 'none',
+        flexWrap: 'wrap', flexShrink: 0,
       }}>
-        <FilterSelect value={filterStrategy} onChange={v => { setFilterStrategy(v); setPage(1); }} active={filterStrategy !== 'all'}>
-          <option value="all">All Strategies</option>
-          {strategies.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
-        </FilterSelect>
+        <FilterDropdown label="Filters" active={anyFilter}>
+          <FilterSelect value={filterStrategy} onChange={v => { setFilterStrategy(v); setPage(1); }} active={filterStrategy !== 'all'}>
+            <option value="all">All Strategies</option>
+            {strategies.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+          </FilterSelect>
 
-        <FilterSelect value={filterAction} onChange={v => { setFilterAction(v); setPage(1); }} active={filterAction !== 'all'}>
-          <option value="all">All Actions</option>
-          {ACTIONS.map(a => <option key={a} value={a}>{a.replace(/_/g, ' ')}</option>)}
-        </FilterSelect>
+          <FilterSelect value={filterAction} onChange={v => { setFilterAction(v); setPage(1); }} active={filterAction !== 'all'}>
+            <option value="all">All Actions</option>
+            {ACTIONS.map(a => <option key={a} value={a}>{a.replace(/_/g, ' ')}</option>)}
+          </FilterSelect>
 
-        <FilterSelect value={filterGate} onChange={v => { setFilterGate(v); setPage(1); }} active={filterGate !== 'all'}>
-          <option value="all">Gate: All</option>
-          <option value="true">Gate: Passed</option>
-          <option value="false">Gate: Blocked</option>
-        </FilterSelect>
+          <FilterSelect value={filterGate} onChange={v => { setFilterGate(v); setPage(1); }} active={filterGate !== 'all'}>
+            <option value="all">Gate: All</option>
+            <option value="true">Gate: Passed</option>
+            <option value="false">Gate: Blocked</option>
+          </FilterSelect>
 
-        <FilterSelect value={filterWebhook} onChange={v => { setFilterWebhook(v); setPage(1); }} active={filterWebhook !== 'all'}>
-          <option value="all">Webhook: All</option>
-          <option value="true">Webhook: Fired</option>
-          <option value="false">Webhook: Not fired</option>
-        </FilterSelect>
+          <FilterSelect value={filterWebhook} onChange={v => { setFilterWebhook(v); setPage(1); }} active={filterWebhook !== 'all'}>
+            <option value="all">Webhook: All</option>
+            <option value="true">Webhook: Fired</option>
+            <option value="false">Webhook: Not fired</option>
+          </FilterSelect>
+        </FilterDropdown>
 
         {anyFilter && (
-          <span
-            onClick={clearFilters}
-            style={{
-              whiteSpace: 'nowrap', background: 'var(--bg2)',
-              border: '1px solid var(--border)', borderRadius: '20px',
-              padding: '5px 12px', fontSize: '10px', fontWeight: 500,
-              color: 'var(--red)', cursor: 'pointer',
-            }}
-          >
+          <span onClick={clearFilters} style={barChip(false, true)}>
             ✕ Clear
           </span>
         )}

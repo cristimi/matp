@@ -126,6 +126,7 @@ services:
       EXECUTOR_URL: http://order-executor:8004
       AI_SIGNAL_GENERATOR_URL: http://ai-signal-generator:8005
       PUBLIC_HOST: ${PUBLIC_HOST:-}
+      CONFIG_SECRET_KEY: ${CONFIG_SECRET_KEY}
     depends_on:
       postgres:
         condition: service_healthy
@@ -158,6 +159,7 @@ services:
       GEMINI_API_KEY: ${GEMINI_API_KEY}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      CONFIG_SECRET_KEY: ${CONFIG_SECRET_KEY}
       CRYPTOPANIC_API_KEY: ${CRYPTOPANIC_API_KEY}
       FINNHUB_API_KEY: ${FINNHUB_API_KEY:-}
       SIGNAL_VENUES: ${SIGNAL_VENUES:-binance,bybit,okx}
@@ -190,6 +192,7 @@ services:
       GEMINI_API_KEY: ${GEMINI_API_KEY}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      CONFIG_SECRET_KEY: ${CONFIG_SECRET_KEY}
       TESTER_DEFAULT_BALANCE: ${TESTER_DEFAULT_BALANCE:-1000.0}
       TESTER_DEFAULT_SLIPPAGE_PCT: ${TESTER_DEFAULT_SLIPPAGE_PCT:-0.05}
       TESTER_DEFAULT_FEE_PCT: ${TESTER_DEFAULT_FEE_PCT:-0.02}
@@ -285,6 +288,7 @@ services:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      CONFIG_SECRET_KEY: ${CONFIG_SECRET_KEY}
     depends_on:
       postgres:
         condition: service_healthy

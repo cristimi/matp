@@ -1,5 +1,6 @@
 telethon>=1.36
 asyncpg
+cryptography
 redis[asyncio]>=4.2
 pydantic>=2.0
 pydantic-settings

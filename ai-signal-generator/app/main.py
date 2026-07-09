@@ -48,6 +48,10 @@ async def _model_probe_loop():
 async def lifespan(app: FastAPI):
     await init_db()
     pool  = get_pool()
+
+    from app.config_secrets import apply_llm_key_overrides
+    await apply_llm_key_overrides(pool, settings)
+
     graph = build_graph()
 
     schedulers    = await start_all_schedulers(pool, graph)

@@ -16,6 +16,7 @@ import positionsRouter from './routes/positions';
 import accountsRouter from './routes/accounts';
 import signalsRouter from './routes/signals';
 import aiRouter from './routes/ai';
+import systemRouter from './routes/system';
 
 dotenv.config();
 
@@ -32,6 +33,7 @@ app.use('/positions', positionsRouter);
 app.use('/accounts', accountsRouter);
 app.use('/signals',  signalsRouter);
 app.use('/ai',       aiRouter);
+app.use('/system',   systemRouter);
 
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok', service: 'dashboard-api' });

@@ -56,6 +56,21 @@ Changes required: DB migration, one line in `node_ingest.py`, `ai.ts` GET/PUT, U
 ---
 
 ## Deferred Backlog
+- **`config.max_order_size_btc` / `max_order_size_eth` look dead — investigate dropping**: these two
+  rows exist in the `config` table (seeded by `db/init.sql`, last touched 2026-05-18) but a full-repo
+  grep for `max_order_size` (2026-07-08) found zero reads in any service — not order-listener,
+  order-generator, order-executor, or dashboard-api. No UI ever exposed them either (Settings page
+  doesn't show them). Confirm nothing reads them at runtime (check for dynamic/string-built column
+  access too, not just literal grep), then drop the rows (and the `config` table if `active_platform`
+  is also removed per the Settings-page rework below) via a migration.
+- **`active_platform` config value also looks dead**: the 2026-07-08 Settings rework dropped its
+  toggle from the Settings page, but it's still editable from `Dashboard.tsx`/`PlatformSelector.tsx`
+  — orphaned there too now that Tree replaced Dashboard as the landing page and nothing links to
+  `/dashboard` anymore. The toggle predates the multi-account model (strategies now carry their own
+  `account_id`, and `order-generator/app/strategies/base.py`'s `platform` field is explicitly
+  commented `"legacy, kept for compat"`). Its read/write endpoints (`order-listener/app/config_api.py`)
+  are still live but a grep found no other service consulting it for actual webhook routing. Verify, then
+  remove the endpoints and the config row together with the `max_order_size_*` cleanup above.
 - **`economic_calendar` blocked on provider access — Finnhub calendar is paid-tier**: verified 2026-07-07 with a valid free-tier key (`/quote` → 200, `/calendar/economic` → 403 "You don't have access to this resource"); the spec's free-tier assumption is outdated. `FINNHUB_API_KEY` is plumbed (.env → compose → container) and the fetcher degrades to None, so the SCHEDULED EVENTS section stays honestly absent. Activates with zero code changes on a Finnhub plan upgrade; free alternatives surveyed and rejected (Trading Economics free tier excludes US data, others paywalled/scraping). Wave 4 must not assume this field is available.
 - **`liquidation_data` — live via the Phase-2 stream collector since 2026-07-07** (`app/collector.py` watchLiquidations → Redis; REST was unusable market-wide per the Wave-3/Stage-A probes). Data is a stream-venue aggregate labeled with its cascade-under-reporting caveat (venue stream throttling); paid Coinglass remains the true-aggregate upgrade. `use_liquidations` is still false on every strategy — only the `scalper` template consumes it and none runs it; enabling it is a deliberate decision. Refinement candidate: quiet liq streams only mark `connected` after their first event, so coverage labels under-claim on quiet venues (safe direction; a heartbeat would make them exact).
 - **Minimum order value guard**: before sending to exchange, check notional value (qty × price) against known exchange minimums. Reject with `size_too_small` before hitting the exchange API.
