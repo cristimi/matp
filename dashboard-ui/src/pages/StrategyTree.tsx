@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useMemo, CSSProperties } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { HeaderPill } from '../components/shared';
 import { formatPct, formatPnl, pnlColor } from '../utils/pnl';
 import { formatPrice, formatSize } from '../utils/precision';
@@ -219,6 +219,21 @@ export default function StrategyTreePage() {
   const [wrapRef, wrapWidth] = useContainerWidth<HTMLDivElement>();
   const isDesktop = wrapWidth >= DESKTOP_MIN_WIDTH;
 
+  // Deep-link from a notification click: /tree?strategy=<id>&position=<id>.
+  // Captured once on mount, then stripped from the URL so it doesn't re-fire
+  // the focus/scroll on a later refresh or navigation.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [focusTarget] = useState(() => ({
+    strategyId: searchParams.get('strategy'),
+    positionId: searchParams.get('position'),
+  }));
+  useEffect(() => {
+    if (focusTarget.strategyId || focusTarget.positionId) {
+      setSearchParams({}, { replace: true });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // filter state — persisted in sessionStorage
   const [filterSymbol,  setFilterSymbolRaw]  = useState<string>(() => ssGet(SS_SYMBOL,   'all'));
   const [filterStatus,  setFilterStatusRaw]  = useState<string>(() => ssGet(SS_STATUS,   'all'));
@@ -409,7 +424,17 @@ export default function StrategyTreePage() {
             {strategies.length === 0 ? 'No strategies' : 'No strategies match the current filters'}
           </div>
         )}
-        {sorted.map(s => <StrategyCard key={s.id} strategy={s} onL1Refresh={loadStrategies} livePnl={livePnl} isDesktop={isDesktop} />)}
+        {sorted.map(s => (
+          <StrategyCard
+            key={s.id}
+            strategy={s}
+            onL1Refresh={loadStrategies}
+            livePnl={livePnl}
+            isDesktop={isDesktop}
+            isFocusTarget={s.id === focusTarget.strategyId}
+            focusPositionId={focusTarget.positionId}
+          />
+        ))}
       </div>
     </div>
   );
@@ -419,12 +444,20 @@ export default function StrategyTreePage() {
 
 type ExpandState = 'collapsed' | 'open' | 'all';
 
-function StrategyCard({ strategy: s, onL1Refresh, livePnl, isDesktop }: { strategy: StrategyTreeItem; onL1Refresh: () => void; livePnl: PnlSnapshot | null; isDesktop: boolean }) {
+function StrategyCard({ strategy: s, onL1Refresh, livePnl, isDesktop, isFocusTarget, focusPositionId }: {
+  strategy: StrategyTreeItem;
+  onL1Refresh: () => void;
+  livePnl: PnlSnapshot | null;
+  isDesktop: boolean;
+  isFocusTarget?: boolean;
+  focusPositionId?: string | null;
+}) {
   const livePids = livePnl?.strategies[s.id]?.position_ids;
   const hasOpen = livePids ? livePids.length > 0 : s.open_positions_count > 0;
   const pidKey = livePids ? [...livePids].sort().join(',') : null;
   const isStopped = !s.enabled;
   const navigate = useNavigate();
+  const cardRef = useRef<HTMLDivElement>(null);
 
   const [expandState, setExpandState] = useState<ExpandState>('collapsed');
   const [openPositions, setOpenPositions] = useState<TreePosition[] | null>(null);
@@ -462,6 +495,31 @@ function StrategyCard({ strategy: s, onL1Refresh, livePnl, isDesktop }: { strate
       setExpandState('open');
     }
   }, [isDesktop, expandState, doFetchOpen]);
+
+  // Deep-linked from a notification click: expand fully (the target position
+  // may be closed) and scroll this card into view.
+  useEffect(() => {
+    if (!isFocusTarget) return;
+    doFetchAll();
+    if (isDesktop) {
+      setClosedOpenDesktop(true);
+    } else {
+      setExpandState('all');
+    }
+    const t = setTimeout(() => {
+      cardRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }, 60);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isFocusTarget]);
+
+  // If the deep-linked position is closed and paginated further down the
+  // "load more" list than the default page size, expand the page to reveal it.
+  useEffect(() => {
+    if (!isFocusTarget || !focusPositionId || allPositions === null) return;
+    const idx = allPositions.filter(p => p.status === 'closed').findIndex(p => p.id === focusPositionId);
+    if (idx >= 0) setClosedShown(n => Math.max(n, idx + 1));
+  }, [isFocusTarget, focusPositionId, allPositions]);
 
   // Refetch open positions when the live snapshot reports a position-set membership change.
   // Keyed on pidKey (sorted id join) so it fires once per membership change, not once per tick.
@@ -599,7 +657,7 @@ function StrategyCard({ strategy: s, onL1Refresh, livePnl, isDesktop }: { strate
   }, [closedOpenDesktop, doFetchAll]);
 
   return (
-    <div style={{
+    <div ref={cardRef} style={{
       background: 'var(--bg2)', border: '1px solid var(--border)',
       borderRadius: 11, marginBottom: 11, overflow: 'hidden',
       position: 'relative', boxShadow: '0 1px 2px rgba(20,30,50,.04)',
@@ -760,7 +818,7 @@ function StrategyCard({ strategy: s, onL1Refresh, livePnl, isDesktop }: { strate
               <SectionLabel text="Open Positions" />
               {loadingPos && openPositions === null && <Spinner />}
               {shownOpen.map(p => (
-                <PositionCard key={p.id} position={p} stratLabel={s.account_label} stratExchange={s.account_exchange} onClose={handlePositionClose} livePnl={livePnl} />
+                <PositionCard key={p.id} position={p} stratLabel={s.account_label} stratExchange={s.account_exchange} onClose={handlePositionClose} livePnl={livePnl} highlighted={p.id === focusPositionId} />
               ))}
               {openPositions !== null && shownOpen.length === 0 && (
                 <div style={{ color: 'var(--muted)', fontSize: 12, padding: '6px 4px' }}>No open positions</div>
@@ -782,7 +840,7 @@ function StrategyCard({ strategy: s, onL1Refresh, livePnl, isDesktop }: { strate
                 <>
                   {loadingPos && allPositions === null && <Spinner />}
                   {shownClosed.map(p => (
-                    <PositionCard key={p.id} position={p} stratLabel={s.account_label} stratExchange={s.account_exchange} onClose={handlePositionClose} livePnl={livePnl} />
+                    <PositionCard key={p.id} position={p} stratLabel={s.account_label} stratExchange={s.account_exchange} onClose={handlePositionClose} livePnl={livePnl} highlighted={p.id === focusPositionId} />
                   ))}
                   {allPositions !== null && allClosed.length === 0 && (
                     <div style={{ color: 'var(--muted)', fontSize: 12, padding: '6px 4px' }}>No closed positions</div>
@@ -810,7 +868,7 @@ function StrategyCard({ strategy: s, onL1Refresh, livePnl, isDesktop }: { strate
               <>
                 <SectionLabel text="Open Positions" />
                 {shownOpen.map(p => (
-                  <PositionCard key={p.id} position={p} stratLabel={s.account_label} stratExchange={s.account_exchange} onClose={handlePositionClose} livePnl={livePnl} />
+                  <PositionCard key={p.id} position={p} stratLabel={s.account_label} stratExchange={s.account_exchange} onClose={handlePositionClose} livePnl={livePnl} highlighted={p.id === focusPositionId} />
                 ))}
               </>
             )}
@@ -821,7 +879,7 @@ function StrategyCard({ strategy: s, onL1Refresh, livePnl, isDesktop }: { strate
                   <>
                     <SectionLabel text="Closed Positions" />
                     {shownClosed.map(p => (
-                      <PositionCard key={p.id} position={p} stratLabel={s.account_label} stratExchange={s.account_exchange} onClose={handlePositionClose} livePnl={livePnl} />
+                      <PositionCard key={p.id} position={p} stratLabel={s.account_label} stratExchange={s.account_exchange} onClose={handlePositionClose} livePnl={livePnl} highlighted={p.id === focusPositionId} />
                     ))}
                   </>
                 )}
@@ -876,18 +934,32 @@ function PositionCard({
   stratExchange,
   onClose,
   livePnl,
+  highlighted,
 }: {
   position: TreePosition;
   stratLabel: string;
   stratExchange: string;
   onClose: () => void;
   livePnl: PnlSnapshot | null;
+  highlighted?: boolean;
 }) {
   const [posState, setPosState] = useState<PosState>('header');
   const [orders, setOrders] = useState<TreeOrder[] | null>(null);
   const [loadingOrders, setLoadingOrders] = useState(false);
   const [closeInFlight, setCloseInFlight] = useState(false);
   const [closeError, setCloseError] = useState<string | null>(null);
+  const cardRef = useRef<HTMLDivElement>(null);
+  const [glow, setGlow] = useState(false);
+
+  useEffect(() => {
+    if (!highlighted) return;
+    const scrollT = setTimeout(() => {
+      cardRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      setGlow(true);
+    }, 220);
+    const fadeT = setTimeout(() => setGlow(false), 3200);
+    return () => { clearTimeout(scrollT); clearTimeout(fadeT); };
+  }, [highlighted]);
 
   const isOpen = p.status === 'open';
   const symbol = `${p.base_asset}-${p.quote_asset}`;
@@ -960,10 +1032,12 @@ function PositionCard({
       ];
 
   return (
-    <div style={{
-      background: 'var(--bg2)', border: '1px solid var(--border)',
+    <div ref={cardRef} style={{
+      background: 'var(--bg2)',
+      border: `1px solid ${glow ? 'var(--blue)' : 'var(--border)'}`,
       borderRadius: 9, marginBottom: 8, overflow: 'hidden',
-      boxShadow: '0 1px 1px rgba(20,30,50,.03)',
+      boxShadow: glow ? '0 0 0 3px var(--blue-a)' : '0 1px 1px rgba(20,30,50,.03)',
+      transition: 'border-color .4s ease, box-shadow .4s ease',
     }}>
       {/* Position header */}
       <div

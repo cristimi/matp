@@ -21,8 +21,16 @@ self.addEventListener('push', (event) => {
 
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
-  const positionId = event.notification.data && event.notification.data.position_id;
-  const url = positionId ? '/positions' : '/';
+  const data = event.notification.data || {};
+  const positionId = data.position_id;
+  const strategyId = data.strategy_id;
+
+  let url = '/';
+  if (positionId && strategyId) {
+    url = `/tree?strategy=${encodeURIComponent(strategyId)}&position=${encodeURIComponent(positionId)}`;
+  } else if (positionId) {
+    url = '/positions';
+  }
 
   event.waitUntil(
     self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clientList) => {

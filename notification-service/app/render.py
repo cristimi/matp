@@ -36,6 +36,7 @@ def render(event: str, data: dict) -> dict | None:
 
     if event == "position.opened":
         position_id = data.get("position_id")
+        strategy_id = data.get("strategy_id")
         symbol = data.get("symbol", "?")
         side = (data.get("side") or "?").upper()
         size = _fmt(data.get("size"), "{:.6g}")
@@ -48,11 +49,12 @@ def render(event: str, data: dict) -> dict | None:
             "body": f"{size} @ {entry_price}",
             "tag": f"position:{position_id}",
             "renotify": False,
-            "data": {"position_id": position_id},
+            "data": {"position_id": position_id, "strategy_id": strategy_id, "symbol": symbol},
         }
 
     if event == "position.closed":
         position_id = data.get("position_id")
+        strategy_id = data.get("strategy_id")
         symbol = data.get("symbol", "?")
         side = (data.get("side") or "?").upper()
         size = _fmt(data.get("size"), "{:.6g}")
@@ -70,7 +72,7 @@ def render(event: str, data: dict) -> dict | None:
             ),
             "tag": f"position:{position_id}",
             "renotify": True,
-            "data": {"position_id": position_id},
+            "data": {"position_id": position_id, "strategy_id": strategy_id, "symbol": symbol},
         }
 
     if event == "exchange.down":
