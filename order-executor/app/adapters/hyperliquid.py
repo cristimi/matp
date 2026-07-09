@@ -398,7 +398,14 @@ class HyperliquidAdapter(ExchangeAdapter):
             if order.price is None:
                 raise ValueError("Limit orders require a price")
             price_str = str(order.price)
-            order_type_payload = {"limit": {"tif": "Gtc"}}
+            # Entry limits are post-only (Alo): if price has already traded through
+            # the limit by the time the order arrives, HL cancels it instead of
+            # filling as taker — a taker fill would land at market, at/beyond the
+            # SL that was computed from the intended limit price (2026-07-09
+            # ETH/BTC instant-stop incident). Reduce-only closes keep Gtc: a
+            # taker fill is acceptable when exiting.
+            tif = "Gtc" if reduce_only else "Alo"
+            order_type_payload = {"limit": {"tif": tif}}
 
         # ── Build action dict with SDK-compliant insertion order
         # orders order: a, b, p, s, r, t
@@ -900,7 +907,9 @@ class HyperliquidAdapter(ExchangeAdapter):
                 "p": price_wire,
                 "s": size_wire,
                 "r": reduce_only,
-                "t": {"limit": {"tif": "Gtc"}},
+                # Same post-only rule as _submit_order: an amended entry that
+                # would cross the market must cancel, not fill as taker.
+                "t": {"limit": {"tif": "Gtc" if reduce_only else "Alo"}},
             }
             action = {"type": "modify", "oid": int(order_id), "order": order_spec}
 

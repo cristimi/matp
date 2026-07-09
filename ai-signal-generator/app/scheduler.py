@@ -112,7 +112,7 @@ class AdaptiveScheduler:
             else:
                 label = config['interval_position_open']
 
-        buffer_seconds = int(config.get('candle_close_buffer_seconds', 150))
+        buffer_seconds = int(config.get('candle_close_buffer_seconds', 10))
         return seconds_until_aligned_wake(label, datetime.now(timezone.utc), buffer_seconds)
 
     async def _trigger_cycle(self, trigger_reason: str):

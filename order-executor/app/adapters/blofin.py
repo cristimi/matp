@@ -434,11 +434,19 @@ class BlofinAdapter(ExchangeAdapter):
 
             path = "/api/v1/trade/order"
             is_close = order.signal in ("close_long", "close_short")
+            # Entry limits go out as post_only: BloFin cancels the order if it
+            # would execute immediately as taker — a taker fill would land at
+            # market, at/beyond the SL computed from the intended limit price
+            # (2026-07-09 ETH/BTC instant-stop incident). Closes keep the
+            # requested type: a taker fill is acceptable when exiting.
+            wire_order_type = order.order_type
+            if wire_order_type == "limit" and not is_close:
+                wire_order_type = "post_only"
             body_data = {
                 "instId": order.symbol,
                 "marginMode": margin_mode,
                 "side": order.side,
-                "orderType": order.order_type,
+                "orderType": wire_order_type,
                 "size": str(order_size),
                 "lever": str(leverage),
             }
@@ -512,6 +520,20 @@ class BlofinAdapter(ExchangeAdapter):
                                 actual_fill_size = await self._parse_fill_size(
                                     order.symbol, state_info, order_size
                                 )
+                        elif state == "canceled":
+                            # post_only entry that would have crossed the market —
+                            # BloFin accepted it (code 0) then canceled it. Must be
+                            # reported as rejected, not filled: no position exists.
+                            return OrderResult(
+                                success=False,
+                                status="rejected",
+                                exchange_order_id=exchange_order_id,
+                                error_msg=(
+                                    "post-only limit canceled by exchange: price already "
+                                    "through the limit (would have filled as taker)"
+                                ),
+                                raw_response=data,
+                            )
                         else:
                             # Not in the pending book anymore -> fully filled (or, rarely,
                             # already canceled by the exchange before we could check).

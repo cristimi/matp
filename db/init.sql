@@ -204,7 +204,7 @@ CREATE TABLE public.ai_strategy_config (
     llm_provider character varying(20) DEFAULT 'google'::character varying NOT NULL,
     llm_model character varying(50) DEFAULT 'gemini-2.0-flash'::character varying NOT NULL,
     use_geometry boolean DEFAULT false NOT NULL,
-    candle_close_buffer_seconds integer DEFAULT 150 NOT NULL,
+    candle_close_buffer_seconds integer DEFAULT 10 NOT NULL,
     CONSTRAINT ai_strategy_config_candle_close_buffer_chk CHECK (((candle_close_buffer_seconds >= 0) AND (candle_close_buffer_seconds <= 600)))
 );
 
