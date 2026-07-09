@@ -6,7 +6,7 @@ import { encryptConfigValue } from '../configSecret';
 // ── Config Router ──────────────────────────────────────────────────────────────
 export const configRouter = Router();
 
-const LLM_PROVIDERS = ['anthropic', 'openai', 'gemini'] as const;
+const LLM_PROVIDERS = ['anthropic', 'openai', 'gemini', 'groq'] as const;
 type LlmProvider = typeof LLM_PROVIDERS[number];
 
 // LLM provider API keys, encrypted at rest (config.key = 'llm_key_<provider>').

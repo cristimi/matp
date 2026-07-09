@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     gemini_api_key:               str   = ""
     openai_api_key:               str   = ""
     anthropic_api_key:            str   = ""
+    groq_api_key:                 str   = ""
     tester_default_balance:       float = 1000.0
     tester_default_slippage_pct:  float = 0.05
     tester_default_fee_pct:       float = 0.02

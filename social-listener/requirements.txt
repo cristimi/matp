@@ -7,4 +7,5 @@ pydantic-settings
 langchain-anthropic
 langchain-openai
 langchain-google-genai
+langchain-groq
 python-dotenv

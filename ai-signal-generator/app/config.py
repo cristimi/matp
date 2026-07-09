@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     gemini_api_key:         str = ""
     openai_api_key:         str = ""
     anthropic_api_key:      str = ""
+    groq_api_key:           str = ""
     cryptopanic_api_key:    str = ""
     finnhub_api_key:        str = ""   # economic calendar; unset = field dormant
     signal_venues:          str = "binance,bybit,okx"  # market-flow aggregation venues

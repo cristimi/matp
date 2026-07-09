@@ -52,6 +52,14 @@ def _get_llm(provider: str, model: str):
             api_key=settings.anthropic_api_key or None,
             max_retries=2,
         )
+    elif provider == 'groq':
+        from langchain_groq import ChatGroq
+        return ChatGroq(
+            model=model,
+            temperature=0.1,
+            api_key=settings.groq_api_key or None,
+            max_retries=2,
+        )
     else:  # google (default)
         from langchain_google_genai import ChatGoogleGenerativeAI
         return ChatGoogleGenerativeAI(

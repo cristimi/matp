@@ -6,6 +6,7 @@ langgraph>=0.2.0
 langchain-google-genai
 langchain-openai
 langchain-anthropic
+langchain-groq
 google-generativeai
 ccxt
 pandas

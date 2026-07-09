@@ -108,10 +108,28 @@ async def _raw_anthropic() -> list[dict]:
         return _ANTHROPIC_FALLBACK
 
 
+async def _raw_groq() -> list[dict]:
+    if not settings.groq_api_key:
+        return []
+    try:
+        from groq import AsyncGroq
+        client = AsyncGroq(api_key=settings.groq_api_key)
+        page = await client.models.list()
+        return [
+            {"id": m.id, "display_name": m.id, "provider": "groq"}
+            for m in page.data
+            if getattr(m, "active", True)
+        ]
+    except Exception as exc:
+        logger.error("Failed to list Groq models: %s", exc)
+        return []
+
+
 _RAW_FNS: dict[str, object] = {
     "google":    _raw_google,
     "openai":    _raw_openai,
     "anthropic": _raw_anthropic,
+    "groq":      _raw_groq,
 }
 
 
@@ -187,10 +205,31 @@ async def _probe_anthropic(model_id: str) -> bool:
         return True
 
 
+async def _probe_groq(model_id: str) -> bool:
+    try:
+        from langchain_groq import ChatGroq
+        llm = ChatGroq(
+            model=model_id,
+            temperature=0.1,
+            api_key=settings.groq_api_key,
+            max_retries=0,
+        )
+        resp = await asyncio.wait_for(llm.ainvoke(_PROBE_PROMPT), timeout=_PROBE_TIMEOUT)
+        return bool(resp.content)
+    except Exception as exc:
+        exc_str = str(exc)
+        if any(s in exc_str for s in ("404", "model_not_found", "does not exist", "decommissioned")):
+            logger.debug("Groq probe %s: definitively unavailable — %s", model_id, exc)
+            return False
+        logger.debug("Groq probe %s: transient/uncertain error — %s", model_id, exc)
+        return True
+
+
 _PROBE_FNS: dict[str, object] = {
     "google":    _probe_google,
     "openai":    _probe_openai,
     "anthropic": _probe_anthropic,
+    "groq":      _probe_groq,
 }
 
 

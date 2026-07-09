@@ -4,6 +4,7 @@
 # Run `make sync-vendored` from repo root after upstream changes.
 # Build will fail if checksums do not match.
 # ───────────────────────────────────────────────────────────────────
+import asyncio
 import logging
 from typing import Literal, Optional
 
@@ -23,7 +24,8 @@ _DEFAULT_MODEL    = 'gemini-2.5-flash'
 class LLMSignalOutput(BaseModel):
     action:          Literal[
         'open_long', 'open_short', 'close_long', 'close_short',
-        'hold', 'partial_close', 'adjust_stops'
+        'hold', 'partial_close', 'adjust_stops',
+        'place_limit_long', 'place_limit_short', 'cancel_order', 'amend_order',
     ]
     confidence:      float
     size_pct:        float
@@ -31,7 +33,12 @@ class LLMSignalOutput(BaseModel):
     take_profit_pct: float = Field(description="Distance from entry as a percent, e.g. 3.0 = 3.0%. Use 0 for hold/close actions.")
     new_sl_price:    Optional[float] = None
     new_tp_price:    Optional[float] = None
+    limit_price:     Optional[float] = Field(default=None, description="Boundary price for place_limit_long/short, or the new price for amend_order.")
+    target_order_id: Optional[str] = Field(default=None, description="Resting order id (from OPEN ORDERS context) for cancel_order/amend_order.")
     reasoning:       str
+
+
+_LLM_TIMEOUT = 90  # seconds — hard ceiling per LLM call
 
 
 def _get_llm(provider: str, model: str):
@@ -41,6 +48,7 @@ def _get_llm(provider: str, model: str):
             model=model,
             temperature=0.1,
             api_key=settings.openai_api_key or None,
+            max_retries=2,
         )
     elif provider == 'anthropic':
         from langchain_anthropic import ChatAnthropic
@@ -48,6 +56,15 @@ def _get_llm(provider: str, model: str):
             model=model,
             temperature=0.1,
             api_key=settings.anthropic_api_key or None,
+            max_retries=2,
+        )
+    elif provider == 'groq':
+        from langchain_groq import ChatGroq
+        return ChatGroq(
+            model=model,
+            temperature=0.1,
+            api_key=settings.groq_api_key or None,
+            max_retries=2,
         )
     else:  # google (default)
         from langchain_google_genai import ChatGoogleGenerativeAI
@@ -55,6 +72,7 @@ def _get_llm(provider: str, model: str):
             model=model,
             temperature=0.1,
             google_api_key=settings.gemini_api_key or None,
+            max_retries=2,
         )
 
 
@@ -67,18 +85,47 @@ async def node_analyze(state: AgentState) -> AgentState:
         provider = state['strategy_config'].get('llm_provider', _DEFAULT_PROVIDER)
         model    = state['strategy_config'].get('llm_model',    _DEFAULT_MODEL)
 
-        llm            = _get_llm(provider, model)
-        structured_llm = llm.with_structured_output(LLMSignalOutput)
-        signal: LLMSignalOutput = await structured_llm.ainvoke(prompt)
+        llm = _get_llm(provider, model)
+        # include_raw: the plain structured wrapper returns only the parsed
+        # Pydantic object and discards usage_metadata — raw is needed to
+        # account actual token spend (input/output incl. thinking).
+        structured_llm = llm.with_structured_output(LLMSignalOutput, include_raw=True)
+        resp = await asyncio.wait_for(
+            structured_llm.ainvoke(prompt), timeout=_LLM_TIMEOUT
+        )
+
+        raw    = resp.get('raw')
+        signal = resp.get('parsed')
+        usage  = getattr(raw, 'usage_metadata', None) or {}
+        llm_usage = {
+            'input_tokens':  usage.get('input_tokens'),
+            'output_tokens': usage.get('output_tokens'),
+            'total_tokens':  usage.get('total_tokens'),
+        } if usage else None
+
+        if signal is None:
+            # Tokens were spent even though parsing failed — keep the usage.
+            logger.error(
+                "node_analyze structured-output parse failed [%s/%s]: %s",
+                provider, model, resp.get('parsing_error'),
+            )
+            return {
+                **state,
+                'llm_signal':     None,
+                'llm_usage':      llm_usage,
+                'context_tokens': tokens,
+            }
 
         logger.info(
-            "LLM [%s/%s] → action=%s confidence=%.3f",
+            "LLM [%s/%s] → action=%s confidence=%.3f tokens=%s",
             provider, model, signal.action, signal.confidence,
+            llm_usage.get('total_tokens') if llm_usage else 'n/a',
         )
 
         return {
             **state,
             'llm_signal':     signal.model_dump(),
+            'llm_usage':      llm_usage,
             'context_tokens': tokens,
         }
 
@@ -87,5 +134,6 @@ async def node_analyze(state: AgentState) -> AgentState:
         return {
             **state,
             'llm_signal':     None,
+            'llm_usage':      None,
             'context_tokens': state.get('context_tokens'),
         }

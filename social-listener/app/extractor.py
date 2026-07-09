@@ -61,6 +61,11 @@ def _build_llm():
         return ChatOpenAI(model=settings.extractor_model,
                           temperature=settings.extractor_temperature,
                           api_key=settings.openai_api_key)
+    if p == "groq":
+        from langchain_groq import ChatGroq
+        return ChatGroq(model=settings.extractor_model,
+                        temperature=settings.extractor_temperature,
+                        api_key=settings.groq_api_key)
     raise ValueError(f"unknown extractor_provider: {p}")
 
 

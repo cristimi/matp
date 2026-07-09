@@ -682,6 +682,7 @@ const PROVIDERS = [
   { value: 'google',     label: 'Google Gemini' },
   { value: 'openai',    label: 'OpenAI' },
   { value: 'anthropic', label: 'Anthropic' },
+  { value: 'groq',      label: 'Groq' },
 ];
 
 const DATA_SOURCES: { key: keyof AiFormState; label: string }[] = [

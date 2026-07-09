@@ -20,13 +20,14 @@ class Settings(BaseSettings):
     catchup_limit: int = 200
 
     # Extractor LLM (transcriber role). DO NOT point this at a Flash-Lite class model.
-    extractor_provider: str = "anthropic"   # anthropic | google | openai
+    extractor_provider: str = "anthropic"   # anthropic | google | openai | groq
     extractor_model: str = "claude-sonnet-4-6"
     extractor_temperature: float = 0.0
 
     anthropic_api_key: str = ""
     openai_api_key: str = ""
     gemini_api_key: str = ""
+    groq_api_key: str = ""
 
     source_tag: str = "telegram:AstronomerZero"
     asset_whitelist: str = "BTC,ETH"

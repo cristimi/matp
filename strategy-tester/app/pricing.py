@@ -27,15 +27,26 @@ _PRICING: dict[tuple[str, str], tuple[float, float]] = {
     ('openai', 'gpt-4-turbo'):                   (10.00, 30.00),
     ('openai', 'o1-mini'):                       (1.10,   4.40),
     ('openai', 'o1'):                            (15.00, 60.00),
+    # Groq (hosted open-weight models — verify against groq.com/pricing, changes often)
+    ('groq', 'llama-3.1-8b-instant'):            (0.05,   0.08),
+    ('groq', 'llama-3.3-70b-versatile'):         (0.59,   0.79),
+    ('groq', 'gemma2-9b-it'):                    (0.20,   0.20),
+    ('groq', 'deepseek-r1-distill-llama-70b'):   (0.75,   0.99),
 }
 
 _FALLBACK: tuple[float, float] = (0.075, 0.30)   # Gemini 2.0 Flash
+
+# Per-provider fallback for an unrecognized model of a known provider —
+# closer to reality than defaulting every unknown model to Gemini pricing.
+_PROVIDER_FALLBACK: dict[str, tuple[float, float]] = {
+    'groq': (0.05, 0.08),   # llama-3.1-8b-instant — cheapest Groq default
+}
 
 
 def get_pricing(provider: str, model: str) -> tuple[float, float]:
     """
     Return (input_usd_per_1m, output_usd_per_1m) for the given provider/model.
-    Falls back to _FALLBACK if not found.
+    Falls back to a per-provider default, then _FALLBACK, if not found.
     Matching is case-insensitive; partial prefix match is attempted on the model name.
     """
     p = provider.lower().strip()
@@ -50,4 +61,4 @@ def get_pricing(provider: str, model: str) -> tuple[float, float]:
         if tp == p and (m.startswith(tm) or tm.startswith(m)):
             return pricing
 
-    return _FALLBACK
+    return _PROVIDER_FALLBACK.get(p, _FALLBACK)
