@@ -50,4 +50,31 @@
   .table-row-hover {
     @apply hover:bg-gray-50 dark:hover:bg-gray-800/50 transition-colors duration-100;
   }
+
+  /*
+   * Card-flow grid: single column on phones (matches the original mobile layout).
+   * On wide screens it flows cards into 2-3 CSS columns instead of one narrow
+   * centered column with dead space either side. Driven by container queries
+   * against the actual content area (not the window), so it adapts correctly
+   * whether the sidebar is expanded or collapsed. Cards must not be split
+   * across a column break (col-break-avoid).
+   */
+  .card-flow {
+    columns: 1;
+    column-gap: 14px;
+  }
+  @container (min-width: 900px) {
+    .card-flow { columns: 2; }
+  }
+  @container (min-width: 1400px) {
+    .card-flow { columns: 3; }
+  }
+
+  .col-break-avoid {
+    break-inside: avoid;
+  }
+
+  .col-span-all {
+    column-span: all;
+  }
 }

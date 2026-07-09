@@ -310,7 +310,7 @@ export default function StrategyTreePage() {
   const dirArrow = (key: SortKey) => sortKey === key ? (sortDir === 'asc' ? ' ↑' : ' ↓') : '';
 
   return (
-    <div style={{ maxWidth: 460, margin: '0 auto', paddingBottom: 70 }}>
+    <div style={{ maxWidth: 1720, margin: '0 auto', paddingBottom: 70 }}>
       {/* Filter + sort bar */}
       <div style={{
         display: 'flex', gap: 6, padding: '8px 10px', alignItems: 'center',
@@ -378,11 +378,11 @@ export default function StrategyTreePage() {
       </div>
 
       {/* Cards */}
-      <div style={{ padding: '14px 10px 0' }}>
-        {loading && <div style={{ padding: 24, color: 'var(--muted)', textAlign: 'center', fontSize: 13 }}>Loading…</div>}
-        {error && <div style={{ padding: 24, color: 'var(--red)', fontSize: 13 }}>{error}</div>}
+      <div className="card-flow" style={{ padding: '14px 10px 0' }}>
+        {loading && <div className="col-span-all" style={{ padding: 24, color: 'var(--muted)', textAlign: 'center', fontSize: 13 }}>Loading…</div>}
+        {error && <div className="col-span-all" style={{ padding: 24, color: 'var(--red)', fontSize: 13 }}>{error}</div>}
         {!loading && !error && sorted.length === 0 && (
-          <div style={{ padding: 24, color: 'var(--muted)', textAlign: 'center', fontSize: 13 }}>
+          <div className="col-span-all" style={{ padding: 24, color: 'var(--muted)', textAlign: 'center', fontSize: 13 }}>
             {strategies.length === 0 ? 'No strategies' : 'No strategies match the current filters'}
           </div>
         )}
@@ -556,7 +556,7 @@ function StrategyCard({ strategy: s, onL1Refresh, livePnl }: { strategy: Strateg
   const hasMoreClosed = allClosed.length > closedShown;
 
   return (
-    <div style={{
+    <div className="col-break-avoid" style={{
       background: 'var(--bg2)', border: '1px solid var(--border)',
       borderRadius: 11, marginBottom: 11, overflow: 'hidden',
       position: 'relative', boxShadow: '0 1px 2px rgba(20,30,50,.04)',
