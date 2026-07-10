@@ -450,6 +450,7 @@ async def close_position_by_id(position_id: str, request: Request):
         symbol=pos['symbol'],
         side=pos['side'],
         close_size=close_size,
+        reason="manual_close",
     )
 
     if not result.get('success'):
@@ -1441,6 +1442,7 @@ async def _process_order(
                 symbol=open_pos["symbol"],
                 side=open_pos["side"],
                 closing_order_id=order_id,
+                reason="signal_flat",
             )
 
             logger.info(
@@ -1494,6 +1496,7 @@ async def _process_order(
                 close_size=payload.size,      # clamped to open size inside routine
                 closing_order_id=order_id,
                 skip_exchange=False,
+                reason="signal_close",
             )
 
             order_result = None

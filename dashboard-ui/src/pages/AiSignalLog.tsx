@@ -59,7 +59,9 @@ function ActionBadge({ action }: { action: string | null }) {
 function GateBadge({ passed, reason }: { passed: boolean; reason: string | null }) {
   const s = passed
     ? { bg: 'rgba(34,197,94,.12)', color: '#22c55e', border: 'rgba(34,197,94,.3)', label: 'PASSED' }
-    : { bg: 'var(--red-a)',         color: 'var(--red)', border: 'var(--red-b)',   label: 'BLOCKED' };
+    : reason === 'llm_failed'
+      ? { bg: 'var(--yellow-a)', color: 'var(--yellow)', border: 'var(--yellow-b)', label: 'LLM FAILED' }
+      : { bg: 'var(--red-a)',    color: 'var(--red)',    border: 'var(--red-b)',    label: 'BLOCKED' };
   return (
     <span title={reason ?? undefined} style={{
       fontFamily: 'JetBrains Mono, monospace', fontSize: '10px',
@@ -69,6 +71,22 @@ function GateBadge({ passed, reason }: { passed: boolean; reason: string | null 
       whiteSpace: 'nowrap', flexShrink: 0, cursor: reason ? 'help' : 'default',
     }}>
       {s.label}
+    </span>
+  );
+}
+
+function LlmChip({ provider, model }: { provider: string | null; model: string | null }) {
+  if (!provider && !model) return null;
+  const text = provider && model ? `${provider} / ${model}` : (model ?? provider ?? '');
+  return (
+    <span style={{
+      fontFamily: 'JetBrains Mono, monospace', fontSize: '10px', fontWeight: 500,
+      borderRadius: 'var(--pill-r)', padding: '2px 7px',
+      border: '1px solid rgba(83,74,183,.25)', color: '#534AB7', background: 'rgba(83,74,183,.10)',
+      whiteSpace: 'nowrap', flexShrink: 1, overflow: 'hidden', textOverflow: 'ellipsis',
+      maxWidth: '100%',
+    }}>
+      {text}
     </span>
   );
 }
@@ -108,66 +126,65 @@ function AiSignalCard({ row }: { row: AiSignalRow }) {
       background: 'var(--bg3)', border: '1px solid var(--border)',
       borderRadius: 'var(--r)', marginBottom: '6px', overflow: 'hidden',
     }}>
-      {/* ── Summary row ── */}
+      {/* ── Summary row (2 lines) ── */}
       <div
         onClick={() => setExpanded(e => !e)}
         style={{
-          display: 'flex', alignItems: 'center', gap: '8px',
-          padding: '10px 14px', cursor: 'pointer', userSelect: 'none',
+          display: 'flex', flexDirection: 'column', gap: '5px',
+          padding: '9px 14px', cursor: 'pointer', userSelect: 'none',
         }}
       >
-        {/* Timestamp */}
-        <span style={{
-          fontFamily: 'JetBrains Mono, monospace', fontSize: '11px',
-          color: 'var(--muted)', flexShrink: 0, minWidth: '96px',
-        }}>
-          {formatRelative(row.triggered_at)}
-        </span>
-
-        {/* Strategy */}
-        <span style={{
-          fontFamily: 'JetBrains Mono, monospace', fontSize: '11px',
-          fontWeight: 600, color: 'var(--text)', flexShrink: 0,
-          maxWidth: '130px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-        }}>
-          {row.strategy_id}
-        </span>
-
-        {/* Proposed action */}
-        <ActionBadge action={row.proposed_action} />
-
-        {/* Confidence */}
-        <ConfidenceBar value={row.confidence} />
-
-        {/* Gate */}
-        <GateBadge passed={row.gate_passed} reason={row.gate_rejection_reason} />
-
-        {/* Webhook fired */}
-        {row.gate_passed && (
+        {/* Line 1: strategy + action — timestamp + chevron */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
           <span style={{
-            fontFamily: 'JetBrains Mono, monospace', fontSize: '10px', flexShrink: 0,
-            color: row.webhook_fired ? '#22c55e' : 'var(--dim)',
+            fontFamily: 'JetBrains Mono, monospace', fontSize: '11px',
+            fontWeight: 600, color: 'var(--text)', flexShrink: 1, minWidth: 0,
+            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
           }}>
-            {row.webhook_fired ? `webhook ${row.webhook_status ?? ''}` : row.dry_run ? 'dry run' : 'no webhook'}
+            {row.strategy_id}
           </span>
-        )}
 
-        {/* Trigger reason */}
-        <span style={{
-          marginLeft: 'auto', fontFamily: 'JetBrains Mono, monospace',
-          fontSize: '10px', color: 'var(--dim)', flexShrink: 0,
-        }}>
-          {row.trigger_reason?.replace(/_/g, ' ')}
-          {row.cycle_interval ? ` · ${row.cycle_interval}` : ''}
-        </span>
+          <ActionBadge action={row.proposed_action} />
 
-        {/* Chevron */}
-        <span style={{
-          fontSize: '10px', color: 'var(--dim)', flexShrink: 0,
-          transform: expanded ? 'rotate(180deg)' : 'none', transition: 'transform .15s',
-        }}>
-          ▾
-        </span>
+          <span style={{
+            marginLeft: 'auto', fontFamily: 'JetBrains Mono, monospace', fontSize: '10.5px',
+            color: 'var(--muted)', flexShrink: 0,
+          }}>
+            {formatRelative(row.triggered_at)}
+          </span>
+
+          <span style={{
+            fontSize: '10px', color: 'var(--dim)', flexShrink: 0,
+            transform: expanded ? 'rotate(180deg)' : 'none', transition: 'transform .15s',
+          }}>
+            ▾
+          </span>
+        </div>
+
+        {/* Line 2: gate + confidence + LLM + webhook/trigger */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+          <GateBadge passed={row.gate_passed} reason={row.gate_rejection_reason} />
+
+          <ConfidenceBar value={row.confidence} />
+
+          <LlmChip provider={row.llm_provider} model={row.llm_model} />
+
+          <span style={{
+            marginLeft: 'auto', fontFamily: 'JetBrains Mono, monospace',
+            fontSize: '10px', color: 'var(--dim)', flexShrink: 0,
+            display: 'flex', alignItems: 'center', gap: '6px',
+          }}>
+            {row.gate_passed && (
+              <span style={{ color: row.webhook_fired ? '#22c55e' : 'var(--dim)' }}>
+                {row.webhook_fired ? `webhook ${row.webhook_status ?? ''}` : row.dry_run ? 'dry run' : 'no webhook'}
+              </span>
+            )}
+            <span>
+              {row.trigger_reason?.replace(/_/g, ' ')}
+              {row.cycle_interval ? ` · ${row.cycle_interval}` : ''}
+            </span>
+          </span>
+        </div>
       </div>
 
       {/* ── Expanded detail ── */}

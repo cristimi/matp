@@ -568,13 +568,6 @@ function StrategyCard({ strategy: s, onL1Refresh, livePnl }: { strategy: Strateg
         borderRadius: '11px 0 0 11px',
         background: isStopped ? 'var(--stopped-bar)' : 'var(--blue)', zIndex: 1,
       }} />
-      {/* Pending-orders band */}
-      {hasPending && (
-        <div style={{
-          position: 'absolute', left: 4, top: 0, bottom: 0, width: 3,
-          background: 'var(--yellow)', zIndex: 1,
-        }} />
-      )}
 
       {/* Top-right icons */}
       <div style={{ position: 'absolute', top: 0, right: 2, display: 'flex', alignItems: 'flex-start', zIndex: 2 }}>
@@ -745,6 +738,21 @@ function StrategyCard({ strategy: s, onL1Refresh, livePnl }: { strategy: Strateg
 }
 
 // ---- position card ----
+
+const CLOSE_REASON_LABELS: Record<string, string> = {
+  manual_close:        'Manual close',
+  signal_flat:          'Signal: flat',
+  signal_close:         'Signal close',
+  flatten_on_disable:   'Strategy stopped',
+  flip_close:           'Position flipped',
+  Liquidated:           'Liquidated',
+  'Closed on exchange': 'Closed on exchange',
+};
+
+function formatCloseReason(reason: string | null): string {
+  if (!reason) return 'Unknown';
+  return CLOSE_REASON_LABELS[reason] ?? reason.replace(/_/g, ' ');
+}
 
 function fmtMoney(v: number): string {
   if (v >= 1_000_000) return `$${(v / 1_000_000).toFixed(2)}M`;
@@ -987,7 +995,7 @@ function PositionCard({
                 { text: fmtMoney(margin) },
                 { text: `${p.leverage}×` },
               ]} />
-              {p.close_reason && <DR label="Close reason" segs={[{ text: p.close_reason }]} />}
+              <DR label="Close reason" segs={[{ text: formatCloseReason(p.close_reason) }]} />
               <DR label="Time" segs={[
                 { text: `Opened ${formatRelative(p.opened_at)}` },
                 ...(p.closed_at ? [{ text: `Closed ${formatRelative(p.closed_at)}` }] : []),
@@ -1043,11 +1051,16 @@ function PendingOrderCard({ order: o }: { order: PendingOrder }) {
   ];
   return (
     <div style={{
-      background: 'var(--bg2)', border: '1px solid var(--yellow-b)',
+      background: 'var(--bg2)', border: '1px solid var(--border)',
       borderRadius: 9, marginBottom: 8, overflow: 'hidden',
-      boxShadow: '0 1px 1px rgba(20,30,50,.03)',
+      position: 'relative', boxShadow: '0 1px 1px rgba(20,30,50,.03)',
     }}>
-      <div style={{ display: 'flex', flexDirection: 'column', padding: '6px 10px', gap: 4 }}>
+      {/* Left accent band — this card is the pending order, not the whole strategy */}
+      <div style={{
+        position: 'absolute', left: 0, top: 0, bottom: 0, width: 4,
+        borderRadius: '9px 0 0 9px', background: 'var(--yellow)', zIndex: 1,
+      }} />
+      <div style={{ display: 'flex', flexDirection: 'column', padding: '6px 10px 6px 14px', gap: 4 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
           <HeaderPill variant={o.side === 'buy' ? 'buy' : 'sell'}>
             {o.side.toUpperCase()}
