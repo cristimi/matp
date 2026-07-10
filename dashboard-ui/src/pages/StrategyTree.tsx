@@ -7,7 +7,7 @@ import { formatRelative } from '../utils/datetime';
 import {
   fetchStrategyTree, fetchTreePositions, fetchPositionOrders, fetchOrderDetail, api,
 } from '../api';
-import type { StrategyTreeItem, TreePosition, TreeOrder, OrderDetail } from '../api';
+import type { StrategyTreeItem, TreePosition, TreeOrder, OrderDetail, PendingOrder } from '../api';
 import { useLivePnl, type PnlSnapshot } from '../hooks/useLivePnl';
 
 const MONO = '"JetBrains Mono", monospace';
@@ -399,6 +399,7 @@ type ExpandState = 'collapsed' | 'open' | 'all';
 function StrategyCard({ strategy: s, onL1Refresh, livePnl }: { strategy: StrategyTreeItem; onL1Refresh: () => void; livePnl: PnlSnapshot | null }) {
   const livePids = livePnl?.strategies[s.id]?.position_ids;
   const hasOpen = livePids ? livePids.length > 0 : s.open_positions_count > 0;
+  const hasPending = s.pending_orders.length > 0;
   const pidKey = livePids ? [...livePids].sort().join(',') : null;
   const isStopped = !s.enabled;
   const navigate = useNavigate();
@@ -567,6 +568,13 @@ function StrategyCard({ strategy: s, onL1Refresh, livePnl }: { strategy: Strateg
         borderRadius: '11px 0 0 11px',
         background: isStopped ? 'var(--stopped-bar)' : 'var(--blue)', zIndex: 1,
       }} />
+      {/* Pending-orders band */}
+      {hasPending && (
+        <div style={{
+          position: 'absolute', left: 4, top: 0, bottom: 0, width: 3,
+          background: 'var(--yellow)', zIndex: 1,
+        }} />
+      )}
 
       {/* Top-right icons */}
       <div style={{ position: 'absolute', top: 0, right: 2, display: 'flex', alignItems: 'flex-start', zIndex: 2 }}>
@@ -599,7 +607,7 @@ function StrategyCard({ strategy: s, onL1Refresh, livePnl }: { strategy: Strateg
       >
         {/* Row 1 */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 7, flexWrap: 'wrap' }}>
-          {hasOpen && <GreenDot />}
+          {hasOpen ? <GreenDot /> : hasPending && <YellowDot />}
           <HeaderPill
             variant="neutral"
             style={{ fontWeight: 700, background: 'var(--bg3)', color: 'var(--text)', borderColor: 'var(--border-hi)' }}
@@ -614,6 +622,9 @@ function StrategyCard({ strategy: s, onL1Refresh, livePnl }: { strategy: Strateg
         {/* Row 2 */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 6, flexWrap: 'wrap' }}>
           {s.strategy_source === 'ai_engine' && <HeaderPill variant="ai">AI</HeaderPill>}
+          {s.strategy_source === 'ai_engine' && s.ai_llm_provider && (
+            <LlmChip>{s.ai_llm_provider}{s.ai_llm_model ? ` / ${s.ai_llm_model}` : ''}</LlmChip>
+          )}
           <AccountChip>{s.account_label}</AccountChip>
           {isStopped && <StopChip reason={s.stop_reason} />}
           {actionError && (
@@ -647,6 +658,9 @@ function StrategyCard({ strategy: s, onL1Refresh, livePnl }: { strategy: Strateg
               <KV k="Margin / trade"  v={detailData ? `$${Number(detailData.margin_per_trade).toFixed(2)}` : '—'} />
               <KV k="Max drawdown"    v={detailData ? `${detailData.max_drawdown_pct}%` : '—'} />
               <KV k="Committed"       v={detailData ? `$${Number(detailData.initial_allocation ?? detailData.capital_allocation).toFixed(2)}` : '—'} />
+              {detailData?.ai_llm_provider && (
+                <KV k="LLM" v={`${detailData.ai_llm_provider}${detailData.ai_llm_model ? ` / ${detailData.ai_llm_model}` : ''}`} />
+              )}
               {detailData?.last_signal_at && (
                 <KV k="Last signal" v={formatRelative(detailData.last_signal_at)} />
               )}
@@ -680,6 +694,15 @@ function StrategyCard({ strategy: s, onL1Refresh, livePnl }: { strategy: Strateg
               <SectionLabel text="Open Positions" />
               {shownOpen.map(p => (
                 <PositionCard key={p.id} position={p} stratLabel={s.account_label} stratExchange={s.account_exchange} onClose={handlePositionClose} livePnl={livePnl} />
+              ))}
+            </>
+          )}
+
+          {s.pending_orders.length > 0 && (
+            <>
+              <SectionLabel text="Pending Orders" />
+              {s.pending_orders.map(o => (
+                <PendingOrderCard key={o.id} order={o} />
               ))}
             </>
           )}
@@ -1009,6 +1032,48 @@ function PositionCard({
   );
 }
 
+// ---- pending order card ----
+
+function PendingOrderCard({ order: o }: { order: PendingOrder }) {
+  const priceCols = [
+    { label: 'Price', value: formatPrice(o.symbol, o.price),      color: 'var(--muted)' },
+    { label: 'Mark',  value: o.mark_price != null ? formatPrice(o.symbol, o.mark_price) : '—', color: 'var(--green)' },
+    { label: 'SL',    value: o.sl_price   != null ? formatPrice(o.symbol, o.sl_price)   : '—', color: 'var(--muted)' },
+    { label: 'TP',    value: o.tp_price   != null ? formatPrice(o.symbol, o.tp_price)   : '—', color: 'var(--muted)' },
+  ];
+  return (
+    <div style={{
+      background: 'var(--bg2)', border: '1px solid var(--yellow-b)',
+      borderRadius: 9, marginBottom: 8, overflow: 'hidden',
+      boxShadow: '0 1px 1px rgba(20,30,50,.03)',
+    }}>
+      <div style={{ display: 'flex', flexDirection: 'column', padding: '6px 10px', gap: 4 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+          <HeaderPill variant={o.side === 'buy' ? 'buy' : 'sell'}>
+            {o.side.toUpperCase()}
+          </HeaderPill>
+          <span style={{ fontFamily: MONO, fontWeight: 600, fontSize: 13, color: 'var(--text)' }}>{o.symbol}</span>
+          <span style={{ flex: 1 }} />
+          <span style={{
+            fontSize: 9.5, fontWeight: 600, letterSpacing: '.04em', textTransform: 'uppercase',
+            color: 'var(--yellow)', background: 'var(--yellow-a)', border: '1px solid var(--yellow-b)',
+            borderRadius: 20, padding: '2px 7px', flexShrink: 0,
+          }}>
+            Pending
+          </span>
+        </div>
+        <div style={{
+          display: 'grid', gridTemplateColumns: `repeat(${priceCols.length}, auto)`,
+          gap: '0 10px', fontFamily: MONO, fontSize: 11,
+        }}>
+          {priceCols.map(c => <span key={c.label} style={{ color: 'var(--dim)' }}>{c.label}</span>)}
+          {priceCols.map(c => <span key={c.label + '_v'} style={{ color: c.color }}>{c.value}</span>)}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ---- order row ----
 
 function OrderRow({ order: o, symbol, priceSpec, sizeSpec }: {
@@ -1127,11 +1192,33 @@ function GreenDot() {
   );
 }
 
+function YellowDot() {
+  return (
+    <span style={{
+      width: 7, height: 7, borderRadius: '50%',
+      background: 'var(--yellow)', boxShadow: '0 0 0 2px var(--yellow-a)',
+      flexShrink: 0, display: 'inline-block',
+    }} />
+  );
+}
+
 function AccountChip({ children }: { children: React.ReactNode }) {
   return (
     <span style={{
       fontSize: 10.5, padding: '1px 7px', borderRadius: 20,
       border: '1px solid var(--blue-b)', color: 'var(--blue)', background: 'var(--blue-a)',
+      whiteSpace: 'nowrap',
+    }}>
+      {children}
+    </span>
+  );
+}
+
+function LlmChip({ children }: { children: React.ReactNode }) {
+  return (
+    <span style={{
+      fontSize: 10.5, padding: '1px 7px', borderRadius: 20,
+      border: '1px solid rgba(83,74,183,.25)', color: '#534AB7', background: 'rgba(83,74,183,.10)',
       whiteSpace: 'nowrap',
     }}>
       {children}

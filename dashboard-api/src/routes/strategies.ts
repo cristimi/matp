@@ -421,10 +421,13 @@ router.get('/tree', async (_req: Request, res: Response) => {
           WHERE sp.strategy_id = s.id AND sp.status = 'open'
         ), 0)::int AS open_positions_count,
         s.strategy_source,
+        aic.llm_model    AS ai_llm_model,
+        aic.llm_provider AS ai_llm_provider,
         (SELECT MAX(sp.opened_at) FROM strategy_positions sp WHERE sp.strategy_id = s.id) AS last_position_opened_at,
         (SELECT MAX(o.received_at) FROM orders o WHERE o.strategy_id = s.id) AS last_activity_at
       FROM strategies s
       LEFT JOIN exchange_accounts ea ON ea.id = s.account_id
+      LEFT JOIN ai_strategy_config aic ON aic.strategy_id = s.id
       WHERE COALESCE(s.is_deleted, false) = false
       ORDER BY s.created_at DESC
     `);
@@ -441,6 +444,57 @@ router.get('/tree', async (_req: Request, res: Response) => {
       console.error('Tree: snapshot read failed:', e);
     }
 
+    // Pending (resting, unfilled) orders per strategy, with a live mark price fanned
+    // out per unique (account_id, symbol) via the executor's public ticker endpoint.
+    const pendingByStrategy = new Map<string, any[]>();
+    try {
+      const { rows: pendingRows } = await getPool().query(`
+        SELECT o.id, o.strategy_id, o.account_id, o.symbol, o.side,
+               o.price, o.sl_price, o.tp_price, o.received_at
+        FROM orders o
+        WHERE o.status = 'pending'
+        ORDER BY o.received_at DESC
+      `);
+
+      const markKeys = [...new Set(
+        pendingRows
+          .filter((o: any) => o.account_id)
+          .map((o: any) => `${o.account_id}:${o.symbol}`)
+      )];
+      const markMap = new Map<string, number | null>();
+      await Promise.all(markKeys.map(async (key) => {
+        const [accountId, symbol] = key.split(':');
+        try {
+          const resp = await fetch(`${EXECUTOR_URL}/accounts/${accountId}/mark-price/${symbol}`, {
+            signal: AbortSignal.timeout(5000),
+          });
+          if (resp.ok) {
+            const data = await resp.json() as any;
+            markMap.set(key, data.mark_price != null ? Number(data.mark_price) : null);
+          }
+        } catch (e) {
+          console.error(`[tree] mark-price fetch failed for ${key}:`, e);
+        }
+      }));
+
+      for (const o of pendingRows) {
+        const list = pendingByStrategy.get(o.strategy_id) ?? [];
+        list.push({
+          id:          o.id,
+          symbol:      o.symbol,
+          side:        o.side,
+          price:       o.price != null ? Number(o.price) : null,
+          sl_price:    o.sl_price != null ? Number(o.sl_price) : null,
+          tp_price:    o.tp_price != null ? Number(o.tp_price) : null,
+          mark_price:  o.account_id ? (markMap.get(`${o.account_id}:${o.symbol}`) ?? null) : null,
+          received_at: (o.received_at as Date).toISOString(),
+        });
+        pendingByStrategy.set(o.strategy_id, list);
+      }
+    } catch (e) {
+      console.error('Tree: pending orders fetch failed:', e);
+    }
+
     res.json(rows.map((r: any) => ({
       id:                   r.id,
       name:                 r.name,
@@ -455,6 +509,9 @@ router.get('/tree', async (_req: Request, res: Response) => {
       open_positions_count: r.open_positions_count,
       open_pnl:                  r.open_positions_count > 0 ? (snapshot?.strategies[r.id]?.open_pnl ?? 0) : 0,
       strategy_source:           r.strategy_source ?? 'tradingview',
+      ai_llm_model:              r.ai_llm_model ?? null,
+      ai_llm_provider:           r.ai_llm_provider ?? null,
+      pending_orders:            pendingByStrategy.get(r.id) ?? [],
       last_position_opened_at:   r.last_position_opened_at ? (r.last_position_opened_at as Date).toISOString() : null,
       last_activity_at:          r.last_activity_at ? (r.last_activity_at as Date).toISOString() : null,
     })));
@@ -578,17 +635,20 @@ router.get('/:id', async (req: Request, res: Response) => {
     const result = await getPool().query(
       `SELECT
          s.*,
-         ea.exchange  AS account_exchange,
-         ea.mode      AS account_mode,
-         ea.label     AS account_label,
+         ea.exchange      AS account_exchange,
+         ea.mode          AS account_mode,
+         ea.label         AS account_label,
+         aic.llm_model    AS ai_llm_model,
+         aic.llm_provider AS ai_llm_provider,
          COALESCE((
            SELECT COUNT(*)
            FROM strategy_positions sp
            WHERE sp.strategy_id = s.id
            AND sp.status = 'open'
-         ), 0)::int   AS open_positions_count
+         ), 0)::int       AS open_positions_count
        FROM strategies s
        LEFT JOIN exchange_accounts ea ON ea.id = s.account_id
+       LEFT JOIN ai_strategy_config aic ON aic.strategy_id = s.id
        WHERE s.id = $1`,
       [req.params.id]
     );

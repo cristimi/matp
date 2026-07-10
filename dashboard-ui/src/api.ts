@@ -184,8 +184,22 @@ export interface StrategyTreeItem {
   open_positions_count: number;
   open_pnl: number;
   strategy_source: string;
+  ai_llm_model: string | null;
+  ai_llm_provider: string | null;
+  pending_orders: PendingOrder[];
   last_position_opened_at: string | null;
   last_activity_at: string | null;
+}
+
+export interface PendingOrder {
+  id: string;
+  symbol: string;
+  side: string;
+  price: number | null;
+  sl_price: number | null;
+  tp_price: number | null;
+  mark_price: number | null;
+  received_at: string;
 }
 
 export interface TreePosition {
