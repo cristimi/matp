@@ -503,7 +503,7 @@ export default function AiSignalLog() {
       });
       if (filterStrategy !== 'all') params.set('strategy_id', filterStrategy);
       if (filterAction   !== 'all') params.set('action',      filterAction);
-      if (filterGate     !== 'all') params.set('gate_passed',  filterGate);
+      if (filterGate     !== 'all') params.set('gate',         filterGate);
       if (filterWebhook  !== 'all') params.set('webhook_fired', filterWebhook);
 
       const res  = await fetch(`/api/dashboard/ai/signals?${params}`);
@@ -581,8 +581,9 @@ export default function AiSignalLog() {
 
           <FilterSelect value={filterGate} onChange={v => { setFilterGate(v); setPage(1); }} active={filterGate !== 'all'}>
             <option value="all">Gate: All</option>
-            <option value="true">Gate: Passed</option>
-            <option value="false">Gate: Blocked</option>
+            <option value="passed">Gate: Passed</option>
+            <option value="blocked">Gate: Blocked</option>
+            <option value="llm_failed">Gate: LLM Failed</option>
           </FilterSelect>
 
           <FilterSelect value={filterWebhook} onChange={v => { setFilterWebhook(v); setPage(1); }} active={filterWebhook !== 'all'}>

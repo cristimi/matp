@@ -11,6 +11,8 @@ import asyncio
 import logging
 import time
 
+from pydantic import BaseModel
+
 from app.config import settings
 
 logger = logging.getLogger(__name__)
@@ -205,7 +207,20 @@ async def _probe_anthropic(model_id: str) -> bool:
         return True
 
 
+class _ProbeSchema(BaseModel):
+    ok: bool
+
+
 async def _probe_groq(model_id: str) -> bool:
+    """
+    Groq serves some models (e.g. 'compound', 'compound-mini') that answer plain
+    chat fine but reject tool-calling outright ('tool calling is not supported
+    with this model') — and every real signal cycle uses
+    with_structured_output(..., include_raw=True), which needs tool-calling. A
+    plain-chat probe would let those models pass and then fail 100% of the time
+    in production, so this probes the same structured-output path node_analyze
+    actually uses.
+    """
     try:
         from langchain_groq import ChatGroq
         llm = ChatGroq(
@@ -214,11 +229,15 @@ async def _probe_groq(model_id: str) -> bool:
             api_key=settings.groq_api_key,
             max_retries=0,
         )
-        resp = await asyncio.wait_for(llm.ainvoke(_PROBE_PROMPT), timeout=_PROBE_TIMEOUT)
-        return bool(resp.content)
+        structured = llm.with_structured_output(_ProbeSchema, include_raw=True)
+        resp = await asyncio.wait_for(structured.ainvoke(_PROBE_PROMPT), timeout=_PROBE_TIMEOUT)
+        return resp.get("parsed") is not None
     except Exception as exc:
         exc_str = str(exc)
-        if any(s in exc_str for s in ("404", "model_not_found", "does not exist", "decommissioned")):
+        if any(s in exc_str for s in (
+            "404", "model_not_found", "does not exist", "decommissioned",
+            "tool calling", "tool_use_failed", "does not support tool", "function calling",
+        )):
             logger.debug("Groq probe %s: definitively unavailable — %s", model_id, exc)
             return False
         logger.debug("Groq probe %s: transient/uncertain error — %s", model_id, exc)

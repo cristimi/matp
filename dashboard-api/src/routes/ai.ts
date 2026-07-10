@@ -573,6 +573,9 @@ router.get('/signals', async (req: Request, res: Response) => {
   const strategyId = req.query.strategy_id as string | undefined;
   const action     = req.query.action      as string | undefined;
   const gatePassed = req.query.gate_passed as string | undefined;
+  // gate: 'passed' | 'blocked' | 'llm_failed' — finer-grained than gate_passed, which can't
+  // distinguish a normal gate rejection from the LLM call itself failing.
+  const gate       = req.query.gate        as string | undefined;
   const webhookFired = req.query.webhook_fired as string | undefined;
 
   const conditions: string[] = [];
@@ -586,7 +589,13 @@ router.get('/signals', async (req: Request, res: Response) => {
     params.push(action);
     conditions.push(`proposed_action = $${params.length}`);
   }
-  if (gatePassed !== undefined) {
+  if (gate === 'passed') {
+    conditions.push(`gate_passed = true`);
+  } else if (gate === 'llm_failed') {
+    conditions.push(`gate_passed = false AND gate_rejection_reason = 'llm_failed'`);
+  } else if (gate === 'blocked') {
+    conditions.push(`gate_passed = false AND gate_rejection_reason IS DISTINCT FROM 'llm_failed'`);
+  } else if (gatePassed !== undefined) {
     params.push(gatePassed === 'true');
     conditions.push(`gate_passed = $${params.length}`);
   }
