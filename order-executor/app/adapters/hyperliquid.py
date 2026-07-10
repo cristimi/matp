@@ -945,10 +945,40 @@ class HyperliquidAdapter(ExchangeAdapter):
             resp_field = data.get("response", {})
             if isinstance(resp_field, str):
                 return {"success": False, "error": resp_field}
-            statuses = resp_field.get("data", {}).get("statuses", [])
-            first = statuses[0] if statuses else {}
-            if isinstance(first, dict) and "error" in first:
-                return {"success": False, "error": first["error"]}
+
+            # 'modify' is cancel-and-replace under the hood on Hyperliquid, but unlike order
+            # placement (response.type == "order", carrying a statuses[].resting.oid), a
+            # successful modify ack is just {"type": "default"} — no oid anywhere in the
+            # response. Verified live: response.data.statuses is simply absent here. The only
+            # way to learn the real new oid is to re-read open orders and find the resting
+            # order that replaced the old one. Falling back to the input order_id would
+            # silently orphan the real resting order (this is exactly the bug that made a
+            # live pending order vanish from every part of the system while still resting on
+            # the exchange — see incident notes).
+            coin = None
+            for attempt in range(3):
+                if attempt:
+                    await asyncio.sleep(0.3)
+                refreshed = await self._fetch_frontend_open_orders()
+                coin = coin or existing.get("coin")
+                candidates = [
+                    o for o in refreshed
+                    if o.get("coin") == coin
+                    and o.get("side") == existing.get("side")
+                    and str(o.get("oid")) != str(order_id)
+                ]
+                if candidates:
+                    new_oid = str(max(candidates, key=lambda o: int(o.get("oid", 0))).get("oid"))
+                    return {"success": True, "order_id": new_oid, "raw_response": data}
+                # Order may have filled immediately instead of resting — not our failure.
+                if not any(str(o.get("oid")) == str(order_id) for o in refreshed):
+                    break
+
+            logger.warning(
+                f"HL amend_order({symbol}, oid={order_id}): modify acked 'ok' but no "
+                f"replacement oid found in open orders after retries — falling back to the "
+                f"old oid, which is likely no longer resting."
+            )
             return {"success": True, "order_id": order_id, "raw_response": data}
         except Exception as e:
             logger.error(f"HyperliquidAdapter.amend_order({symbol}, {order_id}) failed: {e}")
