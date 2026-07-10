@@ -40,9 +40,19 @@ def _parse_rss_sync(name: str, url: str) -> list[dict]:
         return []
 
 
+_RSS_TIMEOUT = 10.0  # seconds — feedparser.parse() has no built-in timeout and can hang
+
+
 async def _fetch_rss(name: str, url: str) -> list[dict]:
     loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(_executor, _parse_rss_sync, name, url)
+    try:
+        return await asyncio.wait_for(
+            loop.run_in_executor(_executor, _parse_rss_sync, name, url),
+            timeout=_RSS_TIMEOUT,
+        )
+    except asyncio.TimeoutError:
+        logger.warning("RSS fetch timed out [%s]: %s", name, url)
+        return []
 
 
 async def _fetch_coingecko_news() -> list[dict]:

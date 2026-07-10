@@ -1,3 +1,4 @@
+import asyncio
 import logging
 
 import httpx
@@ -55,6 +56,35 @@ async def node_ingest(state: AgentState) -> AgentState:
     interval      = state.get('cycle_interval', '4h')
     enabled_inds  = sc.get('indicators') or ['RSI', 'MACD', 'EMA50', 'EMA200', 'BB', 'VWAP']
 
+    need_ohlcv = (sc.get('use_technical') or sc.get('use_geometry')
+                  or sc.get('use_volume_profile') or sc.get('use_momentum_divergence')
+                  or sc.get('use_volatility_regime'))
+    need_open_orders = sc.get('use_geometry') or sc.get('use_limit_orders')
+
+    # ── Fan out every independent external fetch concurrently ────────────
+    # These used to be awaited one at a time — 15+ sequential HTTP round trips
+    # that could add up to minutes even though the LLM call and dispatch are
+    # each well under 10s. None of these depend on each other's *results*
+    # (fetch_mtf_structure does its own internal OHLCV fetches, independent
+    # of the primary one below), so start them all now and await each at its
+    # original call site below — total wall time becomes ~max(latencies)
+    # instead of sum(latencies), with every existing per-source try/except
+    # and error message left untouched.
+    ohlcv_task           = asyncio.create_task(fetch_ohlcv(exchange_id, ccxt_symbol, interval, lookback_days)) if need_ohlcv else None
+    mtf_task             = asyncio.create_task(fetch_mtf_structure(exchange_id, ccxt_symbol)) if sc.get('use_mtf_structure') else None
+    fear_greed_task      = asyncio.create_task(fetch_fear_greed()) if sc.get('use_fear_greed') else None
+    funding_rate_task    = asyncio.create_task(fetch_funding_rate(exchange_id, ccxt_symbol)) if sc.get('use_funding_rate') else None
+    open_interest_task   = asyncio.create_task(fetch_open_interest_aggregate(exchange_id, ccxt_symbol)) if sc.get('use_open_interest') else None
+    funding_history_task = asyncio.create_task(fetch_funding_history(exchange_id, ccxt_symbol)) if sc.get('use_funding_history') else None
+    news_task            = asyncio.create_task(fetch_news_digest(lookback_hours=24)) if sc.get('use_news') else None
+    calendar_task        = asyncio.create_task(fetch_economic_calendar()) if sc.get('use_economic_calendar') else None
+    btc_dominance_task   = asyncio.create_task(fetch_btc_dominance()) if sc.get('use_btc_dominance') else None
+    macro_task           = asyncio.create_task(fetch_macro()) if sc.get('use_macro') else None
+    open_orders_task     = asyncio.create_task(_fetch_open_orders(state['strategy_id'])) if need_open_orders else None
+    orderbook_task       = asyncio.create_task(fetch_orderbook_depth(exchange_id, ccxt_symbol)) if sc.get('use_orderbook') else None
+    cvd_task             = asyncio.create_task(fetch_cvd(exchange_id, ccxt_symbol)) if sc.get('use_cvd') else None
+    liquidations_task    = asyncio.create_task(fetch_liquidations(exchange_id, ccxt_symbol)) if sc.get('use_liquidations') else None
+
     # ── OHLCV + Indicators + Geometry + local-compute fields ─────────────
     ohlcv_data           = None
     technical_indicators = None
@@ -65,11 +95,9 @@ async def node_ingest(state: AgentState) -> AgentState:
 
     # Any candle-derived source needs the OHLCV fetch, not just technical/geometry —
     # otherwise its toggle is a dead switch on strategies without those two.
-    if (sc.get('use_technical') or sc.get('use_geometry')
-            or sc.get('use_volume_profile') or sc.get('use_momentum_divergence')
-            or sc.get('use_volatility_regime')):
+    if need_ohlcv:
         try:
-            ohlcv_data = await fetch_ohlcv(exchange_id, ccxt_symbol, interval, lookback_days)
+            ohlcv_data = await ohlcv_task
         except Exception as exc:
             errors.append(f"ohlcv:{exc}")
             logger.warning("OHLCV fetch failed: %s", exc)
@@ -119,7 +147,7 @@ async def node_ingest(state: AgentState) -> AgentState:
     mtf_structure = None
     if sc.get('use_mtf_structure'):
         try:
-            mtf_structure = await fetch_mtf_structure(exchange_id, ccxt_symbol)
+            mtf_structure = await mtf_task
         except Exception as exc:
             errors.append(f"mtf_structure:{exc}")
             logger.warning("MTF structure fetch failed: %s", exc)
@@ -131,19 +159,19 @@ async def node_ingest(state: AgentState) -> AgentState:
 
     if sc.get('use_fear_greed'):
         try:
-            fear_greed = await fetch_fear_greed()
+            fear_greed = await fear_greed_task
         except Exception as exc:
             errors.append(f"fear_greed:{exc}")
 
     if sc.get('use_funding_rate'):
         try:
-            funding_rate = await fetch_funding_rate(exchange_id, ccxt_symbol)
+            funding_rate = await funding_rate_task
         except Exception as exc:
             errors.append(f"funding_rate:{exc}")
 
     if sc.get('use_open_interest'):
         try:
-            open_interest = await fetch_open_interest_aggregate(exchange_id, ccxt_symbol)
+            open_interest = await open_interest_task
         except Exception as exc:
             errors.append(f"open_interest:{exc}")
 
@@ -152,7 +180,7 @@ async def node_ingest(state: AgentState) -> AgentState:
     funding_history = None
     if sc.get('use_funding_history'):
         try:
-            funding_history = await fetch_funding_history(exchange_id, ccxt_symbol)
+            funding_history = await funding_history_task
         except Exception as exc:
             errors.append(f"funding_history:{exc}")
 
@@ -167,7 +195,7 @@ async def node_ingest(state: AgentState) -> AgentState:
     news_data = None
     if sc.get('use_news'):
         try:
-            news_data = await fetch_news_digest(lookback_hours=24)
+            news_data = await news_task
         except Exception as exc:
             errors.append(f"news:{exc}")
 
@@ -175,7 +203,7 @@ async def node_ingest(state: AgentState) -> AgentState:
     calendar_data = None
     if sc.get('use_economic_calendar'):
         try:
-            calendar_data = await fetch_economic_calendar()
+            calendar_data = await calendar_task
         except Exception as exc:
             errors.append(f"economic_calendar:{exc}")
             logger.warning("Economic calendar fetch failed: %s", exc)
@@ -186,13 +214,13 @@ async def node_ingest(state: AgentState) -> AgentState:
 
     if sc.get('use_btc_dominance'):
         try:
-            btc_dominance = await fetch_btc_dominance()
+            btc_dominance = await btc_dominance_task
         except Exception as exc:
             errors.append(f"btc_dominance:{exc}")
 
     if sc.get('use_macro'):
         try:
-            macro_data = await fetch_macro()
+            macro_data = await macro_task
         except Exception as exc:
             errors.append(f"macro:{exc}")
 
@@ -202,9 +230,9 @@ async def node_ingest(state: AgentState) -> AgentState:
     # use_geometry keeps its historical coupling (geometric_range predates the
     # flag); use_limit_orders grants the same capability without geometry.
     open_orders = None
-    if sc.get('use_geometry') or sc.get('use_limit_orders'):
+    if need_open_orders:
         try:
-            open_orders = await _fetch_open_orders(state['strategy_id'])
+            open_orders = await open_orders_task
         except Exception as exc:
             errors.append(f"open_orders:{exc}")
             logger.warning("Open orders fetch failed: %s", exc)
@@ -214,7 +242,7 @@ async def node_ingest(state: AgentState) -> AgentState:
     orderbook_data = None
     if sc.get('use_orderbook'):
         try:
-            orderbook_data = await fetch_orderbook_depth(exchange_id, ccxt_symbol)
+            orderbook_data = await orderbook_task
         except Exception as exc:
             errors.append(f"orderbook:{exc}")
             logger.warning("Orderbook fetch failed: %s", exc)
@@ -223,7 +251,7 @@ async def node_ingest(state: AgentState) -> AgentState:
     cvd_data = None
     if sc.get('use_cvd'):
         try:
-            cvd_data = await fetch_cvd(exchange_id, ccxt_symbol)
+            cvd_data = await cvd_task
         except Exception as exc:
             errors.append(f"cvd:{exc}")
             logger.warning("CVD fetch failed: %s", exc)
@@ -232,7 +260,7 @@ async def node_ingest(state: AgentState) -> AgentState:
     liquidation_data = None
     if sc.get('use_liquidations'):
         try:
-            liquidation_data = await fetch_liquidations(exchange_id, ccxt_symbol)
+            liquidation_data = await liquidations_task
         except Exception as exc:
             errors.append(f"liquidations:{exc}")
             logger.warning("Liquidations fetch failed: %s", exc)

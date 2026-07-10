@@ -52,6 +52,7 @@ Changes required: DB migration, one line in `node_ingest.py`, `ai.ts` GET/PUT, U
 | 2026-06-10 | On service restart, schedulers slept a full interval before the first cycle, leaving strategies idle for hours | Added immediate startup cycle before the sleep loop in `AdaptiveScheduler._loop()` |
 | 2026-06-20 | `capital_allocation` was static; drawdown used an anchor-PnL delta model (doubled Guard 5 bug) | Dynamic allocation: `capital_allocation` compounds on close, `initial_allocation` + `allocation_peak` added, Guard 5 replaced with high-water peak model |
 | 2026-07-07 | `_render_task` instructed the model to output "increase" when a position shows strong continuation, but `LLMSignalOutput.action` has no `increase` member — models following the instruction failed structured-output validation (`llm_signal=None`, logged as `llm_failed`, ~5-7%/day with a position open) | Deleted the instruction line from `_render_task` (the backlog's designated small safe fix); every action the position-open task offers is now schema-valid. Scaling-in support (Literal + guard sizing + dispatch) remains unbuilt by choice |
+| 2026-07-10 | `node_ingest.py` awaited 15+ independent external data-fetch calls one at a time (plus `fetch_mtf_structure`'s own 3 internal per-timeframe OHLCV fetches, also sequential) — a single eth-ai-34d2 cycle traced live to a 2.5-minute gap between the AI's `close_long` decision and the webhook actually reaching order-listener, entirely inside data-ingestion (the LLM call and dispatch were each under 10s). `_probe_groq`'s discovery that `groq/compound` rejects tool-calling was unrelated but found in the same investigation | Every fetch in `node_ingest.py` now starts as an `asyncio.create_task` up front and is awaited at its original call site (same per-source error handling, ~max(latency) instead of sum(latency)); `fetch_mtf_structure`'s 3 timeframes now run via `asyncio.gather`; RSS news fetch (`feedparser.parse`, no built-in timeout) now wrapped in a 10s `asyncio.wait_for`. Live-verified: trigger-to-LLM-decision dropped from ~120s to ~93s on a same-symbol retest (further gains likely masked by an unrelated concurrent 145-model startup probe sweep competing for the same event loop during testing) |
 
 ---
 
@@ -159,6 +160,26 @@ Changes required: DB migration, one line in `node_ingest.py`, `ai.ts` GET/PUT, U
 - **notification-service: retention/prune job for `notification_log`**: the table has no
   TTL/archival; it grows unbounded. Needs a periodic prune (e.g. drop rows older than N days)
   once volume becomes a concern.
+- **UI: order/position diagnostic trail** — investigating "why did this close/take this long"
+  today means manually cross-referencing `ai_signal_log`, `orders`/`strategy_positions`, service
+  container logs, and (for exchange-side events) raw Hyperliquid/Blofin API calls by hand each
+  time. Surfaced twice in one session (2026-07-10): reconstructing why an ETH position's
+  `close_reason` was the generic "Closed on exchange" (it was actually the AI's own tightened
+  stop-loss triggering) and why a cycle took 2.5+ minutes to reach the exchange (fully serialized
+  data-ingestion fetches, since fixed — see Known Issues Fixed). Want a UI-surfaced version of
+  this: per-order/position, show the reconstructed lifecycle (which order/trigger actually closed
+  it, SL/TP/liquidation/manual-on-exchange once that distinction is built per the close_reason
+  gap below, and — for AI-driven activity — the `ai_signal_log` row(s) and per-cycle timing/data-
+  fetch-error breakdown) instead of requiring a manual investigation each time.
+- **close_reason: distinguish SL-hit / TP-hit / manual-on-exchange** — both exchange adapters'
+  `get_closed_position_details()` (Blofin, Hyperliquid) only check a liquidation flag; every
+  other externally-detected close (SL, TP, manual close on the exchange UI) collapses into the
+  same generic `"Closed on exchange"` string. Distinguishing them requires cross-referencing each
+  exchange's trigger-order history against the close timestamp (Hyperliquid: match the closing
+  fill's `oid` against `historicalOrders`/`userFills` to read the actual `orderType` — "Stop
+  Market" vs "Take Profit Market" — as done manually during the 2026-07-10 investigation; Blofin:
+  equivalent lookup via its TP/SL order history endpoint). Feeds directly into the UI diagnostic
+  trail item above.
 ### Dynamic strategy allocation (realized-PnL-compounding base)
 
 **Status:** COMPLETE — implemented 2026-06-20 across 5 phases.

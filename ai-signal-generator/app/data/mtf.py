@@ -110,21 +110,26 @@ async def fetch_mtf_structure(
     ({'tf', 'trend_direction', 'ema_posture', 'swing_structure'});
     timeframes that fail to fetch/classify are skipped. None if all fail.
     """
-    results: list[dict] = []
-    for tf in timeframes:
+    # Fetch every timeframe concurrently — these were previously awaited one at a
+    # time, so a slow/failing exchange call for one TF serialized behind the
+    # others (observed: ~20-40s per failing Hyperliquid OHLCV call × 3 TFs).
+    async def _fetch_one(tf: str) -> dict | None:
         try:
             lookback = _TF_LOOKBACK_DAYS.get(tf, 90)
             ohlcv = await fetch_ohlcv(exchange_id, symbol, tf, lookback)
             closed = ohlcv.get('closed_candles') if ohlcv else None
             entry = _classify_tf(tf, closed) if closed else None
-            if entry:
-                results.append(entry)
-            else:
+            if not entry:
                 logger.warning("mtf_structure: no classification for %s %s %s",
                                exchange_id, symbol, tf)
+            return entry
         except Exception as exc:
             logger.warning("mtf_structure error [%s %s %s]: %s",
                            exchange_id, symbol, tf, exc)
+            return None
+
+    entries = await asyncio.gather(*(_fetch_one(tf) for tf in timeframes))
+    results = [e for e in entries if e]
 
     return results or None
 
