@@ -60,8 +60,8 @@ function GateBadge({ passed, reason }: { passed: boolean; reason: string | null 
   const s = passed
     ? { bg: 'rgba(34,197,94,.12)', color: '#22c55e', border: 'rgba(34,197,94,.3)', label: 'PASSED' }
     : reason === 'llm_failed'
-      ? { bg: 'var(--yellow-a)', color: 'var(--yellow)', border: 'var(--yellow-b)', label: 'LLM FAILED' }
-      : { bg: 'var(--red-a)',    color: 'var(--red)',    border: 'var(--red-b)',    label: 'BLOCKED' };
+      ? { bg: 'var(--red-a)',    color: 'var(--red)',    border: 'var(--red-b)',    label: 'LLM FAILED' }
+      : { bg: 'var(--yellow-a)', color: 'var(--yellow)', border: 'var(--yellow-b)', label: 'BLOCKED' };
   return (
     <span title={reason ?? undefined} style={{
       fontFamily: 'JetBrains Mono, monospace', fontSize: '10px',
@@ -380,6 +380,7 @@ function FilterDropdown({ label, active, children }: { label: string; active: bo
 
 interface UsageTotals   { tracked_calls: number; llm_calls: number; input_tokens: number; output_tokens: number; total_tokens: number; }
 interface UsageStrategy { strategy_id: string; tracked_calls: number; input_tokens: number; output_tokens: number; total_tokens: number; }
+interface UsageModel    { llm_provider: string | null; llm_model: string | null; tracked_calls: number; input_tokens: number; output_tokens: number; total_tokens: number; }
 
 function fmtTokens(n: number): string {
   if (n >= 1_000_000) return (n / 1_000_000).toFixed(2) + 'M';
@@ -388,7 +389,7 @@ function fmtTokens(n: number): string {
 }
 
 function UsagePanel() {
-  const [usage, setUsage] = useState<{ total: UsageTotals; per_strategy: UsageStrategy[] } | null>(null);
+  const [usage, setUsage] = useState<{ total: UsageTotals; per_strategy: UsageStrategy[]; per_model: UsageModel[] } | null>(null);
 
   useEffect(() => {
     const from = new Date(Date.now() - 30 * 86_400_000).toISOString().slice(0, 10);
@@ -408,28 +409,63 @@ function UsagePanel() {
     borderRadius: 'var(--pill-r)', padding: '3px 8px', whiteSpace: 'nowrap',
   };
 
+  const providerPill: React.CSSProperties = {
+    ...pill, color: '#534AB7', background: 'rgba(83,74,183,.10)', border: '1px solid rgba(83,74,183,.25)',
+  };
+
+  // Aggregate the API's (provider, model) rows up to provider-only totals.
+  const byProvider = new Map<string, { calls: number; tokens: number }>();
+  for (const m of usage.per_model ?? []) {
+    const key = m.llm_provider ?? 'unknown';
+    const cur = byProvider.get(key) ?? { calls: 0, tokens: 0 };
+    cur.calls  += m.tracked_calls;
+    cur.tokens += m.total_tokens;
+    byProvider.set(key, cur);
+  }
+  const providerRows = [...byProvider.entries()]
+    .filter(([, v]) => v.tokens > 0)
+    .sort((a, b) => b[1].tokens - a[1].tokens);
+
   return (
     <div style={{
-      display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap',
+      display: 'flex', flexDirection: 'column', gap: '6px',
       padding: '8px 14px', borderBottom: '1px solid var(--border)', flexShrink: 0,
     }}>
-      <span style={{
-        fontSize: '9px', fontWeight: 700, textTransform: 'uppercase',
-        letterSpacing: '.08em', color: 'var(--dim)',
-      }}>
-        Tokens (30d)
-      </span>
-      <span style={{ ...pill, color: 'var(--blue)', background: 'var(--blue-a)', border: '1px solid var(--blue-b)' }}>
-        {fmtTokens(t.total_tokens)} total · in {fmtTokens(t.input_tokens)} / out {fmtTokens(t.output_tokens)} · {t.tracked_calls} calls
-      </span>
-      {usage.per_strategy.filter(s => s.total_tokens > 0).map(s => (
-        <span key={s.strategy_id} style={{ ...pill, color: 'var(--muted)' }}>
-          {s.strategy_id}: {fmtTokens(s.total_tokens)}
+      <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+        <span style={{
+          fontSize: '9px', fontWeight: 700, textTransform: 'uppercase',
+          letterSpacing: '.08em', color: 'var(--dim)',
+        }}>
+          Tokens (30d)
         </span>
-      ))}
-      <span style={{ fontSize: '9px', color: 'var(--dim)' }}>
-        actuals since 2026-07-07 — earlier calls untracked
-      </span>
+        <span style={{ ...pill, color: 'var(--blue)', background: 'var(--blue-a)', border: '1px solid var(--blue-b)' }}>
+          {fmtTokens(t.total_tokens)} total · in {fmtTokens(t.input_tokens)} / out {fmtTokens(t.output_tokens)} · {t.tracked_calls} calls
+        </span>
+        {usage.per_strategy.filter(s => s.total_tokens > 0).map(s => (
+          <span key={s.strategy_id} style={{ ...pill, color: 'var(--muted)' }}>
+            {s.strategy_id}: {fmtTokens(s.total_tokens)}
+          </span>
+        ))}
+        <span style={{ fontSize: '9px', color: 'var(--dim)' }}>
+          actuals since 2026-07-07 — earlier calls untracked
+        </span>
+      </div>
+
+      {providerRows.length > 0 && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+          <span style={{
+            fontSize: '9px', fontWeight: 700, textTransform: 'uppercase',
+            letterSpacing: '.08em', color: 'var(--dim)',
+          }}>
+            By provider
+          </span>
+          {providerRows.map(([provider, v]) => (
+            <span key={provider} style={providerPill}>
+              {provider}: {fmtTokens(v.tokens)} · {v.calls} calls
+            </span>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
