@@ -1020,8 +1020,10 @@ export default function Strategies() {
   const [webhookInfo, setWebhookInfo] = useState<any>(null);
   const [aiEditForm,   setAiEditForm]   = useState<AiFormState>({ ...AI_FORM_DEFAULTS });
   const [editAiModels, setEditAiModels] = useState<AiModel[]>([]);
+  const [editFromTree, setEditFromTree] = useState(false);
 
-  const handleEdit = async (strategy: Strategy) => {
+  const handleEdit = async (strategy: Strategy, fromTree: boolean = false) => {
+    setEditFromTree(fromTree);
     setEditTarget(strategy);
     setEditError(null);
     setEditForm({
@@ -1096,7 +1098,7 @@ export default function Strategies() {
     const target = strategies.find(s => s.id === autoEditId);
     if (target) {
       window.history.replaceState({}, '', window.location.pathname);
-      handleEdit(target);
+      handleEdit(target, true);
     }
   }, [strategies, autoEditId]);
 
@@ -1172,7 +1174,8 @@ export default function Strategies() {
 
         setEditTarget(null);
         setWebhookInfo(null);
-        navigate('/tree');
+        if (editFromTree) navigate('/tree');
+        else fetchStrategies();
       } else {
         const res = await fetch(`/api/dashboard/strategies/${editTarget.id}`, {
           method:  'PUT',
@@ -1193,7 +1196,8 @@ export default function Strategies() {
         }
         setEditTarget(null);
         setWebhookInfo(null);
-        navigate('/tree');
+        if (editFromTree) navigate('/tree');
+        else fetchStrategies();
       }
     } catch (e: any) {
       setEditError(e.message);
@@ -2096,7 +2100,7 @@ export default function Strategies() {
 
             <div style={{ display:'flex', gap:'10px', marginTop:'4px' }}>
               <button
-                onClick={() => { setEditTarget(null); setWebhookInfo(null); }}
+                onClick={() => { setEditTarget(null); setWebhookInfo(null); if (editFromTree) navigate('/tree'); }}
                 style={{
                   flex:1, padding:'10px',
                   border:'1px solid var(--border)', borderRadius:'8px',
