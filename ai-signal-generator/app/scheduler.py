@@ -84,12 +84,11 @@ class AdaptiveScheduler:
                 break
             if interrupted:
                 logger.info(
-                    "Scheduler strategy=%s config reload — triggering immediate cycle",
+                    "Scheduler strategy=%s config reload — recomputing wake time, no immediate cycle",
                     self.strategy_id,
                 )
-                await self._trigger_cycle('config_reload')
-            else:
-                await self._trigger_cycle('scheduled')
+                continue
+            await self._trigger_cycle('scheduled')
 
     async def _get_interval(self) -> float:
         """Seconds to sleep until buffer_seconds past the next close of whichever

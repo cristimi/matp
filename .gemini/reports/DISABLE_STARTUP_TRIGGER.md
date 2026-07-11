@@ -63,3 +63,51 @@ ORDER BY triggered_at DESC;
 
 Zero rows since the restart — no cycle fired. Each strategy will next run at its logged
 candle-close-aligned time.
+
+## Follow-up: same change for config edits
+
+The user asked to extend this to config edits too — a strategy config save previously called
+`AdaptiveScheduler.interrupt()`, which woke the sleeping loop and fired an immediate
+`trigger_reason='config_reload'` cycle (the "editing a strategy's config still applies
+immediately" behavior noted above as untouched by the first change). Now changed to match:
+`interrupt()` still wakes the sleep early so the loop re-reads the strategy's config and
+recomputes the aligned wake time (so an interval change, e.g. `interval_no_position`, takes
+effect immediately for *scheduling* purposes) — but it no longer fires a cycle. The strategy
+just goes back to sleep until its next natural candle-close-aligned trigger.
+
+`ai-signal-generator/app/scheduler.py::AdaptiveScheduler._loop()` — the `interrupted` branch
+now `continue`s back to the top of the loop instead of calling `_trigger_cycle('config_reload')`.
+`'config_reload'` is no longer used as a `trigger_reason` value anywhere.
+
+### Verification
+
+Redeployed, then called the same endpoint the dashboard calls on a config save
+(`POST /internal/schedulers/bnb-ai-scalper-edbb/reconcile`) directly against a live,
+already-sleeping scheduler:
+
+```
+$ docker compose exec postgres psql -U matp -d matp -tAc \
+    "SELECT count(*) FROM ai_signal_log WHERE strategy_id='bnb-ai-scalper-edbb'"
+53
+
+$ docker compose exec nginx wget -qO- --post-data='' \
+    "http://ai-signal-generator:8005/internal/schedulers/bnb-ai-scalper-edbb/reconcile"
+{"status":"reloaded","strategy_id":"bnb-ai-scalper-edbb"}
+```
+
+Logs:
+```
+12:55:58 [INFO] app.scheduler: Scheduler strategy=bnb-ai-scalper-edbb sleeping 252s until candle-close+buffer wake (4.2min)
+12:56:08 [INFO] app.main: reconcile: reloaded (interrupted) strategy=bnb-ai-scalper-edbb
+12:56:08 [INFO] app.scheduler: Scheduler strategy=bnb-ai-scalper-edbb config reload — recomputing wake time, no immediate cycle
+12:56:08 [INFO] app.scheduler: Scheduler strategy=bnb-ai-scalper-edbb sleeping 241s until candle-close+buffer wake (4.0min)
+```
+
+```
+$ docker compose exec postgres psql -U matp -d matp -tAc \
+    "SELECT count(*) FROM ai_signal_log WHERE strategy_id='bnb-ai-scalper-edbb'"
+53
+```
+
+Count unchanged (53 before and after) — the reload recomputed the wake time and went back to
+sleep without firing a cycle.
