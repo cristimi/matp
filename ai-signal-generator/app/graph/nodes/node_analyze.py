@@ -99,13 +99,16 @@ async def node_analyze(state: AgentState) -> AgentState:
 
         if signal is None:
             # Tokens were spent even though parsing failed — keep the usage.
-            logger.error(
-                "node_analyze structured-output parse failed [%s/%s]: %s",
-                provider, model, resp.get('parsing_error'),
-            )
+            parse_error = resp.get('parsing_error')
+            raw_content = getattr(raw, 'content', None) if raw is not None else None
+            llm_error = f"[{provider}/{model}] structured-output parse failed: {parse_error}"
+            if raw_content:
+                llm_error += f" | raw response: {str(raw_content)[:500]}"
+            logger.error("node_analyze %s", llm_error)
             return {
                 **state,
                 'llm_signal':     None,
+                'llm_error':      llm_error,
                 'llm_usage':      llm_usage,
                 'context_tokens': tokens,
             }
@@ -124,10 +127,14 @@ async def node_analyze(state: AgentState) -> AgentState:
         }
 
     except Exception as exc:
-        logger.error("node_analyze error: %s", exc)
+        provider = state['strategy_config'].get('llm_provider', _DEFAULT_PROVIDER)
+        model    = state['strategy_config'].get('llm_model',    _DEFAULT_MODEL)
+        llm_error = f"[{provider}/{model}] {type(exc).__name__}: {exc}"
+        logger.error("node_analyze error: %s", llm_error)
         return {
             **state,
             'llm_signal':     None,
+            'llm_error':      llm_error,
             'llm_usage':      None,
             'context_tokens': state.get('context_tokens'),
         }

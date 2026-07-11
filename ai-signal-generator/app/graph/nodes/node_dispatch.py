@@ -29,7 +29,7 @@ async def node_dispatch(state: AgentState) -> AgentState:
     signal = state.get('llm_signal') or {}
     action     = signal.get('action')
     confidence = signal.get('confidence')
-    reasoning  = signal.get('reasoning')
+    reasoning  = signal.get('reasoning') or state.get('llm_error')
 
     triggered_at = state.get('triggered_at') or datetime.now(timezone.utc)
     if isinstance(triggered_at, str):

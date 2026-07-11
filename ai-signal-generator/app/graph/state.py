@@ -41,6 +41,7 @@ class AgentState(TypedDict):
 
     # LLM output (Node 2 output)
     llm_signal:         Optional[dict]     # LLMSignalOutput as dict
+    llm_error:          Optional[str]      # set when llm_signal is None: provider/parse error detail
     context_tokens:     Optional[int]      # chars/4 input estimate (pre-call)
     llm_usage:          Optional[dict]     # provider-reported actuals: input/output/total tokens
 
