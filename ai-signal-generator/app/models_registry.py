@@ -291,7 +291,10 @@ async def _probe_cerebras(model_id: str) -> bool:
         llm = ChatOpenAI(model=model_id, temperature=0.1,
                          api_key=settings.cerebras_api_key,
                          base_url="https://api.cerebras.ai/v1", max_retries=0)
-        structured = llm.with_structured_output(_ProbeSchema, include_raw=True)
+        # method="function_calling": matches node_analyze._STRUCTURED_OUTPUT_METHOD —
+        # the default "json_schema" method isn't reliably honored by this
+        # OpenAI-compatible gateway, so probing with the default would false-pass.
+        structured = llm.with_structured_output(_ProbeSchema, include_raw=True, method="function_calling")
         resp = await asyncio.wait_for(structured.ainvoke(_PROBE_PROMPT), timeout=_PROBE_TIMEOUT)
         return resp.get("parsed") is not None
     except Exception as exc:
@@ -312,7 +315,10 @@ async def _probe_zhipu(model_id: str) -> bool:
         llm = ChatOpenAI(model=model_id, temperature=0.1,
                          api_key=settings.zhipu_api_key,
                          base_url=settings.zhipu_base_url, max_retries=0)
-        structured = llm.with_structured_output(_ProbeSchema, include_raw=True)
+        # method="function_calling": matches node_analyze._STRUCTURED_OUTPUT_METHOD —
+        # the default "json_schema" method isn't reliably honored by this
+        # OpenAI-compatible gateway, so probing with the default would false-pass.
+        structured = llm.with_structured_output(_ProbeSchema, include_raw=True, method="function_calling")
         resp = await asyncio.wait_for(structured.ainvoke(_PROBE_PROMPT), timeout=_PROBE_TIMEOUT)
         return resp.get("parsed") is not None
     except Exception as exc:

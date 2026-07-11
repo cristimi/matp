@@ -34,6 +34,17 @@ class LLMSignalOutput(BaseModel):
 
 _LLM_TIMEOUT = 90  # seconds — hard ceiling per LLM call
 
+# langchain's default with_structured_output method is "json_schema" (OpenAI's
+# strict Structured Outputs API). Third-party OpenAI-compatible gateways don't all
+# implement that strict feature — when they silently ignore it, the model answers
+# conversationally and can wrap its JSON in a markdown fence, which fails Pydantic
+# validation on the full LLMSignalOutput schema (seen live with zhipu/glm-4.5).
+# "function_calling" (the older tool-calling API) is far more universally supported.
+_STRUCTURED_OUTPUT_METHOD = {
+    'zhipu':    'function_calling',
+    'cerebras': 'function_calling',
+}
+
 
 def _get_llm(provider: str, model: str):
     if provider == 'openai':
@@ -101,7 +112,10 @@ async def node_analyze(state: AgentState) -> AgentState:
         # include_raw: the plain structured wrapper returns only the parsed
         # Pydantic object and discards usage_metadata — raw is needed to
         # account actual token spend (input/output incl. thinking).
-        structured_llm = llm.with_structured_output(LLMSignalOutput, include_raw=True)
+        method_kwargs = {}
+        if provider in _STRUCTURED_OUTPUT_METHOD:
+            method_kwargs['method'] = _STRUCTURED_OUTPUT_METHOD[provider]
+        structured_llm = llm.with_structured_output(LLMSignalOutput, include_raw=True, **method_kwargs)
         resp = await asyncio.wait_for(
             structured_llm.ainvoke(prompt), timeout=_LLM_TIMEOUT
         )
