@@ -23,7 +23,7 @@ import logging
 
 import ccxt.async_support as ccxt_async
 
-from app.data.ohlcv import resolve_ccxt_symbol
+from app.data.ohlcv import load_markets_cached, resolve_ccxt_symbol
 
 logger = logging.getLogger(__name__)
 
@@ -65,8 +65,8 @@ async def _fetch_cvd_klines_binance(
     """
     exchange = None
     try:
-        exchange = ccxt_async.binance({'enableRateLimit': True})
-        await exchange.load_markets()
+        exchange = ccxt_async.binance({'enableRateLimit': True, 'timeout': 25000})
+        await load_markets_cached(exchange, 'binance')
         market_id = exchange.market(venue_symbol)['id']
 
         max_w   = max(windows_hours)
@@ -251,8 +251,8 @@ async def _fetch_cvd_trades(
         cls = getattr(ccxt_async, exchange_id, None)
         if cls is None:
             raise ValueError(f"Unknown exchange: {exchange_id}")
-        exchange = cls({'enableRateLimit': True})
-        await exchange.load_markets()
+        exchange = cls({'enableRateLimit': True, 'timeout': 25000})
+        await load_markets_cached(exchange, exchange_id)
         symbol = resolve_ccxt_symbol(exchange, symbol)
 
         trades = await exchange.fetch_trades(symbol, limit=MAX_TRADES)

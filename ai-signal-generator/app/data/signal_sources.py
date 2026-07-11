@@ -29,6 +29,7 @@ import time
 import ccxt.async_support as ccxt_async
 
 from app.config import settings
+from app.data.ohlcv import load_markets_cached
 
 logger = logging.getLogger(__name__)
 
@@ -86,8 +87,8 @@ async def _resolve_on_venue(venue: str, symbol: str) -> str | None:
         cls = getattr(ccxt_async, venue, None)
         if cls is None:
             raise ValueError(f"Unknown venue: {venue}")
-        exchange = cls({'enableRateLimit': True})
-        await exchange.load_markets()
+        exchange = cls({'enableRateLimit': True, 'timeout': 25000})
+        await load_markets_cached(exchange, venue)
         resolved = _resolve_perp_first(exchange, symbol)
     except Exception as exc:
         failed = True

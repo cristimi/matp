@@ -15,7 +15,7 @@ import logging
 
 import ccxt.async_support as ccxt_async
 
-from app.data.ohlcv import resolve_ccxt_symbol
+from app.data.ohlcv import load_markets_cached, resolve_ccxt_symbol
 
 logger = logging.getLogger(__name__)
 
@@ -43,8 +43,8 @@ async def fetch_orderbook_depth(
         cls = getattr(ccxt_async, exchange_id, None)
         if cls is None:
             raise ValueError(f"Unknown exchange: {exchange_id}")
-        exchange = cls({'enableRateLimit': True})
-        await exchange.load_markets()
+        exchange = cls({'enableRateLimit': True, 'timeout': 25000})
+        await load_markets_cached(exchange, exchange_id)
         symbol = resolve_ccxt_symbol(exchange, symbol)
 
         try:

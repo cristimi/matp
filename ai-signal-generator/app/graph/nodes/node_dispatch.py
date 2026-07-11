@@ -20,6 +20,16 @@ def _data_sources_used(sc: dict) -> list[str]:
     if sc.get('use_news'):         sources.append('news')
     if sc.get('use_btc_dominance'): sources.append('btc_dominance')
     if sc.get('use_macro'):        sources.append('macro')
+    if sc.get('use_economic_calendar'): sources.append('economic_calendar')
+    if sc.get('use_mtf_structure'): sources.append('mtf_structure')
+    if sc.get('use_orderbook'):    sources.append('orderbook')
+    if sc.get('use_volume_profile'): sources.append('volume_profile')
+    if sc.get('use_cvd'):          sources.append('cvd')
+    if sc.get('use_momentum_divergence'): sources.append('momentum_divergence')
+    if sc.get('use_volatility_regime'): sources.append('volatility_regime')
+    if sc.get('use_funding_history'): sources.append('funding_history')
+    if sc.get('use_liquidations'): sources.append('liquidations')
+    if sc.get('use_limit_orders'): sources.append('limit_orders')
     return sources
 
 

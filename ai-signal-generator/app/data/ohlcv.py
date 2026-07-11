@@ -4,11 +4,43 @@ OHLCV data fetcher using ccxt async.
 
 import asyncio
 import logging
+import time
 from datetime import datetime, timezone
 
 import ccxt.async_support as ccxt_async
 
 logger = logging.getLogger(__name__)
+
+# node_ingest fans out ~8 concurrent fetchers per cycle, each spinning up its
+# own ccxt instance and calling load_markets() — multiplied across strategies
+# that share a candle-close boundary (most run hourly), that's dozens of
+# simultaneous load_markets() hits on the same exchange, slow enough under
+# load to blow past ccxt's 10s timeout and surface to callers as missing data.
+# A market list changes rarely, so cache it process-wide and hand every new
+# exchange instance the cached copy via set_markets() instead of refetching.
+_MARKETS_TTL   = 3600  # seconds
+_markets_cache: dict[str, tuple[float, list]] = {}
+_markets_locks: dict[str, asyncio.Lock] = {}
+
+
+async def load_markets_cached(exchange, exchange_id: str) -> None:
+    """Populate exchange.markets from the shared cache, refetching at most
+    once per exchange per _MARKETS_TTL window (concurrent callers during a
+    refetch share the one in-flight request via the per-exchange lock)."""
+    cached = _markets_cache.get(exchange_id)
+    if cached and time.monotonic() - cached[0] < _MARKETS_TTL:
+        exchange.set_markets(cached[1])
+        return
+
+    lock = _markets_locks.setdefault(exchange_id, asyncio.Lock())
+    async with lock:
+        cached = _markets_cache.get(exchange_id)
+        if cached and time.monotonic() - cached[0] < _MARKETS_TTL:
+            exchange.set_markets(cached[1])
+            return
+        raw_markets = await exchange.fetch_markets()
+        _markets_cache[exchange_id] = (time.monotonic(), raw_markets)
+        exchange.set_markets(raw_markets)
 
 _TIMEFRAME_SECONDS = {
     '1m': 60, '3m': 180, '5m': 300, '15m': 900, '30m': 1800,
@@ -39,7 +71,7 @@ def _make_exchange(exchange_id: str):
     cls = getattr(ccxt_async, exchange_id, None)
     if cls is None:
         raise ValueError(f"Unknown ccxt exchange: {exchange_id}")
-    return cls({'enableRateLimit': True})
+    return cls({'enableRateLimit': True, 'timeout': 25000})
 
 
 def resolve_ccxt_symbol(exchange, symbol: str) -> str:
@@ -87,7 +119,7 @@ async def fetch_ohlcv(
     exchange = None
     try:
         exchange = _make_exchange(exchange_id)
-        await exchange.load_markets()
+        await load_markets_cached(exchange, exchange_id)
         symbol = resolve_ccxt_symbol(exchange, symbol)
 
         # Request enough candles for all indicators (EMA200 needs 200+).
