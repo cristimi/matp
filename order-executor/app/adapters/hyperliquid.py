@@ -606,6 +606,16 @@ class HyperliquidAdapter(ExchangeAdapter):
             raw_response=data,
         )
 
+    async def get_order_fill_fee(self, symbol: str, order_id: str) -> Optional[Decimal]:
+        """Fee for a fill detected asynchronously (e.g. by the reconciler), not at
+        placement time — place_order only fetches this synchronously for immediate fills."""
+        try:
+            fill_data = await self._get_fill_data(int(order_id))
+            return fill_data["fee"] if fill_data is not None else None
+        except Exception as e:
+            logger.warning(f"HyperliquidAdapter.get_order_fill_fee failed for oid {order_id}: {e}")
+            return None
+
     async def _get_fill_data(self, oid: int) -> Optional[dict]:
         """Query userFills once and return {'pnl': Decimal, 'fee': Decimal} summed across
         every partial fill matching the given order id.

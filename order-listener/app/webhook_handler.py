@@ -647,7 +647,14 @@ async def amend_order_for_strategy(
     """
     Amend a resting limit order's price and/or size for a strategy.
     Auth: same posture as adjust-stops (X-Webhook-Token header or body 'token' field).
-    Body: {order_id, new_price?, new_size?, token?}
+    Body: {order_id, new_price?, new_size?, tp_price?, sl_price?, token?}
+
+    tp_price/sl_price (if given) are persisted onto the order row alongside the new
+    price — the order is still resting, so there is nothing to modify on the exchange
+    yet; these values are what the post-fill path (reconciler._reconcile_pending_orders)
+    applies via modify-stops once the order actually fills. Without this, they'd stay
+    frozen at whatever was set at original placement, drifting further from the
+    (repeatedly re-amended) entry price with each amend.
     """
     from app.executor_client import call_executor_amend_order
 
@@ -669,6 +676,8 @@ async def amend_order_for_strategy(
     order_id  = body_dict.get("order_id")
     new_price = body_dict.get("new_price")
     new_size  = body_dict.get("new_size")
+    tp_price  = body_dict.get("tp_price")
+    sl_price  = body_dict.get("sl_price")
     if not order_id:
         raise HTTPException(status_code=400, detail="order_id is required")
     if new_price is None and new_size is None:
@@ -691,12 +700,16 @@ async def amend_order_for_strategy(
                 UPDATE orders
                 SET exchange_order_id = $1,
                     price = COALESCE($2, price),
-                    size  = COALESCE($3, size)
-                WHERE exchange_order_id = $4 AND strategy_id = $5 AND status = 'pending'
+                    size  = COALESCE($3, size),
+                    tp_price = COALESCE($4, tp_price),
+                    sl_price = COALESCE($5, sl_price)
+                WHERE exchange_order_id = $6 AND strategy_id = $7 AND status = 'pending'
                 """,
                 str(new_order_id),
                 Decimal(str(new_price)) if new_price is not None else None,
                 Decimal(str(new_size)) if new_size is not None else None,
+                Decimal(str(tp_price)) if tp_price is not None else None,
+                Decimal(str(sl_price)) if sl_price is not None else None,
                 str(cancelled_order_id),
                 strategy_id,
             )
@@ -715,7 +728,8 @@ async def amend_order_for_strategy(
 
     logger.info(
         f"amend-order strategy={strategy_id} order_id={order_id} "
-        f"new_price={new_price} new_size={new_size} success={result.get('success')}"
+        f"new_price={new_price} new_size={new_size} tp_price={tp_price} sl_price={sl_price} "
+        f"success={result.get('success')}"
     )
     return result
 
@@ -1074,6 +1088,7 @@ async def close_strategy_position(
     skip_exchange: bool = False,
     fill_price=None,
     realized_pnl=None,
+    close_fee=None,
 ) -> dict:
     """
     Canonical close/reduce routine. Atomic: exchange call before DB write.
@@ -1082,16 +1097,25 @@ async def close_strategy_position(
       resting TP/SL trigger is re-applied at the new, smaller size afterward (a
       resting trigger is not auto-resized by the exchange when the position shrinks)
     - skip_exchange=True               → exchange already executed; pass fill_price/realized_pnl
-    Returns a dict: {success, status, actual_fill_price, realized_pnl, ...}
+      (and close_fee, since there's no call_executor_close_position result to pull it from)
+    - realized_pnl/close_fee are the RAW exchange-reported figures (what lands on the
+      closing order's own pnl/exchange_fee columns, unchanged). strategy_positions.
+      pnl_realized and the strategy's booked pnl/capital_allocation are NET of both this
+      close's fee and the opening order's fee — the position-level number, unlike the
+      order-level one, should reflect the real round-trip economic outcome.
+    Returns a dict: {success, status, actual_fill_price, realized_pnl, ...} — realized_pnl
+    in the return value stays the RAW figure, matching orders.pnl semantics.
     """
     from app.executor_client import call_executor_close_position, get_trigger_orders
 
     async with pool.acquire() as conn:
         pos = await conn.fetchrow(
             """
-            SELECT id, size, opening_order_id, entry_price, opened_at
-            FROM strategy_positions
-            WHERE strategy_id = $1 AND symbol = $2 AND side = $3 AND status = 'open'
+            SELECT sp.id, sp.size, sp.opening_order_id, sp.entry_price, sp.opened_at,
+                   oo.exchange_fee AS open_fee
+            FROM strategy_positions sp
+            LEFT JOIN orders oo ON oo.id = sp.opening_order_id
+            WHERE sp.strategy_id = $1 AND sp.symbol = $2 AND sp.side = $3 AND sp.status = 'open'
             """,
             strategy['id'], symbol, side,
         )
@@ -1134,7 +1158,7 @@ async def close_strategy_position(
                 elif t.get("tpsl") == "sl":
                     pre_sl = float(px)
 
-    fee = None
+    fee = close_fee
     if not skip_exchange:
         close_result = await call_executor_close_position(
             account_id=acct_id,
@@ -1150,6 +1174,14 @@ async def close_strategy_position(
 
     fill_price_f   = float(fill_price)   if fill_price   is not None else None
     realized_pnl_f = float(realized_pnl) if realized_pnl is not None else None
+
+    # Net position-level pnl only for a FULL close — a partial reduce doesn't touch
+    # pnl_realized at all (see the UPDATE below), so there's nothing to net here.
+    open_fee_f = float(pos['open_fee']) if pos['open_fee'] is not None else 0.0
+    close_fee_f = float(fee) if fee is not None else 0.0
+    net_realized_pnl_f = (
+        realized_pnl_f - open_fee_f - close_fee_f if realized_pnl_f is not None else None
+    )
 
     async with pool.acquire() as conn:
         async with conn.transaction():
@@ -1169,7 +1201,7 @@ async def close_strategy_position(
                     RETURNING id
                     """,
                     fill_price_f,
-                    realized_pnl_f,
+                    net_realized_pnl_f,
                     closing_order_id,
                     reason,
                     pos['id'],
@@ -1212,7 +1244,8 @@ async def close_strategy_position(
     logger.info(
         f"{'Closed' if is_full else 'Partially closed'} position {pos['id']} "
         f"for strategy {strategy['id']} ({symbol} {side}), "
-        f"close_size={eff_close_size}, fill={fill_price_f}, pnl={realized_pnl_f}"
+        f"close_size={eff_close_size}, fill={fill_price_f}, "
+        f"pnl_gross={realized_pnl_f}, pnl_net={net_realized_pnl_f}"
     )
 
     if is_full:
@@ -1225,13 +1258,13 @@ async def close_strategy_position(
             "entry_price": str(pos['entry_price']),
             "opened_at": pos['opened_at'].isoformat(),
             "closing_price": fill_price_f,
-            "pnl_realized": realized_pnl_f,
+            "pnl_realized": net_realized_pnl_f,
             "close_reason": reason,
             "closed_at": datetime.now(timezone.utc).isoformat(),
         })
 
-    if is_full and realized_pnl_f is not None:
-        await _book_realized_pnl(pool, strategy['id'], realized_pnl_f)
+    if is_full and net_realized_pnl_f is not None:
+        await _book_realized_pnl(pool, strategy['id'], net_realized_pnl_f)
 
     ret: dict = {
         "success":           True,
@@ -1357,7 +1390,12 @@ async def _flag_sl_unconfirmed(pool, opening_order_id: uuid.UUID, detail: Option
 async def sync_position_pnl(pool) -> None:
     """Propagate realized PnL from closing orders to positions, and book the strategy's
     allocation on the pnl_realized NULL->value transition (the external-close booking point).
-    Idempotent: a row is booked once, when it first goes NULL -> value."""
+    Idempotent: a row is booked once, when it first goes NULL -> value.
+
+    sub.total is NET of fees: gross pnl from the closing order(s) minus their own
+    exchange_fee, minus the opening order's exchange_fee. orders.pnl itself stays the raw
+    exchange-reported figure — only this position-level rollup (and the strategy booking
+    it feeds) reflects the real round-trip economic outcome."""
     async with pool.acquire() as conn:
         # (1) First attribution (NULL -> value): set AND book.
         newly = await conn.fetch(
@@ -1366,10 +1404,14 @@ async def sync_position_pnl(pool) -> None:
             SET pnl_realized = sub.total,
                 updated_at   = NOW()
             FROM (
-                SELECT closes_position_id AS pid, COALESCE(SUM(pnl), 0) AS total
-                FROM orders
-                WHERE closes_position_id IS NOT NULL AND pnl IS NOT NULL
-                GROUP BY closes_position_id
+                SELECT o.closes_position_id AS pid,
+                       COALESCE(SUM(o.pnl), 0) - COALESCE(SUM(o.exchange_fee), 0)
+                           - COALESCE(oo.exchange_fee, 0) AS total
+                FROM orders o
+                JOIN strategy_positions sp2 ON sp2.id = o.closes_position_id
+                LEFT JOIN orders oo ON oo.id = sp2.opening_order_id
+                WHERE o.closes_position_id IS NOT NULL AND o.pnl IS NOT NULL
+                GROUP BY o.closes_position_id, oo.exchange_fee
             ) sub
             WHERE sp.id = sub.pid
               AND sp.pnl_realized IS NULL
@@ -1383,10 +1425,14 @@ async def sync_position_pnl(pool) -> None:
             SET pnl_realized = sub.total,
                 updated_at   = NOW()
             FROM (
-                SELECT closes_position_id AS pid, COALESCE(SUM(pnl), 0) AS total
-                FROM orders
-                WHERE closes_position_id IS NOT NULL AND pnl IS NOT NULL
-                GROUP BY closes_position_id
+                SELECT o.closes_position_id AS pid,
+                       COALESCE(SUM(o.pnl), 0) - COALESCE(SUM(o.exchange_fee), 0)
+                           - COALESCE(oo.exchange_fee, 0) AS total
+                FROM orders o
+                JOIN strategy_positions sp2 ON sp2.id = o.closes_position_id
+                LEFT JOIN orders oo ON oo.id = sp2.opening_order_id
+                WHERE o.closes_position_id IS NOT NULL AND o.pnl IS NOT NULL
+                GROUP BY o.closes_position_id, oo.exchange_fee
             ) sub
             WHERE sp.id = sub.pid
               AND sp.pnl_realized IS NOT NULL

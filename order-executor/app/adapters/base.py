@@ -3,6 +3,7 @@ Abstract Base Class for all exchange adapters.
 """
 
 from abc import ABC, abstractmethod
+from decimal import Decimal
 from typing import Optional
 from app.models import OrderRequest, OrderResult
 
@@ -154,3 +155,14 @@ class ExchangeAdapter(ABC):
         Returns {"success": True, ...} on success.
         """
         pass
+
+    async def get_order_fill_fee(self, symbol: str, order_id: str) -> Optional[Decimal]:
+        """
+        Return the total exchange fee charged for an already-filled order id, or None if
+        unknown/unavailable. For callers that detect a fill asynchronously (e.g. a resting
+        limit order picked up by reconciliation rather than filled at placement time), this
+        is the only way to learn what fee applies — place_order/submit_order only return fee
+        for fills confirmed synchronously at call time. Subclasses should override.
+        Must never raise.
+        """
+        return None

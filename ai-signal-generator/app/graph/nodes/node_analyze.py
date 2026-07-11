@@ -25,8 +25,8 @@ class LLMSignalOutput(BaseModel):
     size_pct:        float
     stop_loss_pct:   float = Field(description="Distance from entry as a percent, e.g. 1.5 = 1.5%. Use 0 for hold/close actions.")
     take_profit_pct: float = Field(description="Distance from entry as a percent, e.g. 3.0 = 3.0%. Use 0 for hold/close actions.")
-    new_sl_price:    Optional[float] = None
-    new_tp_price:    Optional[float] = None
+    new_sl_price:    Optional[float] = Field(default=None, description="New stop-loss price for adjust_stops, or the re-fitted stop-loss to carry onto the order for amend_order.")
+    new_tp_price:    Optional[float] = Field(default=None, description="New take-profit price for adjust_stops, or the re-fitted take-profit to carry onto the order for amend_order.")
     limit_price:     Optional[float] = Field(default=None, description="Boundary price for place_limit_long/short, or the new price for amend_order.")
     target_order_id: Optional[str] = Field(default=None, description="Resting order id (from OPEN ORDERS context) for cancel_order/amend_order.")
     reasoning:       str

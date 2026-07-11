@@ -509,6 +509,7 @@ async def _reconcile_pending_orders(pool) -> None:
     from datetime import datetime, timezone
     from app.executor_client import (
         get_account_positions, get_account_open_orders, call_executor_modify_stops,
+        get_order_fill_fee,
     )
     from app.webhook_handler import _apply_position_fill, _update_order_status, _get_account_label
     from app.models import WebhookPayload, OrderResult
@@ -608,12 +609,18 @@ async def _reconcile_pending_orders(pool) -> None:
                     (exch_entry * exch_size - old_entry * old_size) / fill_size
                     if fill_size > 0 else exch_entry
                 )
+                # Placement-time fills get their fee synchronously inside submit_order;
+                # a fill detected here (order rested, then filled between polls) never
+                # went through that path, so it must be looked up explicitly — otherwise
+                # exchange_fee stays NULL on every order that doesn't fill immediately.
+                fill_fee = await get_order_fill_fee(acct_id, symbol, str(exch_oid))
 
                 result = OrderResult(
                     success=True, status="filled",
                     exchange_order_id=str(exch_oid),
                     actual_fill_price=Decimal(str(marginal_price)),
                     actual_fill_size=fill_size,
+                    fee=fill_fee,
                 )
                 await _apply_position_fill(
                     pool, strategy_stub, synthetic_payload, symbol, row["id"], result,
@@ -800,6 +807,7 @@ async def _handle_full_external_close(
         skip_exchange=True,
         fill_price=closing_price,
         realized_pnl=pnl_realized if not pnl_unconfirmed else None,
+        close_fee=fee_float if not pnl_unconfirmed else None,
     )
 
     if result.get("success"):
@@ -828,9 +836,11 @@ async def _recover_manual_close_pnl(pool) -> None:
         rows = await conn.fetch(
             """
             SELECT sp.id, sp.strategy_id, sp.symbol, sp.side, sp.opened_at,
-                   sp.size, sp.closing_price, s.account_id
+                   sp.size, sp.closing_price, s.account_id,
+                   oo.exchange_fee AS open_fee
             FROM strategy_positions sp
             JOIN strategies s ON sp.strategy_id = s.id
+            LEFT JOIN orders oo ON oo.id = sp.opening_order_id
             WHERE sp.status = 'closed'
               AND sp.pnl_realized IS NULL
               AND sp.closed_at >= NOW() - INTERVAL '7 days'
@@ -856,6 +866,7 @@ async def _recover_manual_close_pnl(pool) -> None:
         opened_at        = row["opened_at"]
         pos_size         = row["size"]
         pos_closing_price = row["closing_price"]
+        open_fee         = float(row["open_fee"]) if row["open_fee"] is not None else 0.0
 
         try:
             history = await get_position_history(acct_id, symbol, opened_at)
@@ -896,6 +907,11 @@ async def _recover_manual_close_pnl(pool) -> None:
 
         try:
             pnl_float = float(pnl_realized)
+            fee_float = float(history["fee"]) if history.get("fee") is not None else None
+            # strategy_positions.pnl_realized (and the strategy booking it feeds) is NET
+            # of both legs' fees; the synthetic close order's own pnl column below stays
+            # the raw, gross figure (matches exchange-reported closedPnl semantics).
+            net_pnl_float = pnl_float - (fee_float or 0.0) - open_fee
             async with pool.acquire() as conn:
                 updated_row = await conn.fetchrow(
                     """
@@ -905,12 +921,13 @@ async def _recover_manual_close_pnl(pool) -> None:
                       AND pnl_realized IS NULL
                     RETURNING id, strategy_id, pnl_realized
                     """,
-                    pnl_float,
+                    net_pnl_float,
                     pos_id,
                 )
             if updated_row:
                 logger.info(
-                    f"reconciler: history fallback set pnl_realized={pnl_float}"
+                    f"reconciler: history fallback set pnl_realized={net_pnl_float}"
+                    f" (gross={pnl_float}, close_fee={fee_float}, open_fee={open_fee})"
                     f" for {pos_id} ({symbol} {side})"
                 )
                 from app.webhook_handler import _book_realized_pnl
@@ -919,7 +936,6 @@ async def _recover_manual_close_pnl(pool) -> None:
                 )
                 # Create a linked synthetic close order if none exists
                 close_side = "sell" if side == "long" else "buy"
-                fee_float = float(history["fee"]) if history.get("fee") is not None else None
                 try:
                     async with pool.acquire() as conn:
                         await conn.execute(

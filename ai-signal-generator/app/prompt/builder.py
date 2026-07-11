@@ -151,7 +151,11 @@ def _render_open_orders(state: dict) -> str:
             )
         lines.append(
             'Use the order_id above as target_order_id for cancel_order/amend_order. '
-            'Do not place a new limit on a side that already has a resting order.'
+            'Do not place a new limit on a side that already has a resting order. '
+            'For amend_order, also set new_sl_price/new_tp_price to the re-fitted stop-loss/'
+            'take-profit that go with the new limit_price — these replace the values from '
+            'the order\'s original placement, which otherwise stay stale (and can end up on '
+            'the wrong side of the new entry after repeated amends).'
         )
 
     return '\n'.join(lines)

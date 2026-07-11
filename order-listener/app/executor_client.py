@@ -8,6 +8,7 @@ returning 200 to TradingView and writing the final status to the DB.
 import logging
 import os
 import time
+from decimal import Decimal
 from typing import Optional
 
 import httpx
@@ -261,6 +262,19 @@ async def get_position_history(account_id: str, symbol: str, opened_at=None) -> 
             since_ms = int(opened_at)
         path += f"&since={since_ms}"
     return await call_executor_get(path)
+
+
+async def get_order_fill_fee(account_id: str, symbol: str, order_id: str) -> Optional[Decimal]:
+    """
+    Fetch the exchange fee for an already-filled order id from the executor.
+    Used by the reconciler for fills it detects asynchronously (a resting order that
+    fills between polls never gets a synchronous fee lookup at placement time).
+    Returns None on any error or if unknown. Never raises.
+    """
+    path = f"/accounts/{account_id}/orders/{order_id}/fee?symbol={symbol}"
+    result = await call_executor_get(path)
+    fee = result.get("fee")
+    return Decimal(str(fee)) if fee is not None else None
 
 
 async def call_executor_modify_stops(

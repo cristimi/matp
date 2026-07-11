@@ -185,6 +185,17 @@ class BlofinAdapter(ExchangeAdapter):
         logger.warning(f"Blofin: could not fetch order details for {order_id}")
         return {}
 
+    async def get_order_fill_fee(self, symbol: str, order_id: str) -> Optional[Decimal]:
+        """Fee for a fill detected asynchronously (e.g. by the reconciler), not at
+        placement time — submit_order only fetches this synchronously for immediate fills."""
+        try:
+            details = await self._get_order_details(symbol, order_id)
+            fee_raw = details.get("fee") if details else None
+            return Decimal(str(fee_raw)) if fee_raw is not None else None
+        except Exception as e:
+            logger.warning(f"Blofin.get_order_fill_fee failed for {order_id}: {e}")
+            return None
+
     async def _recover_close_fill(
         self, symbol: str, close_side: str, size: Optional[Decimal], since_ms: int
     ) -> Optional[dict]:

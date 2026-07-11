@@ -93,8 +93,14 @@ async def dispatch_amend_order(state: AgentState, listener_url: str) -> dict:
     secret      = sc.get('webhook_secret', '')
     order_id    = state.get('resolved_target_order_id')
     new_price   = state.get('resolved_limit_price')
+    tp_price    = state.get('resolved_tp_price')
+    sl_price    = state.get('resolved_sl_price')
 
-    body = {'token': secret, 'order_id': order_id, 'new_price': new_price}
+    body: dict = {'token': secret, 'order_id': order_id, 'new_price': new_price}
+    if tp_price is not None:
+        body['tp_price'] = tp_price
+    if sl_price is not None:
+        body['sl_price'] = sl_price
     url  = f"{listener_url.rstrip('/')}/strategies/{strategy_id}/orders/amend"
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:

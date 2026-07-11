@@ -253,6 +253,20 @@ async def amend_order_endpoint(account_id: str, request: AmendOrderRequest):
         return {"success": False, "error": str(e)}
 
 
+@app.get("/accounts/{account_id}/orders/{order_id}/fee")
+async def get_order_fill_fee_endpoint(account_id: str, order_id: str, symbol: str):
+    """Fee for an already-filled order id — used by the reconciler for fills it detects
+    asynchronously (resting orders picked up post-fill), which never get a synchronous
+    fee lookup the way an immediate fill at placement time does."""
+    try:
+        adapter = await registry.get(account_id)
+        fee = await adapter.get_order_fill_fee(symbol, order_id)
+        return {"fee": str(fee) if fee is not None else None}
+    except Exception as e:
+        logger.error(f"get_order_fill_fee failed for {account_id}/{order_id}: {e}")
+        return {"fee": None}
+
+
 @app.get("/accounts/{account_id}/balance")
 async def get_account_balance(account_id: str):
     """Return balance for a specific account."""

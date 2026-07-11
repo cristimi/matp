@@ -156,19 +156,28 @@ async def node_guard(state: AgentState) -> AgentState:
             return _reject(state, 'target_order_id_missing')
 
         resolved_limit_price = None
+        new_sl = new_tp = None
         if action == 'amend_order':
             limit_price = signal.get('limit_price')
             if limit_price is None or float(limit_price) <= 0:
                 return _reject(state, 'amend_missing_price')
             resolved_limit_price = float(limit_price)
+            # Carry the re-fitted SL/TP the LLM computed for the new limit price —
+            # dropping these here (as before) leaves the order's stored tp_price/
+            # sl_price frozen at whatever the ORIGINAL placement set, which drifts
+            # further from the entry with every amend and can end up on the wrong
+            # side of price by the time the order actually fills (see
+            # .gemini/reports/amend-order-stale-tp-sl-fix.md).
+            new_sl = signal.get('new_sl_price')
+            new_tp = signal.get('new_tp_price')
 
         return {
             **state,
             'gate_passed':              True,
             'gate_rejection_reason':    None,
             'resolved_size':            None,
-            'resolved_sl_price':        None,
-            'resolved_tp_price':        None,
+            'resolved_sl_price':        float(new_sl) if new_sl is not None else None,
+            'resolved_tp_price':        float(new_tp) if new_tp is not None else None,
             'resolved_limit_price':     resolved_limit_price,
             'resolved_target_order_id': str(target_order_id),
         }
