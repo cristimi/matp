@@ -103,6 +103,8 @@ const LLM_PROVIDERS: { id: string; label: string }[] = [
   { id: 'openai',    label: 'OpenAI' },
   { id: 'gemini',    label: 'Google (Gemini)' },
   { id: 'groq',      label: 'Groq' },
+  { id: 'cerebras',  label: 'Cerebras' },
+  { id: 'zhipu',     label: 'Zhipu (GLM)' },
 ];
 
 interface LlmKeyStatus { configured: boolean; updated_at: string | null; }

@@ -683,6 +683,8 @@ const PROVIDERS = [
   { value: 'openai',    label: 'OpenAI' },
   { value: 'anthropic', label: 'Anthropic' },
   { value: 'groq',      label: 'Groq' },
+  { value: 'cerebras',  label: 'Cerebras' },
+  { value: 'zhipu',     label: 'Zhipu (GLM)' },
 ];
 
 const DATA_SOURCES: { key: keyof AiFormState; label: string }[] = [
