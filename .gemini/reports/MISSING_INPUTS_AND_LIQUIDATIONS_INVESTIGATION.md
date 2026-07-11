@@ -168,3 +168,55 @@ near-instant (~0.0s) cache hits; `econ_calendar` showed one real 403 followed by
 `fetch_news_digest(lookback_hours=24)` and `fetch_news_digest(lookback_hours=1)` called back to
 back return their own correct label (24 and 1 respectively) with identical underlying `items`
 — confirming the digest-layer decision above didn't break per-caller correctness.
+
+## Follow-up: bybit/okx "ping-pong keepalive missing on time" — root cause found
+
+The user asked to specifically check this. ccxt.pro's websocket client (`client.py`) runs a
+`ping_loop()` that raises `RequestTimeout('...timed out due to a ping-pong keepalive missing
+on time')` whenever `lastPong` (last time a PONG frame was processed) is older than
+`keepAlive * maxPingPongMisses` — **5000ms × 2.0 = 10 seconds** by default. `lastPong` is only
+updated by the same asyncio event loop that runs everything else in this process; if that loop
+is blocked by a synchronous call for 10+ seconds, incoming PONG frames can't be processed in
+time even though the connection itself is fine, and ccxt.pro tears it down as if it had died.
+
+Traced this to `node_ingest.py` calling `compute_indicators()`, `detect_geometry()`,
+`compute_volume_profile()`, `detect_momentum_divergence()`, and `compute_volatility_regime()`
+— all plain synchronous (CPU-bound) `def` functions — directly inline, unlike every other
+fetcher in the codebase which is `async`. A plain (non-`async`) function call blocks the
+*entire* process event loop for its full duration: no other coroutine runs, including the
+collector's `ping_loop()`.
+
+Measured the actual cost, isolated per component, in a cold interpreter:
+```
+import pandas_ta as ta        7.432s
+ta.bbands(...)  (first call)  6.411s   <- numba/internal lazy-init, one-time per process
+ta.rsi/macd/ema/atr           0.001-0.083s each (fast even on first call)
+```
+`import pandas_ta` (7.4s) + first `ta.bbands()` (6.4s) = ~13.8s combined — already past the
+10s keepalive window on its own, before counting anything else contending for the loop at the
+same moment (7 strategies' concurrent HTTP fetches, other strategies' own indicator calls
+queued right behind it). A full `compute_indicators()` call on 1439 real candles measured
+46-62s wall time on a cold process in this environment (variance likely from container CPU
+contention); warm-process repeat calls dropped to ~70ms — confirming this is overwhelmingly a
+one-time-per-process cost, but one that reliably recurs on every container restart/redeploy,
+exactly when the collector's websocket streams are also freshly (re)connecting and most
+sensitive to a stall.
+
+**Fix**: added `app/data/compute_executor.py` — a small shared `ThreadPoolExecutor`, matching
+the pattern this codebase already uses for `yfinance` (macro.py) and RSS parsing (news.py).
+Routed all five `node_ingest.py` compute calls and `mtf.py`'s per-timeframe `_classify_tf`
+(same `ta.ema` dependency) through `loop.run_in_executor(compute_executor, fn, ...)` instead of
+calling them directly. This doesn't make the computation faster — it's still the same one-time
+pandas_ta cost — it just moves it off the event loop so nothing else (including the collector's
+keepalive) is blocked while it runs.
+
+**Verified live**: ran a loop-responsiveness monitor (a coroutine ticking every 100ms,
+recording the largest observed gap) concurrently with a cold `compute_indicators()` call
+routed through the new executor:
+```
+max event-loop gap during test: 0.807 s
+compute_indicators wall time (offloaded): 62.534 s
+```
+The computation still took over a minute, but the event loop's worst stall during that entire
+window was 0.8 seconds — roughly a 60-75x reduction from the prior full-duration freeze, and
+comfortably under the 10s keepalive threshold that was tripping the bybit/okx disconnects.

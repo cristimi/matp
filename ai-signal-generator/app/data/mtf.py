@@ -22,6 +22,7 @@ import numpy as np
 import pandas as pd
 import pandas_ta as ta
 
+from app.data.compute_executor import executor as compute_executor
 from app.data.geometry import _find_swings
 from app.data.ohlcv import fetch_ohlcv
 
@@ -113,12 +114,19 @@ async def fetch_mtf_structure(
     # Fetch every timeframe concurrently — these were previously awaited one at a
     # time, so a slow/failing exchange call for one TF serialized behind the
     # others (observed: ~20-40s per failing Hyperliquid OHLCV call × 3 TFs).
+    loop = asyncio.get_running_loop()
+
     async def _fetch_one(tf: str) -> dict | None:
         try:
             lookback = _TF_LOOKBACK_DAYS.get(tf, 90)
             ohlcv = await fetch_ohlcv(exchange_id, symbol, tf, lookback)
             closed = ohlcv.get('closed_candles') if ohlcv else None
-            entry = _classify_tf(tf, closed) if closed else None
+            # pandas_ta (ta.ema) is synchronous/CPU-bound — off the event loop,
+            # same reasoning as node_ingest.py's indicator calls.
+            entry = (
+                await loop.run_in_executor(compute_executor, _classify_tf, tf, closed)
+                if closed else None
+            )
             if not entry:
                 logger.warning("mtf_structure: no classification for %s %s %s",
                                exchange_id, symbol, tf)

@@ -4,6 +4,7 @@ import logging
 import httpx
 
 from app.config import settings
+from app.data.compute_executor import executor as compute_executor
 from app.data.cvd import fetch_cvd
 from app.data.divergence import detect_momentum_divergence
 from app.data.econ_calendar import fetch_economic_calendar
@@ -108,37 +109,54 @@ async def node_ingest(state: AgentState) -> AgentState:
         # shift or vanish between cycles as it fills in.
         closed_candles = ohlcv_data.get('closed_candles') if ohlcv_data else None
         if closed_candles:
+            loop = asyncio.get_running_loop()
+
+            # These are plain synchronous (CPU-bound) functions — run them off
+            # the event loop. Called inline, pandas_ta's import + first-call
+            # JIT cost alone (measured ~14s cold) freezes every other
+            # strategy's in-flight I/O and the stream collector's websocket
+            # keepalive for the duration (see app/data/compute_executor.py).
             if sc.get('use_technical'):
                 try:
-                    technical_indicators = compute_indicators(closed_candles, enabled_inds)
+                    technical_indicators = await loop.run_in_executor(
+                        compute_executor, compute_indicators, closed_candles, enabled_inds
+                    )
                 except Exception as exc:
                     errors.append(f"indicators:{exc}")
                     logger.warning("Indicator computation failed: %s", exc)
 
             if sc.get('use_geometry'):
                 try:
-                    geometry_data = detect_geometry(closed_candles) or None
+                    geometry_data = await loop.run_in_executor(
+                        compute_executor, detect_geometry, closed_candles
+                    ) or None
                 except Exception as exc:
                     errors.append(f"geometry:{exc}")
                     logger.warning("Geometry detection failed: %s", exc)
 
             if sc.get('use_volume_profile'):
                 try:
-                    volume_profile = compute_volume_profile(closed_candles)
+                    volume_profile = await loop.run_in_executor(
+                        compute_executor, compute_volume_profile, closed_candles
+                    )
                 except Exception as exc:
                     errors.append(f"volume_profile:{exc}")
                     logger.warning("Volume profile computation failed: %s", exc)
 
             if sc.get('use_momentum_divergence'):
                 try:
-                    momentum_divergence = detect_momentum_divergence(closed_candles)
+                    momentum_divergence = await loop.run_in_executor(
+                        compute_executor, detect_momentum_divergence, closed_candles
+                    )
                 except Exception as exc:
                     errors.append(f"momentum_divergence:{exc}")
                     logger.warning("Momentum divergence detection failed: %s", exc)
 
             if sc.get('use_volatility_regime'):
                 try:
-                    volatility_regime = compute_volatility_regime(closed_candles)
+                    volatility_regime = await loop.run_in_executor(
+                        compute_executor, compute_volatility_regime, closed_candles
+                    )
                 except Exception as exc:
                     errors.append(f"volatility_regime:{exc}")
                     logger.warning("Volatility regime computation failed: %s", exc)
