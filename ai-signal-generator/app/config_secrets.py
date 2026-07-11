@@ -23,6 +23,8 @@ _PROVIDER_SETTINGS_ATTR = {
     "llm_key_openai":    "openai_api_key",
     "llm_key_gemini":    "gemini_api_key",
     "llm_key_groq":      "groq_api_key",
+    "llm_key_cerebras":  "cerebras_api_key",
+    "llm_key_zhipu":     "zhipu_api_key",
 }
 
 

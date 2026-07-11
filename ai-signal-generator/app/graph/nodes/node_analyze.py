@@ -60,6 +60,24 @@ def _get_llm(provider: str, model: str):
             api_key=settings.groq_api_key or None,
             max_retries=2,
         )
+    elif provider == 'cerebras':
+        from langchain_openai import ChatOpenAI
+        return ChatOpenAI(
+            model=model,
+            temperature=0.1,
+            api_key=settings.cerebras_api_key or None,
+            base_url="https://api.cerebras.ai/v1",
+            max_retries=2,
+        )
+    elif provider == 'zhipu':
+        from langchain_openai import ChatOpenAI
+        return ChatOpenAI(
+            model=model,
+            temperature=0.1,
+            api_key=settings.zhipu_api_key or None,
+            base_url=settings.zhipu_base_url,
+            max_retries=2,
+        )
     else:  # google (default)
         from langchain_google_genai import ChatGoogleGenerativeAI
         return ChatGoogleGenerativeAI(

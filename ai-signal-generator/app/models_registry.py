@@ -127,11 +127,48 @@ async def _raw_groq() -> list[dict]:
         return []
 
 
+_ZHIPU_FALLBACK = [
+    {"id": "glm-4.5-flash", "display_name": "GLM-4.5-Flash", "provider": "zhipu"},
+    {"id": "glm-4-flash",   "display_name": "GLM-4-Flash",   "provider": "zhipu"},
+]
+
+
+async def _raw_cerebras() -> list[dict]:
+    if not settings.cerebras_api_key:
+        return []
+    try:
+        from openai import AsyncOpenAI
+        client = AsyncOpenAI(api_key=settings.cerebras_api_key,
+                             base_url="https://api.cerebras.ai/v1")
+        page = await client.models.list()
+        return [{"id": m.id, "display_name": m.id, "provider": "cerebras"} for m in page.data]
+    except Exception as exc:
+        logger.error("Failed to list Cerebras models: %s", exc)
+        return []
+
+
+async def _raw_zhipu() -> list[dict]:
+    if not settings.zhipu_api_key:
+        return []
+    try:
+        from openai import AsyncOpenAI
+        client = AsyncOpenAI(api_key=settings.zhipu_api_key,
+                             base_url=settings.zhipu_base_url)
+        page = await client.models.list()
+        models = [{"id": m.id, "display_name": m.id, "provider": "zhipu"} for m in page.data]
+        return models or _ZHIPU_FALLBACK
+    except Exception as exc:
+        logger.error("Failed to list Zhipu models: %s — using fallback", exc)
+        return _ZHIPU_FALLBACK
+
+
 _RAW_FNS: dict[str, object] = {
     "google":    _raw_google,
     "openai":    _raw_openai,
     "anthropic": _raw_anthropic,
     "groq":      _raw_groq,
+    "cerebras":  _raw_cerebras,
+    "zhipu":     _raw_zhipu,
 }
 
 
@@ -244,11 +281,59 @@ async def _probe_groq(model_id: str) -> bool:
         return True
 
 
+async def _probe_cerebras(model_id: str) -> bool:
+    """
+    Mirrors _probe_groq: probe the structured-output path (with_structured_output
+    + include_raw) since node_analyze always uses that, not plain chat.
+    """
+    try:
+        from langchain_openai import ChatOpenAI
+        llm = ChatOpenAI(model=model_id, temperature=0.1,
+                         api_key=settings.cerebras_api_key,
+                         base_url="https://api.cerebras.ai/v1", max_retries=0)
+        structured = llm.with_structured_output(_ProbeSchema, include_raw=True)
+        resp = await asyncio.wait_for(structured.ainvoke(_PROBE_PROMPT), timeout=_PROBE_TIMEOUT)
+        return resp.get("parsed") is not None
+    except Exception as exc:
+        exc_str = str(exc)
+        if any(s in exc_str for s in (
+            "404", "model_not_found", "does not exist", "decommissioned",
+            "tool calling", "tool_use_failed", "does not support tool", "function calling",
+        )):
+            logger.debug("Cerebras probe %s: definitively unavailable — %s", model_id, exc)
+            return False
+        logger.debug("Cerebras probe %s: transient/uncertain — %s", model_id, exc)
+        return True
+
+
+async def _probe_zhipu(model_id: str) -> bool:
+    try:
+        from langchain_openai import ChatOpenAI
+        llm = ChatOpenAI(model=model_id, temperature=0.1,
+                         api_key=settings.zhipu_api_key,
+                         base_url=settings.zhipu_base_url, max_retries=0)
+        structured = llm.with_structured_output(_ProbeSchema, include_raw=True)
+        resp = await asyncio.wait_for(structured.ainvoke(_PROBE_PROMPT), timeout=_PROBE_TIMEOUT)
+        return resp.get("parsed") is not None
+    except Exception as exc:
+        exc_str = str(exc)
+        if any(s in exc_str for s in (
+            "404", "model_not_found", "does not exist", "decommissioned",
+            "tool calling", "tool_use_failed", "does not support tool", "function calling",
+        )):
+            logger.debug("Zhipu probe %s: definitively unavailable — %s", model_id, exc)
+            return False
+        logger.debug("Zhipu probe %s: transient/uncertain — %s", model_id, exc)
+        return True
+
+
 _PROBE_FNS: dict[str, object] = {
     "google":    _probe_google,
     "openai":    _probe_openai,
     "anthropic": _probe_anthropic,
     "groq":      _probe_groq,
+    "cerebras":  _probe_cerebras,
+    "zhipu":     _probe_zhipu,
 }
 
 

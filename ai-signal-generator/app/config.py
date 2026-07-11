@@ -12,6 +12,9 @@ class Settings(BaseSettings):
     openai_api_key:         str = ""
     anthropic_api_key:      str = ""
     groq_api_key:           str = ""
+    cerebras_api_key:       str = ""
+    zhipu_api_key:          str = ""
+    zhipu_base_url:         str = "https://open.bigmodel.cn/api/paas/v4/"
     cryptopanic_api_key:    str = ""
     finnhub_api_key:        str = ""   # economic calendar; unset = field dormant
     signal_venues:          str = "binance,bybit,okx"  # market-flow aggregation venues
