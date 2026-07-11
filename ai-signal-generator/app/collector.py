@@ -129,6 +129,24 @@ async def _stream_task(ex, venue: str, venue_symbol: str, symbol: str, kind: str
     try:
         while True:
             try:
+                # Mark connected optimistically, before the (possibly long) watch_*
+                # await — for a sparse stream like liquidations on a rarely-liquidated
+                # symbol, waiting for the first actual event to flip this could take
+                # far longer than any read window, leaving a healthy, subscribed
+                # stream indistinguishable from "never connected" the whole time
+                # (read_liquidations_window requires state=='connected' to count a
+                # venue at all, so it would silently drop out of every window). An
+                # actual subscribe/connection failure below still demotes this to
+                # 'reconnecting' immediately.
+                if connected_since is None:
+                    connected_since = int(time.time() * 1000)
+                    await r.hset(status, mapping={
+                        'state': 'connected',
+                        'connected_since_ms': connected_since,
+                    })
+                    await r.expire(status, RETENTION_S)
+                    logger.info("collector: %s %s %s connected", venue, symbol, kind)
+
                 if kind == 'trades':
                     items = await ex.watch_trades(venue_symbol)
                     if items:
@@ -138,15 +156,10 @@ async def _stream_task(ex, venue: str, venue_symbol: str, symbol: str, kind: str
                     if items:
                         await _record_liquidations(r, venue, symbol, items)
 
-                now_ms = int(time.time() * 1000)
-                if connected_since is None:
-                    connected_since = now_ms
-                    logger.info("collector: %s %s %s connected", venue, symbol, kind)
                 backoff = RECONNECT_BASE_S
                 await r.hset(status, mapping={
                     'state': 'connected',
-                    'connected_since_ms': connected_since,
-                    'last_event_ms': now_ms,
+                    'last_event_ms': int(time.time() * 1000),
                 })
                 await r.expire(status, RETENTION_S)
 

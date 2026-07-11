@@ -5,6 +5,7 @@ All functions are async. Failures are non-fatal — return None on error.
 
 import asyncio
 import logging
+import time
 
 import httpx
 import ccxt.async_support as ccxt_async
@@ -14,23 +15,44 @@ from app.data.signal_sources import resolve_signal_venues, venue_has
 
 logger = logging.getLogger(__name__)
 
+# The index moves at most once/day, but node_ingest's concurrent per-strategy
+# fan-out was hitting this endpoint with a fresh TLS connection from every
+# strategy on every cycle — cheap to cache, and it was a repeat offender in
+# missing_inputs under the resulting connection contention. Failure TTL is
+# short so a transient blip doesn't sideline every concurrent caller for the
+# full window (same pattern as signal_sources.py's resolve cache).
+_FEAR_GREED_TTL_S         = 600.0
+_FEAR_GREED_FAILURE_TTL_S = 60.0
+_fear_greed_cache: tuple[float, dict | None] | None = None  # (expires_monotonic, value)
+_fear_greed_lock = asyncio.Lock()
+
 
 async def fetch_fear_greed() -> dict | None:
     """
-    GET https://api.alternative.me/fng/?limit=1
+    GET https://api.alternative.me/fng/?limit=1 (process-wide cached, see above)
     Returns: {'value': int, 'label': str}
     """
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.get("https://api.alternative.me/fng/?limit=1")
-            resp.raise_for_status()
-            entry = resp.json()['data'][0]
-            value = int(entry['value'])
-            label = entry['value_classification']
-            return {'value': value, 'label': label}
-    except Exception as exc:
-        logger.warning("fetch_fear_greed error: %s", exc)
-        return None
+    global _fear_greed_cache
+    now = time.monotonic()
+    if _fear_greed_cache and _fear_greed_cache[0] > now:
+        return _fear_greed_cache[1]
+
+    async with _fear_greed_lock:
+        now = time.monotonic()
+        if _fear_greed_cache and _fear_greed_cache[0] > now:
+            return _fear_greed_cache[1]
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.get("https://api.alternative.me/fng/?limit=1")
+                resp.raise_for_status()
+                entry = resp.json()['data'][0]
+            value = {'value': int(entry['value']), 'label': entry['value_classification']}
+            _fear_greed_cache = (now + _FEAR_GREED_TTL_S, value)
+            return value
+        except Exception as exc:
+            logger.warning("fetch_fear_greed error: %s", exc)
+            _fear_greed_cache = (now + _FEAR_GREED_FAILURE_TTL_S, None)
+            return None
 
 
 def _funding_interpretation(rate: float) -> str:
