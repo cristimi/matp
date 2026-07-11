@@ -12,6 +12,7 @@ interface AiSignalRow {
   cycle_interval:        string | null;
   prompt_template:       string | null;
   data_sources_used:     string[] | null;
+  missing_inputs:        string[] | null;
   context_tokens:        number | null;
   input_tokens:          number | null;
   output_tokens:         number | null;
@@ -284,6 +285,31 @@ function AiSignalCard({ row }: { row: AiSignalRow }) {
                   {src}
                 </span>
               ))}
+            </div>
+          )}
+
+          {/* Missing inputs — requested via config but came back empty this cycle */}
+          {row.missing_inputs && row.missing_inputs.length > 0 && (
+            <div>
+              <div style={{
+                fontSize: '10px', fontWeight: 600, textTransform: 'uppercase',
+                letterSpacing: '.1em', color: 'var(--yellow)', marginBottom: '6px',
+              }}>
+                Missing Inputs
+              </div>
+              <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }}>
+                {row.missing_inputs.map(src => (
+                  <span key={src} title="Enabled in config but the fetch came back empty this cycle" style={{
+                    fontFamily: 'JetBrains Mono, monospace', fontSize: '9px',
+                    fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.04em',
+                    background: 'var(--yellow-a)', color: 'var(--yellow)',
+                    border: '1px solid var(--yellow-b)', borderRadius: 'var(--pill-r)',
+                    padding: '2px 6px', cursor: 'help',
+                  }}>
+                    {src}
+                  </span>
+                ))}
+              </div>
             </div>
           )}
         </div>

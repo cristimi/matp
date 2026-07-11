@@ -142,7 +142,12 @@ CREATE TABLE public.ai_signal_log (
     outcome_pct numeric,
     outcome_filled_at timestamp with time zone,
     llm_provider character varying(20),
-    llm_model character varying(50)
+    llm_model character varying(50),
+    geometry_data jsonb,
+    input_tokens integer,
+    output_tokens integer,
+    total_tokens integer,
+    missing_inputs text[]
 );
 
 

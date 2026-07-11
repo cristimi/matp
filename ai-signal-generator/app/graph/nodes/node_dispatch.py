@@ -33,6 +33,50 @@ def _data_sources_used(sc: dict) -> list[str]:
     return sources
 
 
+# (use_* flag, label, state key, sub-key within that state value | None).
+# label matches the vocabulary of _data_sources_used() so the two lists pair
+# up in the UI: "requested" vs "requested but came back empty".
+# use_limit_orders/open_orders is deliberately excluded — node_ingest sets
+# open_orders=[] both on fetch failure and on a genuine zero-open-orders
+# result, so an empty list there isn't a reliable "missing" signal.
+_MISSING_INPUT_CHECKS = [
+    ('use_technical',           'technical',          'technical_indicators', None),
+    ('use_geometry',            'geometry',            'geometry_data',        None),
+    ('use_volume_profile',      'volume_profile',      'volume_profile',       None),
+    ('use_momentum_divergence', 'momentum_divergence', 'momentum_divergence',  None),
+    ('use_volatility_regime',   'volatility_regime',   'volatility_regime',    None),
+    ('use_mtf_structure',       'mtf_structure',        'mtf_structure',       None),
+    ('use_fear_greed',          'fear_greed',           'sentiment_data',      'fear_greed'),
+    ('use_funding_rate',        'funding_rate',         'sentiment_data',      'funding_rate'),
+    ('use_open_interest',       'open_interest',        'sentiment_data',      'open_interest'),
+    ('use_funding_history',     'funding_history',      'sentiment_data',      'funding_history'),
+    ('use_news',                'news',                 'news_data',           None),
+    ('use_economic_calendar',   'economic_calendar',    'calendar_data',       None),
+    ('use_btc_dominance',       'btc_dominance',        'market_context',      'btc_dominance'),
+    ('use_macro',               'macro',                'market_context',      'macro'),
+    ('use_orderbook',           'orderbook',            'orderbook_data',      None),
+    ('use_cvd',                 'cvd',                  'cvd_data',            None),
+    ('use_liquidations',        'liquidations',         'liquidation_data',    None),
+]
+
+
+def _missing_inputs(sc: dict, state: dict) -> list[str]:
+    """Enabled sources whose fetch came back empty on this cycle — the gap
+    between what the strategy asked for (use_* flags) and what actually made
+    it into the prompt (an LLM-reported "input X missing" is diagnosable from
+    here without reading prose)."""
+    missing = []
+    for flag, label, top_key, sub_key in _MISSING_INPUT_CHECKS:
+        if not sc.get(flag):
+            continue
+        value = state.get(top_key)
+        if sub_key is not None:
+            value = (value or {}).get(sub_key)
+        if not value:
+            missing.append(label)
+    return missing
+
+
 async def node_dispatch(state: AgentState) -> AgentState:
     pool   = get_pool()
     sc     = state['strategy_config']
@@ -63,9 +107,9 @@ async def node_dispatch(state: AgentState) -> AgentState:
                     proposed_action, confidence, reasoning,
                     gate_passed, gate_rejection_reason, dry_run,
                     llm_provider, llm_model, geometry_data,
-                    input_tokens, output_tokens, total_tokens
+                    input_tokens, output_tokens, total_tokens, missing_inputs
                 ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16::jsonb,
-                          $17,$18,$19)
+                          $17,$18,$19,$20)
                 RETURNING id
                 """,
                 state['strategy_id'],
@@ -87,6 +131,7 @@ async def node_dispatch(state: AgentState) -> AgentState:
                 (state.get('llm_usage') or {}).get('input_tokens'),
                 (state.get('llm_usage') or {}).get('output_tokens'),
                 (state.get('llm_usage') or {}).get('total_tokens'),
+                _missing_inputs(sc, state),
             )
     except Exception as exc:
         logger.error("Failed to write ai_signal_log: %s", exc)
