@@ -26,6 +26,7 @@ from datetime import datetime, timedelta, timezone
 import httpx
 
 from app.config import settings
+from app.data.cache import ttl_cached
 
 logger = logging.getLogger(__name__)
 
@@ -42,9 +43,15 @@ def _keep(country: str, impact: str) -> bool:
     return impact == 'medium' and country in _US
 
 
+@ttl_cached(success_ttl=900.0, failure_ttl=300.0)
 async def fetch_economic_calendar(horizon_hours: int = 48) -> dict | None:
     """
     Fetch high/medium-impact scheduled macro events within the horizon.
+    Process-wide cached (see app.data.cache) — identical across every
+    strategy regardless of symbol, and was being refetched independently by
+    each one every cycle. `time_until_hours` in the result is computed at
+    fetch time, so it can drift up to the cache TTL — acceptable for a
+    48h-horizon event list.
 
     Returns:
         {'events': [{'impact': 'high|medium', 'event_name': str,

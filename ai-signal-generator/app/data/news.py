@@ -11,6 +11,8 @@ from concurrent.futures import ThreadPoolExecutor
 import feedparser
 import httpx
 
+from app.data.cache import ttl_cached
+
 logger = logging.getLogger(__name__)
 
 _RSS_FEEDS = {
@@ -82,9 +84,18 @@ async def _fetch_coingecko_news() -> list[dict]:
         return []
 
 
+@ttl_cached(success_ttl=600.0, failure_ttl=60.0)
 async def fetch_news(symbol: str = 'BTC') -> list[dict] | None:
     """
     Fetch recent crypto news from CoinGecko and RSS feeds.
+    Process-wide cached (see app.data.cache) — `symbol` is accepted but
+    unused (general market news, not filtered per-symbol), so every caller
+    gets the same result; cached once instead of refetched by every
+    strategy every cycle. Cached at this layer rather than in
+    fetch_news_digest() because callers pass different lookback_hours labels
+    for the same underlying data (node_ingest: 24h, event_watcher's
+    high-impact check: 1h) — caching here keeps that label always fresh
+    while still sharing the actual fetch.
 
     Returns list of dicts with keys: headline, url, source, severity.
     Returns None if all sources fail.

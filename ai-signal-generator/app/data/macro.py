@@ -10,14 +10,19 @@ from concurrent.futures import ThreadPoolExecutor
 import httpx
 import yfinance as yf
 
+from app.data.cache import ttl_cached
+
 logger = logging.getLogger(__name__)
 
 _executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix='yf')
 
 
+@ttl_cached(success_ttl=600.0, failure_ttl=60.0)
 async def fetch_btc_dominance() -> dict | None:
     """
     Fetch BTC market dominance from CoinGecko /global endpoint.
+    Process-wide cached (see app.data.cache) — identical across every
+    strategy regardless of symbol.
     Returns: {'btc_dominance': float, 'btc_dom_trend': str}
     """
     try:
@@ -49,9 +54,13 @@ def _yfinance_fetch(ticker: str) -> dict | None:
         return None
 
 
+@ttl_cached(success_ttl=1800.0, failure_ttl=120.0)
 async def fetch_macro() -> dict | None:
     """
     Fetch DXY (US Dollar Index) and US10Y (10-year Treasury yield) via yfinance.
+    Process-wide cached (see app.data.cache) — identical across every
+    strategy regardless of symbol, and both series are daily-resolution
+    (period='1d') so a 30min cache costs no real freshness.
     Returns: {'dxy': float, 'dxy_trend': str, 'us10y': float, 'us10y_trend': str}
     Returns None if both fetches fail.
     """

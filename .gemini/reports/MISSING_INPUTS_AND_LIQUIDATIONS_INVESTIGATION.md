@@ -133,3 +133,38 @@ liquidations status semantics); this last piece is a genuine concurrency/schedul
 (e.g., a global per-exchange concurrency cap, or staggering strategies' candle-close triggers
 by a few seconds each so they don't all land in the same instant) and deserves a decision
 before I implement it rather than a unilateral architecture change.
+
+## Follow-up: "shouldn't strategies fetch shared data once?"
+
+The user asked why strategies don't just fetch once and share — correct instinct, and it
+turned out most of the fixed/flagged sources above are **not per-symbol at all**: `fear_greed`,
+`economic_calendar`, `btc_dominance`, `macro` (DXY/US10Y), and general crypto `news` are all
+identical regardless of which strategy or symbol asks for them, yet every strategy's
+`node_ingest` was independently refetching each one from scratch, every cycle. (Per-symbol data
+— OHLCV, orderbook, funding rate, open interest, CVD, liquidations — genuinely differs per
+strategy since each of the 7 AI strategies trades a different symbol, so those can't be shared
+the same way; the `load_markets()`/venue-resolution caching from the earlier BNB investigation
+already covers the exchange-level redundancy that *is* shareable there.)
+
+Added `ai-signal-generator/app/data/cache.py`: a small `@ttl_cached(success_ttl, failure_ttl)`
+decorator — process-wide single-slot cache, lock-guarded so concurrent callers on a miss share
+one in-flight fetch instead of each firing their own. `fetch_fear_greed()` (already
+hand-rolled this same pattern from the earlier fix) was refactored onto it, and it's now also
+applied to:
+- `fetch_btc_dominance()` / `fetch_macro()` (macro.py) — 600s / 1800s success TTL respectively
+  (DXY/US10Y are daily-resolution series, so 30 minutes costs no real freshness)
+- `fetch_economic_calendar()` (econ_calendar.py) — 900s success / 300s failure TTL (currently
+  always hits the Finnhub 403, so this also cuts how often a broken key gets hammered)
+- `fetch_news()` (news.py) — 600s. Deliberately cached at this inner layer rather than on
+  `fetch_news_digest()`, because two different callers pass different `lookback_hours` labels
+  for the same underlying data (node_ingest uses 24h, event_watcher's high-impact check uses
+  1h) — caching one layer down keeps each caller's label accurate while still sharing the
+  actual HTTP/RSS work.
+
+**Verified live**: fired 6 concurrent calls at each of the four newly-cached fetchers.
+`btc_dominance`/`macro`/`news` each showed one real-latency call (0.3–2.1s) followed by five
+near-instant (~0.0s) cache hits; `econ_calendar` showed one real 403 followed by five cached
+403s (instead of six independent hits against an already-broken key). Also confirmed
+`fetch_news_digest(lookback_hours=24)` and `fetch_news_digest(lookback_hours=1)` called back to
+back return their own correct label (24 and 1 respectively) with identical underlying `items`
+— confirming the digest-layer decision above didn't break per-caller correctness.
