@@ -7,7 +7,7 @@ const AI_URL = process.env.AI_SIGNAL_GENERATOR_URL || 'http://ai-signal-generato
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const INTERVAL_PATTERN = /^[0-9]+(m|h|d)$/;
-const VALID_PROVIDERS   = ['google', 'openai', 'anthropic', 'groq'];
+const VALID_PROVIDERS   = ['google', 'openai', 'anthropic', 'groq', 'cerebras', 'zhipu'];
 
 const ALLOWED_CONFIG_FIELDS = [
   'interval_no_position', 'interval_position_open', 'interval_at_risk',
