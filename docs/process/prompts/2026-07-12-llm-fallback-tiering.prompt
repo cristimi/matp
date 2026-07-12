@@ -1,0 +1,117 @@
+# Executor Prompt — LLM Failure Fallback Chain + Scout/Premium Model Tiering
+
+## Context (read these files first — session starts cold)
+
+- `CLAUDE.md` (repo conventions)
+- `ai-signal-generator/app/graph/nodes/node_analyze.py` — the single LLM call today
+- `ai-signal-generator/app/models_registry.py` — probe-verified model cache (in-memory, 24h TTL)
+- `ai-signal-generator/app/graph/graph.py` and `app/graph/gating.py` — pipeline routing
+- `ai-signal-generator/app/graph/state.py` — what data is available in AgentState
+- `dashboard-api/src/routes/ai.ts` — strategy config validation/persistence
+- `dashboard-ui` strategy config form (find the component that renders the provider/model dropdowns)
+- `db/init.sql` — `ai_strategy_config` and `ai_signal_log` schemas
+- Run `ls db/migrations` to confirm the current highest migration number at runtime. Do NOT trust any number written here.
+
+## Intent
+
+Two features, both aimed at reducing LLM cost and eliminating dead cycles, without letting a cheap model ever be the final authority on a trade action:
+
+**A. Failure fallback chain.** Today, if the configured model throws, times out, or fails structured-output parsing, the cycle dies with `llm_error` and no action. Instead: walk an ordered fallback chain until a model answers or the chain is exhausted.
+
+**B. Scout/premium tiering.** Optional per-strategy cheap "scout" model. Scout runs the normal cycle. If scout outputs `hold` (position open) or no-entry / `hold` (flat), that result is final — no premium call. If scout proposes ANY action, the premium model (the strategy's configured `llm_provider`/`llm_model`) runs with the same prompt and its output is what proceeds to guard/dispatch. The scout's proposed action is NEVER executed directly.
+
+Escalation policy is **"both combined"**: deterministic triggers can force a premium call directly (skipping the scout), AND scout-proposes-action escalates to premium.
+
+## Design decisions (already made — do not revisit)
+
+1. **Escalation:** deterministic triggers + scout-action-escalation combined.
+2. **Fallback chain:** auto-derived by default, with optional manual override per strategy.
+3. **If the premium call fails after scout proposed an action:** fall back down the chain (feature A applies to the premium call). If the entire chain is exhausted, the cycle fails as today (`llm_error`, no action). The scout output must not be promoted.
+
+## Specification
+
+### Migration (confirm next number with `ls db/migrations` first)
+
+`ai_strategy_config` — new columns, all backward-compatible defaults:
+- `llm_scout_provider varchar(20)` NULL — NULL means tiering disabled (current behavior unchanged)
+- `llm_scout_model varchar(50)` NULL
+- `premium_force_interval integer NOT NULL DEFAULT 12` — every Nth cycle per strategy forces a premium call regardless of scout (guards against scout false negatives). CHECK between 1 and 1000.
+- `llm_fallback_chain jsonb` NULL — manual override: array of `{"provider": "...", "model": "..."}`. NULL = auto-derive.
+
+`ai_signal_log` — new columns:
+- `llm_tier varchar(16)` NULL — which path produced the logged decision: `premium`, `scout`, `scout_escalated` (scout ran, premium decided), `fallback` (a fallback model served)
+- `scout_input_tokens integer`, `scout_output_tokens integer`, `scout_total_tokens integer` — scout spend when both tiers ran (premium spend stays in the existing token columns)
+- `fallback_attempts jsonb` NULL — list of `{provider, model, error}` for every failed attempt in the cycle, so failures are auditable from the dashboard DB
+
+Migration must be immutable, forward-only, self-verifying with `RAISE EXCEPTION` / `RAISE NOTICE` blocks per repo convention.
+
+### Feature A — fallback chain (ai-signal-generator)
+
+Refactor the LLM call in `node_analyze` into a helper that, given an ordered list of `(provider, model)` candidates, tries each in turn and returns the first successful parsed result plus metadata (which candidate served, list of failed attempts with error strings, usage). Requirements:
+
+- A "failure" = exception, timeout, OR `parsed is None` (structured-output parse failure). All three advance the chain.
+- Apply `_STRUCTURED_OUTPUT_METHOD` per attempted provider, not just the primary.
+- **Chain construction:** first element is always the configured model. If `llm_fallback_chain` is set, use it verbatim after the primary. If NULL, auto-derive: probe-verified models from the SAME provider (excluding the failed model), then probe-verified models from other providers that have API keys configured. Reuse `models_registry`'s cache; do not re-probe inline. If the cache is cold (empty on startup before the background probe completes), fall back to the provider's raw model list — an unverified attempt is better than a dead cycle.
+- **Latency bound:** cap total fallback attempts at 3 beyond the primary, and keep the existing 90s per-call timeout — but document the worst-case cycle latency in the report and, if you judge it necessary for candle-timing safety, reduce the per-attempt timeout for fallback attempts. State your reasoning in the report.
+- Log every fallback event at WARNING with the failed model and the model that served.
+- Persist `llm_tier='fallback'` and `fallback_attempts` to `ai_signal_log` when a fallback served.
+
+### Feature B — scout/premium tiering (ai-signal-generator)
+
+Routing logic runs before/inside `node_analyze` (your choice — a separate node is acceptable if it keeps the graph readable, but do not break the existing skip_geometry path):
+
+1. If `llm_scout_provider` is NULL → current behavior exactly (single premium call, with feature A fallback). Zero behavior change for existing strategies.
+2. **Deterministic premium triggers** (skip scout, go straight to premium): evaluate from data already in AgentState — do not add new data fetches. Implement the subset that is actually available in state; candidates in priority order:
+   - position open AND current price within a proximity threshold of SL or TP (suggest 25% of the SL/TP distance remaining; make it a module constant, not a config column)
+   - `volatility_regime` changed vs. the previous cycle for this strategy (query last `ai_signal_log` row for the strategy — cheap indexed lookup)
+   - geometry `fit_quality` changed vs. previous cycle (same lookup)
+   - Nth-cycle force: cycle count since last premium call ≥ `premium_force_interval` (derive from `ai_signal_log.llm_tier` history rather than adding new state)
+   Document in the report exactly which triggers were implementable and which were not, and why.
+3. Otherwise: scout model runs the full normal prompt with the full `LLMSignalOutput` schema. Scout result `hold` → final, persist with `llm_tier='scout'`, scout tokens in the scout columns AND mirrored into the main token columns is WRONG — main token columns stay for the deciding call only; for a scout-final cycle the main columns hold the scout call's usage and the scout columns stay NULL (one call happened). Only when BOTH tiers run do the scout columns get populated.
+4. Scout proposes any non-hold action → premium call runs (with feature A fallback). Premium output is what proceeds to guard/dispatch. Persist `llm_tier='scout_escalated'`, scout usage in scout columns, premium usage in main columns.
+5. Scout call failures do NOT walk the fallback chain (that would defeat the cost purpose) — a failed scout escalates directly to premium, logged at WARNING.
+
+### Dashboard (dashboard-api + dashboard-ui)
+
+- `ai.ts`: accept/validate the new config fields (`llm_scout_provider` against VALID_PROVIDERS, `premium_force_interval` range, `llm_fallback_chain` shape validation — array of objects with provider in VALID_PROVIDERS and non-empty model string).
+- Remember the Express route-ordering rule: parameterized routes like `/:id` must come AFTER specific routes.
+- Remember pg returns NUMERIC as strings — wrap with `Number()` before any arithmetic/`.toFixed()`.
+- UI: in the strategy config form, add a "Scout model (optional)" provider+model dropdown pair reusing the existing model-dropdown component (it already talks to the models registry endpoint), a numeric input for `premium_force_interval`, and a simple textarea (JSON) for the fallback-chain override with client-side validation and a "leave empty for automatic" hint. Keep the UI minimal; no new pages.
+- Signal log view: if the log table/detail view shows provider/model, surface `llm_tier` there as a small badge. If that view doesn't exist or is complex, skip and note in the report.
+
+## SCOPE GUARD
+
+You may touch: `ai-signal-generator`, `dashboard-api`, `dashboard-ui`, `db/migrations`, `docs/`.
+You may NOT touch: `order-executor`, `order-listener`, `order-generator`, `signal-engine`, `market-ingestion`, `notification-service`, `social-listener`, `strategy-tester`, `nginx`, `docker-compose.yml` (unless a new env var is genuinely required — if so, call it out explicitly in the report).
+
+## Phases and gates (each gate = a push to main)
+
+**Phase 1 — Migration + config plumbing.**
+Migration file (number confirmed via `ls db/migrations`), apply it, plumb the new columns through wherever strategy_config is loaded into AgentState.
+Gate: paste verbatim `ls db/migrations`, migration apply output including the RAISE NOTICE lines, and `\d ai_strategy_config` + `\d ai_signal_log` showing the new columns. **Push.**
+
+**Phase 2 — Feature A (fallback chain) + unit tests.**
+Helper + node_analyze integration. Unit tests in `ai-signal-generator/tests/` covering: primary success (no fallback), primary exception → fallback serves, parse-failure → fallback serves, chain exhausted → llm_error, manual override chain respected, auto-derivation ordering (same provider first), cold-cache raw-list fallback. Mock the LLM clients; no live API calls in tests.
+Gate: paste verbatim full `pytest` output. **Push.**
+
+**Phase 3 — Feature B (tiering) + unit tests.**
+Tests covering: scout NULL → single call; scout hold → final, no premium call, correct tier/token persistence; scout action → premium decides; scout failure → premium; each implemented deterministic trigger; Nth-cycle force.
+Gate: paste verbatim full `pytest` output. **Push.**
+
+**Phase 4 — Dashboard API + UI.**
+Gate: `docker compose build --no-cache dashboard-api dashboard-ui` then redeploy via `./scripts/redeploy.sh dashboard-api` and `./scripts/redeploy.sh dashboard-ui`; paste verbatim a `curl` PUT to the strategy config endpoint setting scout fields and the response, and a `curl` GET showing them persisted. Verify built code inside the container with grep against `/app/dist/`. **Push.**
+
+**Phase 5 — Runtime smoke + report.**
+Redeploy `ai-signal-generator` via `./scripts/redeploy.sh ai-signal-generator`. Configure one demo strategy with a scout model. Capture from live logs: at least one scout-final cycle (`llm_tier='scout'`) and, if a cycle escalates naturally, one `scout_escalated`; if no escalation occurs during the window, state so honestly — do not fabricate. Paste verbatim `SELECT id, created_at, llm_provider, llm_model, llm_tier, total_tokens, scout_total_tokens, fallback_attempts FROM ai_signal_log ORDER BY created_at DESC LIMIT 10;`
+Write the report to `docs/process/reports/` (dated). Save this prompt to `docs/process/prompts/`. The report must be the LAST thing committed and pushed. **Push.**
+
+## Verification rules (non-negotiable)
+
+- Every runtime claim requires pasted verbatim command output. "Verified via code review" is not accepted.
+- No push → no gate. Every gate ends with a push.
+- Deploy only via `./scripts/redeploy.sh <service>` — never `docker compose restart`.
+- Migration numbers confirmed at runtime with `ls db/migrations` — never from memory or from this prompt.
+
+## Report location
+
+`docs/process/reports/<YYYY-MM-DD>-llm-fallback-tiering.md` — include: what was built per phase, deterministic triggers implemented vs. skipped (with reasons), worst-case cycle latency analysis, any deviations from this spec, and open questions.
