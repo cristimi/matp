@@ -32,7 +32,7 @@ async def fetch_fear_greed() -> dict | None:
             entry = resp.json()['data'][0]
             return {'value': int(entry['value']), 'label': entry['value_classification']}
     except Exception as exc:
-        logger.warning("fetch_fear_greed error: %s", exc)
+        logger.warning("fetch_fear_greed error: %s: %r", type(exc).__name__, exc)
         return None
 
 
@@ -63,7 +63,7 @@ async def fetch_funding_rate(exchange_id: str, symbol: str) -> dict | None:
         return {'rate': rate, 'interpretation': _funding_interpretation(rate)}
 
     except Exception as exc:
-        logger.warning("fetch_funding_rate error [%s %s]: %s", exchange_id, symbol, exc)
+        logger.warning("fetch_funding_rate error [%s %s]: %s: %r", exchange_id, symbol, type(exc).__name__, exc)
         return None
 
     finally:
@@ -129,7 +129,7 @@ async def fetch_open_interest(exchange_id: str, symbol: str) -> dict | None:
         }
 
     except Exception as exc:
-        logger.warning("fetch_open_interest error [%s %s]: %s", exchange_id, symbol, exc)
+        logger.warning("fetch_open_interest error [%s %s]: %s: %r", exchange_id, symbol, type(exc).__name__, exc)
         return None
 
     finally:
@@ -181,7 +181,7 @@ async def _fetch_venue_oi(venue: str, venue_symbol: str) -> dict | None:
         return {'venue': venue, 'oi_usd': value, 'prev_oi_usd': prev}
 
     except Exception as exc:
-        logger.warning("_fetch_venue_oi error [%s %s]: %s", venue, venue_symbol, exc)
+        logger.warning("_fetch_venue_oi error [%s %s]: %s: %r", venue, venue_symbol, type(exc).__name__, exc)
         return None
 
     finally:
@@ -243,7 +243,7 @@ async def fetch_open_interest_aggregate(exchange_id: str, symbol: str) -> dict |
         }
 
     except Exception as exc:
-        logger.warning("fetch_open_interest_aggregate error [%s %s]: %s", exchange_id, symbol, exc)
+        logger.warning("fetch_open_interest_aggregate error [%s %s]: %s: %r", exchange_id, symbol, type(exc).__name__, exc)
         return None
 
 

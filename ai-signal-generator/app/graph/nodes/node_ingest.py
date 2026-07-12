@@ -180,18 +180,21 @@ async def node_ingest(state: AgentState) -> AgentState:
             fear_greed = await fear_greed_task
         except Exception as exc:
             errors.append(f"fear_greed:{exc}")
+            logger.warning("Fear/greed fetch failed: %s: %r", type(exc).__name__, exc)
 
     if sc.get('use_funding_rate'):
         try:
             funding_rate = await funding_rate_task
         except Exception as exc:
             errors.append(f"funding_rate:{exc}")
+            logger.warning("Funding rate fetch failed: %s: %r", type(exc).__name__, exc)
 
     if sc.get('use_open_interest'):
         try:
             open_interest = await open_interest_task
         except Exception as exc:
             errors.append(f"open_interest:{exc}")
+            logger.warning("Open interest fetch failed: %s: %r", type(exc).__name__, exc)
 
     # Sentiment-class data — grouped with the trio above, renders inside
     # the SENTIMENT section rather than as its own top-level section.
