@@ -27,6 +27,11 @@ interface AiSignalRow {
   dry_run:               boolean;
   llm_provider:          string | null;
   llm_model:             string | null;
+  llm_tier:              string | null;
+  scout_input_tokens:    number | null;
+  scout_output_tokens:   number | null;
+  scout_total_tokens:    number | null;
+  fallback_attempts:     { provider: string; model: string; error: string }[] | null;
   outcome_pnl:           number | null;
   outcome_pct:           number | null;
 }
@@ -88,6 +93,31 @@ function LlmChip({ provider, model }: { provider: string | null; model: string |
       maxWidth: '100%',
     }}>
       {text}
+    </span>
+  );
+}
+
+// Which path produced the decision: scout (cheap model final), scout_escalated
+// (scout ran, premium decided), fallback (a fallback model served), premium.
+const TIER_STYLE: Record<string, { color: string; border: string; bg: string }> = {
+  scout:           { color: '#22c55e',      border: 'rgba(34,197,94,.3)',  bg: 'rgba(34,197,94,.10)' },
+  scout_escalated: { color: 'var(--yellow)', border: 'var(--yellow-b)',     bg: 'var(--yellow-a)' },
+  fallback:        { color: '#f97316',      border: 'rgba(249,115,22,.3)', bg: 'rgba(249,115,22,.10)' },
+  premium:         { color: 'var(--muted)', border: 'var(--border)',       bg: 'var(--bg3)' },
+};
+
+function TierBadge({ tier }: { tier: string | null }) {
+  if (!tier) return null;
+  const s = TIER_STYLE[tier] ?? TIER_STYLE.premium;
+  return (
+    <span style={{
+      fontFamily: 'JetBrains Mono, monospace', fontSize: '10px', fontWeight: 700,
+      letterSpacing: '.04em', textTransform: 'uppercase',
+      borderRadius: 'var(--pill-r)', padding: '2px 7px',
+      border: '1px solid ' + s.border, background: s.bg, color: s.color,
+      whiteSpace: 'nowrap', flexShrink: 0,
+    }}>
+      {tier.replace(/_/g, ' ')}
     </span>
   );
 }
@@ -170,6 +200,8 @@ function AiSignalCard({ row }: { row: AiSignalRow }) {
 
           <LlmChip provider={row.llm_provider} model={row.llm_model} />
 
+          <TierBadge tier={row.llm_tier} />
+
           <span style={{
             marginLeft: 'auto', fontFamily: 'JetBrains Mono, monospace',
             fontSize: '10px', color: 'var(--dim)', flexShrink: 0,
@@ -239,6 +271,15 @@ function AiSignalCard({ row }: { row: AiSignalRow }) {
           }}>
             {[
               { label: 'LLM',           value: row.llm_model ?? row.llm_provider },
+              { label: 'Tier',          value: row.llm_tier?.replace(/_/g, ' ') ?? null },
+              { label: 'Scout tokens',
+                value: row.scout_total_tokens != null
+                  ? `${row.scout_total_tokens} (in ${row.scout_input_tokens ?? '?'} / out ${row.scout_output_tokens ?? '?'})`
+                  : null },
+              { label: 'Failed attempts',
+                value: row.fallback_attempts?.length
+                  ? row.fallback_attempts.map(a => `${a.provider}/${a.model}`).join(', ')
+                  : null },
               { label: 'Template',      value: row.prompt_template },
               { label: 'Context tokens',value: row.context_tokens != null ? String(row.context_tokens) : null },
               { label: 'Tokens (actual)',

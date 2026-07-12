@@ -19,6 +19,7 @@ const ALLOWED_CONFIG_FIELDS = [
   'trigger_funding_spike', 'trigger_key_level', 'trigger_liquidation',
   'volume_spike_threshold', 'funding_spike_threshold', 'dry_run',
   'llm_provider', 'llm_model',
+  'llm_scout_provider', 'llm_scout_model', 'premium_force_interval', 'llm_fallback_chain',
   'use_mtf_structure', 'use_orderbook', 'use_volume_profile', 'use_cvd',
   'use_momentum_divergence', 'use_volatility_regime', 'use_funding_history',
   'use_liquidations', 'use_limit_orders',
@@ -423,10 +424,41 @@ router.put('/strategies/:id/config', async (req: Request, res: Response) => {
   if (body.llm_provider !== undefined && !VALID_PROVIDERS.includes(body.llm_provider)) {
     return res.status(400).json({ error: `llm_provider must be one of: ${VALID_PROVIDERS.join(', ')}` });
   }
+  // null disables scout tiering; a set provider must be valid
+  if (body.llm_scout_provider !== undefined && body.llm_scout_provider !== null
+      && !VALID_PROVIDERS.includes(body.llm_scout_provider)) {
+    return res.status(400).json({ error: `llm_scout_provider must be null or one of: ${VALID_PROVIDERS.join(', ')}` });
+  }
+  if (body.premium_force_interval !== undefined) {
+    const v = Number(body.premium_force_interval);
+    if (!Number.isInteger(v) || v < 1 || v > 1000) {
+      return res.status(400).json({ error: 'premium_force_interval must be an integer between 1 and 1000' });
+    }
+  }
+  if (body.llm_fallback_chain !== undefined && body.llm_fallback_chain !== null) {
+    const chain = body.llm_fallback_chain;
+    const ok = Array.isArray(chain) && chain.every((e: any) =>
+      e && typeof e === 'object'
+      && VALID_PROVIDERS.includes(e.provider)
+      && typeof e.model === 'string' && e.model.trim().length > 0
+    );
+    if (!ok) {
+      return res.status(400).json({
+        error: `llm_fallback_chain must be null or an array of {provider, model} with provider in [${VALID_PROVIDERS.join(', ')}] and non-empty model`,
+      });
+    }
+  }
 
   const updates: Array<[string, any]> = [];
   for (const field of ALLOWED_CONFIG_FIELDS) {
-    if (body[field] !== undefined) updates.push([field, body[field]]);
+    if (body[field] !== undefined) {
+      // pg serializes JS arrays as Postgres array literals, which breaks jsonb —
+      // send the chain as a JSON string instead.
+      const value = field === 'llm_fallback_chain' && body[field] !== null
+        ? JSON.stringify(body[field])
+        : body[field];
+      updates.push([field, value]);
+    }
   }
 
   try {

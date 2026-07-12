@@ -822,6 +822,10 @@ interface AiFormState {
   cooldown_entry_minutes: string;
   llm_provider:           string;
   llm_model:              string;
+  llm_scout_provider:     string;   // '' = scout tiering disabled
+  llm_scout_model:        string;
+  premium_force_interval: string;
+  llm_fallback_chain:     string;   // JSON text; '' = automatic
   template_id:            string;
   custom_instructions:    string;
   dry_run:                boolean;
@@ -853,6 +857,10 @@ const AI_FORM_DEFAULTS: AiFormState = {
   cooldown_entry_minutes: '240',
   llm_provider:           'google',
   llm_model:              '',
+  llm_scout_provider:     '',
+  llm_scout_model:        '',
+  premium_force_interval: '12',
+  llm_fallback_chain:     '',
   template_id:            '',
   custom_instructions:    '',
   dry_run:                true,
@@ -1020,6 +1028,23 @@ export default function Strategies() {
   const [webhookInfo, setWebhookInfo] = useState<any>(null);
   const [aiEditForm,   setAiEditForm]   = useState<AiFormState>({ ...AI_FORM_DEFAULTS });
   const [editAiModels, setEditAiModels] = useState<AiModel[]>([]);
+  const [editScoutModels, setEditScoutModels] = useState<AiModel[]>([]);
+
+  const fetchEditScoutModels = useCallback(async (provider: string) => {
+    if (!provider) { setEditScoutModels([]); return; }
+    try {
+      const res    = await fetch(`/api/ai/models?provider=${provider}`);
+      const data   = await res.json();
+      const models: AiModel[] = Array.isArray(data.models)
+        ? data.models.map((m: any) => typeof m === 'string' ? { id: m, display_name: m } : m)
+        : [];
+      setEditScoutModels(models);
+      const firstVerified = models.find(m => m.verified !== false)?.id ?? models[0]?.id ?? '';
+      setAiEditForm(f => ({ ...f, llm_scout_model: f.llm_scout_model || firstVerified }));
+    } catch {
+      setEditScoutModels([]);
+    }
+  }, []);
   const [editFromTree, setEditFromTree] = useState(false);
 
   const handleEdit = async (strategy: Strategy, fromTree: boolean = false) => {
@@ -1072,11 +1097,18 @@ export default function Strategies() {
           cooldown_entry_minutes: String(config.cooldown_entry_minutes ?? '240'),
           llm_provider:           config.llm_provider           ?? 'google',
           llm_model:              config.llm_model              ?? '',
+          llm_scout_provider:     config.llm_scout_provider     ?? '',
+          llm_scout_model:        config.llm_scout_model        ?? '',
+          premium_force_interval: String(config.premium_force_interval ?? 12),
+          llm_fallback_chain:     config.llm_fallback_chain
+                                    ? JSON.stringify(config.llm_fallback_chain, null, 0)
+                                    : '',
           template_id:            String(config.template_id     ?? ''),
           custom_instructions:    config.custom_instructions    ?? '',
           dry_run:                config.dry_run                ?? true,
         });
         fetchEditAiModels(config.llm_provider ?? 'google');
+        fetchEditScoutModels(config.llm_scout_provider ?? '');
         if (aiTemplates.length === 0) fetchAITemplates();
       } catch {
         setAiEditForm({ ...AI_FORM_DEFAULTS });
@@ -1114,6 +1146,26 @@ export default function Strategies() {
     if (parseFloat(editForm.margin_per_trade ?? '0') <= 0) {
       setEditError('Margin per trade must be greater than 0');
       return;
+    }
+    // Fallback-chain override: must be valid JSON of [{provider, model}] or empty
+    let fallbackChain: { provider: string; model: string }[] | null = null;
+    if (editTarget.strategy_source === 'ai_engine' && aiEditForm.llm_fallback_chain.trim()) {
+      try {
+        const parsed = JSON.parse(aiEditForm.llm_fallback_chain);
+        const valid = Array.isArray(parsed) && parsed.every((e: any) =>
+          e && typeof e === 'object'
+          && PROVIDERS.some(p => p.value === e.provider)
+          && typeof e.model === 'string' && e.model.trim().length > 0
+        );
+        if (!valid) {
+          setEditError('Fallback chain must be a JSON array of {"provider": "...", "model": "..."} entries');
+          return;
+        }
+        fallbackChain = parsed;
+      } catch {
+        setEditError('Fallback chain is not valid JSON — leave empty for automatic');
+        return;
+      }
     }
     setEditLoading(true);
     setEditError(null);
@@ -1165,6 +1217,10 @@ export default function Strategies() {
             cooldown_entry_minutes: parseInt(aiEditForm.cooldown_entry_minutes),
             llm_provider:           aiEditForm.llm_provider,
             llm_model:              aiEditForm.llm_model,
+            llm_scout_provider:     aiEditForm.llm_scout_provider || null,
+            llm_scout_model:        aiEditForm.llm_scout_provider ? (aiEditForm.llm_scout_model || null) : null,
+            premium_force_interval: parseInt(aiEditForm.premium_force_interval) || 12,
+            llm_fallback_chain:     fallbackChain,
             template_id:            aiEditForm.template_id || null,
             custom_instructions:    aiEditForm.custom_instructions || null,
             dry_run:                aiEditForm.dry_run,
@@ -1926,6 +1982,58 @@ export default function Strategies() {
                         ))
                     }
                   </select>
+                </div>
+
+                <div style={{ marginBottom:'14px' }}>
+                  <label style={labelStyle}>Scout model (optional) — cheap first pass; hold is final, any action escalates to the model above</label>
+                  <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'10px' }}>
+                    <select value={aiEditForm.llm_scout_provider}
+                      onChange={e => {
+                        const p = e.target.value;
+                        setAiEditForm(f => ({ ...f, llm_scout_provider: p, llm_scout_model: '' }));
+                        fetchEditScoutModels(p);
+                      }}
+                      style={inputStyle}>
+                      <option value="">— Disabled —</option>
+                      {PROVIDERS.map(p => (
+                        <option key={p.value} value={p.value}>{p.label}</option>
+                      ))}
+                    </select>
+                    <select value={aiEditForm.llm_scout_model}
+                      disabled={!aiEditForm.llm_scout_provider}
+                      onChange={e => setAiEditForm(f => ({ ...f, llm_scout_model: e.target.value }))}
+                      style={inputStyle}>
+                      {!aiEditForm.llm_scout_provider
+                        ? <option value="">—</option>
+                        : editScoutModels.length === 0
+                          ? <option value="">Loading models...</option>
+                          : editScoutModels.map(m => (
+                              <option key={m.id} value={m.id}>
+                                {m.verified === false ? `⚠ ${m.display_name} (unverified)` : m.display_name}
+                              </option>
+                            ))
+                      }
+                    </select>
+                  </div>
+                </div>
+                {aiEditForm.llm_scout_provider && (
+                  <div style={{ marginBottom:'14px' }}>
+                    <label style={labelStyle}>Premium force interval (every Nth cycle bypasses the scout)</label>
+                    <input type="number" min="1" max="1000" step="1"
+                      value={aiEditForm.premium_force_interval}
+                      onChange={e => setAiEditForm(f => ({ ...f, premium_force_interval: e.target.value }))}
+                      style={inputStyle} />
+                  </div>
+                )}
+                <div style={{ marginBottom:'14px' }}>
+                  <label style={labelStyle}>Fallback chain override (JSON) — leave empty for automatic</label>
+                  <textarea
+                    value={aiEditForm.llm_fallback_chain}
+                    onChange={e => setAiEditForm(f => ({ ...f, llm_fallback_chain: e.target.value }))}
+                    placeholder='[{"provider": "google", "model": "gemini-2.5-flash"}]'
+                    rows={2}
+                    style={{ ...inputStyle, resize:'vertical', fontFamily:'JetBrains Mono, monospace', fontSize:'11px' }}
+                  />
                 </div>
 
                 {/* Section 4: Strategy Prompt */}
