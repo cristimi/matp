@@ -56,16 +56,24 @@ class AccountRegistry:
                 f"Supported: blofin, hyperliquid"
             )
 
-    def invalidate(self, account_id: str):
+    async def invalidate(self, account_id: str):
         """
-        Evict the cached adapter instance for an account.
-        Call this after credentials are rotated via the Dashboard.
+        Evict the cached adapter instance for an account, closing its pooled HTTP
+        client so the connection isn't leaked. Call this after credentials are
+        rotated via the Dashboard.
         """
         removed = self._instances.pop(account_id, None)
         if removed:
+            await removed.close()
             logger.info(f"Evicted cached adapter for account: {account_id}")
         else:
             logger.debug(f"invalidate() called for uncached account: {account_id}")
+
+    async def close_all(self):
+        """Close every cached adapter's pooled client. Call on app shutdown."""
+        for adapter in self._instances.values():
+            await adapter.close()
+        self._instances.clear()
 
 
 # Module-level singleton — imported by executor.py and main.py

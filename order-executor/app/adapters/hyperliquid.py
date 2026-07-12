@@ -72,6 +72,11 @@ class HyperliquidAdapter(ExchangeAdapter):
         self._max_lev_cache: Optional[dict] = None      # coin → exchange max leverage (int)
         self._margin_table_id_cache: Optional[dict] = None  # coin → marginTableId (int)
         self._margin_tables_cache: dict = {}                # marginTableId → marginTiers list
+        # One shared, connection-pooled client for the adapter's lifetime — a fresh
+        # AsyncClient per call was paying a full TCP+TLS handshake on every request,
+        # which compounded under concurrent load into multi-second latency (traced to
+        # the executor's own /health check occasionally timing out under load).
+        self._client = httpx.AsyncClient(timeout=10)
         logger.info(
             f"HyperliquidAdapter initialised "
             f"(wallet={self.wallet_address[:8]}..., "
@@ -79,6 +84,9 @@ class HyperliquidAdapter(ExchangeAdapter):
         )
 
     # ── Public interface ─────────────────────────────────────────────
+
+    async def close(self) -> None:
+        await self._client.aclose()
 
     async def submit_order(self, order: OrderRequest) -> OrderResult:
         try:
@@ -140,13 +148,12 @@ class HyperliquidAdapter(ExchangeAdapter):
 
     async def get_open_positions(self) -> list:
         try:
-            async with httpx.AsyncClient(timeout=10) as client:
-                resp = await client.post(
-                    f"{self.base_url}/info",
-                    json={"type": "clearinghouseState", "user": self.query_address},
-                )
-                resp.raise_for_status()
-                data = resp.json()
+            resp = await self._client.post(
+                f"{self.base_url}/info",
+                json={"type": "clearinghouseState", "user": self.query_address},
+            )
+            resp.raise_for_status()
+            data = resp.json()
 
             from app.models import Position
             from decimal import Decimal as D
@@ -211,13 +218,12 @@ class HyperliquidAdapter(ExchangeAdapter):
 
             tiers = self._margin_tables_cache.get(table_id)
             if tiers is None:
-                async with httpx.AsyncClient(timeout=10) as client:
-                    resp = await client.post(
-                        f"{self.base_url}/info",
-                        json={"type": "marginTable", "id": table_id},
-                    )
-                    resp.raise_for_status()
-                    data = resp.json()
+                resp = await self._client.post(
+                    f"{self.base_url}/info",
+                    json={"type": "marginTable", "id": table_id},
+                )
+                resp.raise_for_status()
+                data = resp.json()
                 tiers = data.get("marginTiers", [])
                 self._margin_tables_cache[table_id] = tiers
 
@@ -241,13 +247,12 @@ class HyperliquidAdapter(ExchangeAdapter):
         """Return the current mark price for `symbol` via metaAndAssetCtxs. Returns None on error."""
         try:
             asset_index = await self._get_asset_index(symbol)
-            async with httpx.AsyncClient(timeout=10) as client:
-                resp = await client.post(
-                    f"{self.base_url}/info",
-                    json={"type": "metaAndAssetCtxs"},
-                )
-                resp.raise_for_status()
-                meta_and_ctx = resp.json()
+            resp = await self._client.post(
+                f"{self.base_url}/info",
+                json={"type": "metaAndAssetCtxs"},
+            )
+            resp.raise_for_status()
+            meta_and_ctx = resp.json()
             asset_ctxs = meta_and_ctx[1]
             if asset_index >= len(asset_ctxs):
                 return None
@@ -292,13 +297,12 @@ class HyperliquidAdapter(ExchangeAdapter):
         coin = symbol.replace("-USDT", "").replace("-USD", "").upper()
 
         if self._asset_cache is None:
-            async with httpx.AsyncClient(timeout=10) as client:
-                resp = await client.post(
-                    f"{self.base_url}/info",
-                    json={"type": "meta"},
-                )
-                resp.raise_for_status()
-                meta = resp.json()
+            resp = await self._client.post(
+                f"{self.base_url}/info",
+                json={"type": "meta"},
+            )
+            resp.raise_for_status()
+            meta = resp.json()
             universe = meta.get("universe", [])
             self._asset_cache = {
                 asset["name"]: idx
@@ -366,14 +370,13 @@ class HyperliquidAdapter(ExchangeAdapter):
         # Limit orders use the specified price
         if order.order_type == "market":
             # Fetch mark price for slippage calculation
-            async with httpx.AsyncClient(timeout=10) as client:
-                resp = await client.post(
-                    f"{self.base_url}/info",
-                    json={"type": "metaAndAssetCtxs"},
-                )
-                resp.raise_for_status()
-                meta_and_ctx = resp.json()
-            
+            resp = await self._client.post(
+                f"{self.base_url}/info",
+                json={"type": "metaAndAssetCtxs"},
+            )
+            resp.raise_for_status()
+            meta_and_ctx = resp.json()
+
             # The response is [meta, [asset_ctx1, asset_ctx2, ...]]
             asset_ctxs = meta_and_ctx[1]
             if asset_index >= len(asset_ctxs):
@@ -509,13 +512,13 @@ class HyperliquidAdapter(ExchangeAdapter):
             "vaultAddress": None,
         }
 
-        async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.post(
-                f"{self.base_url}/exchange",
-                json=payload,
-            )
-            resp.raise_for_status()
-            data = resp.json()
+        resp = await self._client.post(
+            f"{self.base_url}/exchange",
+            json=payload,
+            timeout=15,
+        )
+        resp.raise_for_status()
+        data = resp.json()
 
         # ── Parse response
         logger.debug(f"Hyperliquid response: {data}")
@@ -622,12 +625,11 @@ class HyperliquidAdapter(ExchangeAdapter):
         Returns None only if no fills are found for the oid (unknown outcome).
         Returns zeros if the order generated no closed PnL (e.g. open) — fee is still summed."""
         try:
-            async with httpx.AsyncClient(timeout=10) as client:
-                resp = await client.post(
-                    f"{self.base_url}/info",
-                    json={"type": "userFills", "user": self.query_address},
-                )
-                resp.raise_for_status()
+            resp = await self._client.post(
+                f"{self.base_url}/info",
+                json={"type": "userFills", "user": self.query_address},
+            )
+            resp.raise_for_status()
             fills = resp.json()
             matching = [f for f in fills if f.get("oid") == oid]
             if not matching:
@@ -672,10 +674,9 @@ class HyperliquidAdapter(ExchangeAdapter):
             "signature": {"r": hex(signed.r), "s": hex(signed.s), "v": signed.v},
             "vaultAddress": None,
         }
-        async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.post(f"{self.base_url}/exchange", json=payload)
-            resp.raise_for_status()
-            data = resp.json()
+        resp = await self._client.post(f"{self.base_url}/exchange", json=payload, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
 
         status = data.get("status")
         if status != "ok":
@@ -714,21 +715,20 @@ class HyperliquidAdapter(ExchangeAdapter):
         case. We query both and sum so either mode works correctly.
         """
         try:
-            async with httpx.AsyncClient(timeout=10) as client:
-                perp_resp, spot_resp = await asyncio.gather(
-                    client.post(
-                        f"{self.base_url}/info",
-                        json={"type": "clearinghouseState", "user": self.query_address},
-                    ),
-                    client.post(
-                        f"{self.base_url}/info",
-                        json={"type": "spotClearinghouseState", "user": self.query_address},
-                    ),
-                )
-                perp_resp.raise_for_status()
-                spot_resp.raise_for_status()
-                perp_data = perp_resp.json()
-                spot_data = spot_resp.json()
+            perp_resp, spot_resp = await asyncio.gather(
+                self._client.post(
+                    f"{self.base_url}/info",
+                    json={"type": "clearinghouseState", "user": self.query_address},
+                ),
+                self._client.post(
+                    f"{self.base_url}/info",
+                    json={"type": "spotClearinghouseState", "user": self.query_address},
+                ),
+            )
+            perp_resp.raise_for_status()
+            spot_resp.raise_for_status()
+            perp_data = perp_resp.json()
+            spot_data = spot_resp.json()
 
             # Perp / clearinghouse balance
             margin_summary = perp_data.get("marginSummary", {})
@@ -766,12 +766,11 @@ class HyperliquidAdapter(ExchangeAdapter):
     async def get_closed_position_details(self, symbol: str, since_ms: int | None = None) -> dict | None:
         try:
             coin = symbol.replace("-USDT", "").replace("-USD", "").upper()
-            async with httpx.AsyncClient(timeout=10) as client:
-                resp = await client.post(
-                    f"{self.base_url}/info",
-                    json={"type": "userFills", "user": self.query_address},
-                )
-                resp.raise_for_status()
+            resp = await self._client.post(
+                f"{self.base_url}/info",
+                json={"type": "userFills", "user": self.query_address},
+            )
+            resp.raise_for_status()
             fills = resp.json()
 
             # Keep only closing fills for this coin (dir contains "Close" or "Liq"),
@@ -835,13 +834,12 @@ class HyperliquidAdapter(ExchangeAdapter):
             return {}
 
     async def _fetch_frontend_open_orders(self) -> list[dict]:
-        async with httpx.AsyncClient(timeout=10) as client:
-            resp = await client.post(
-                f"{self.base_url}/info",
-                json={"type": "frontendOpenOrders", "user": self.query_address},
-            )
-            resp.raise_for_status()
-            return resp.json()
+        resp = await self._client.post(
+            f"{self.base_url}/info",
+            json={"type": "frontendOpenOrders", "user": self.query_address},
+        )
+        resp.raise_for_status()
+        return resp.json()
 
     async def get_open_orders(self, symbol: str | None = None) -> list[dict]:
         """
@@ -943,10 +941,9 @@ class HyperliquidAdapter(ExchangeAdapter):
                 "vaultAddress": None,
             }
 
-            async with httpx.AsyncClient(timeout=15) as client:
-                resp = await client.post(f"{self.base_url}/exchange", json=payload)
-                resp.raise_for_status()
-                data = resp.json()
+            resp = await self._client.post(f"{self.base_url}/exchange", json=payload, timeout=15)
+            resp.raise_for_status()
+            data = resp.json()
 
             logger.debug(f"HL amend_order({symbol}, oid={order_id}): {data}")
 
@@ -1005,13 +1002,12 @@ class HyperliquidAdapter(ExchangeAdapter):
         """
         try:
             coin = symbol.replace("-USDT", "").replace("-USD", "").upper()
-            async with httpx.AsyncClient(timeout=10) as client:
-                resp = await client.post(
-                    f"{self.base_url}/info",
-                    json={"type": "frontendOpenOrders", "user": self.query_address},
-                )
-                resp.raise_for_status()
-                orders = resp.json()
+            resp = await self._client.post(
+                f"{self.base_url}/info",
+                json={"type": "frontendOpenOrders", "user": self.query_address},
+            )
+            resp.raise_for_status()
+            orders = resp.json()
 
             result = []
             for o in orders:
@@ -1079,10 +1075,9 @@ class HyperliquidAdapter(ExchangeAdapter):
                 "vaultAddress": None,
             }
 
-            async with httpx.AsyncClient(timeout=10) as client:
-                resp = await client.post(f"{self.base_url}/exchange", json=payload)
-                resp.raise_for_status()
-                data = resp.json()
+            resp = await self._client.post(f"{self.base_url}/exchange", json=payload)
+            resp.raise_for_status()
+            data = resp.json()
 
             logger.debug(f"HL cancel_order({symbol}, oid={oid}): {data}")
 
@@ -1171,10 +1166,9 @@ class HyperliquidAdapter(ExchangeAdapter):
                 "vaultAddress": None,
             }
 
-            async with httpx.AsyncClient(timeout=15) as client:
-                resp = await client.post(f"{self.base_url}/exchange", json=payload)
-                resp.raise_for_status()
-                data = resp.json()
+            resp = await self._client.post(f"{self.base_url}/exchange", json=payload, timeout=15)
+            resp.raise_for_status()
+            data = resp.json()
 
             logger.debug(f"HL place_trigger_orders({symbol}): {data}")
 

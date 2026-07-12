@@ -27,6 +27,7 @@ async def lifespan(app: FastAPI):
     await init_db()
     logger.info("Order Executor ready — AccountRegistry active")
     yield
+    await registry.close_all()
     logger.info("Order Executor shutting down")
 
 
@@ -53,7 +54,7 @@ async def execute_order(request: OrderRequest):
 
 @app.post("/accounts/{account_id}/invalidate")
 async def invalidate_account(account_id: str):
-    registry.invalidate(account_id)
+    await registry.invalidate(account_id)
     return {"invalidated": account_id}
 
 

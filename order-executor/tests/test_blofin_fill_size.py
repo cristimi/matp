@@ -93,14 +93,12 @@ async def test_submit_order_returns_actual_fill_size_in_base_coins():
     async def fake_get(url, headers=None, **kw):
         return _mock_details_response(filled_size="1.5", avg_price="68.50")
 
+    mock_client = MagicMock(post=AsyncMock(side_effect=fake_post),
+                             get=AsyncMock(side_effect=fake_get))
+
     with patch.object(adapter, "_get_instrument", AsyncMock(return_value=HYPE_SPEC)), \
          patch.object(adapter, "_set_leverage", AsyncMock()), \
-         patch("app.adapters.blofin.httpx.AsyncClient") as mock_client:
-        mock_client.return_value.__aenter__ = AsyncMock(
-            return_value=MagicMock(post=AsyncMock(side_effect=fake_post),
-                                   get=AsyncMock(side_effect=fake_get))
-        )
-        mock_client.return_value.__aexit__ = AsyncMock(return_value=False)
+         patch.object(adapter, "_client", mock_client):
         result = await adapter.submit_order(order)
 
     assert result.success, f"Expected success: {result}"
@@ -131,14 +129,12 @@ async def test_submit_order_falls_back_to_submitted_size_when_no_details():
         }
         return mock_resp
 
+    mock_client = MagicMock(post=AsyncMock(side_effect=fake_post),
+                             get=AsyncMock(side_effect=fake_get))
+
     with patch.object(adapter, "_get_instrument", AsyncMock(return_value=HYPE_SPEC)), \
          patch.object(adapter, "_set_leverage", AsyncMock()), \
-         patch("app.adapters.blofin.httpx.AsyncClient") as mock_client:
-        mock_client.return_value.__aenter__ = AsyncMock(
-            return_value=MagicMock(post=AsyncMock(side_effect=fake_post),
-                                   get=AsyncMock(side_effect=fake_get))
-        )
-        mock_client.return_value.__aexit__ = AsyncMock(return_value=False)
+         patch.object(adapter, "_client", mock_client):
         result = await adapter.submit_order(order)
 
     assert result.success
@@ -161,14 +157,12 @@ async def test_submit_order_fill_size_none_when_details_fetch_fails():
     async def fake_get(url, headers=None, **kw):
         raise RuntimeError("network error")
 
+    mock_client = MagicMock(post=AsyncMock(side_effect=fake_post),
+                             get=AsyncMock(side_effect=fake_get))
+
     with patch.object(adapter, "_get_instrument", AsyncMock(return_value=HYPE_SPEC)), \
          patch.object(adapter, "_set_leverage", AsyncMock()), \
-         patch("app.adapters.blofin.httpx.AsyncClient") as mock_client:
-        mock_client.return_value.__aenter__ = AsyncMock(
-            return_value=MagicMock(post=AsyncMock(side_effect=fake_post),
-                                   get=AsyncMock(side_effect=fake_get))
-        )
-        mock_client.return_value.__aexit__ = AsyncMock(return_value=False)
+         patch.object(adapter, "_client", mock_client):
         result = await adapter.submit_order(order)
 
     assert result.success, "Order must still be filled even if details fetch fails"
@@ -203,13 +197,11 @@ async def test_limit_order_returns_actual_fill_size():
     async def fake_post(url, content=None, headers=None, **kw):
         return _mock_place_response()
 
+    mock_client = MagicMock(post=AsyncMock(side_effect=fake_post))
+
     with patch.object(adapter, "_get_instrument", AsyncMock(return_value=HYPE_SPEC)), \
          patch.object(adapter, "_set_leverage", AsyncMock()), \
-         patch("app.adapters.blofin.httpx.AsyncClient") as mock_client:
-        mock_client.return_value.__aenter__ = AsyncMock(
-            return_value=MagicMock(post=AsyncMock(side_effect=fake_post))
-        )
-        mock_client.return_value.__aexit__ = AsyncMock(return_value=False)
+         patch.object(adapter, "_client", mock_client):
         result = await adapter.submit_order(order)
 
     assert result.success, f"Expected success: {result}"
@@ -241,14 +233,12 @@ async def test_market_order_still_uses_details_fetch():
         }
         return mock_resp
 
+    mock_client = MagicMock(post=AsyncMock(side_effect=fake_post),
+                             get=AsyncMock(side_effect=fake_get))
+
     with patch.object(adapter, "_get_instrument", AsyncMock(return_value=HYPE_SPEC)), \
          patch.object(adapter, "_set_leverage", AsyncMock()), \
-         patch("app.adapters.blofin.httpx.AsyncClient") as mock_client:
-        mock_client.return_value.__aenter__ = AsyncMock(
-            return_value=MagicMock(post=AsyncMock(side_effect=fake_post),
-                                   get=AsyncMock(side_effect=fake_get))
-        )
-        mock_client.return_value.__aexit__ = AsyncMock(return_value=False)
+         patch.object(adapter, "_client", mock_client):
         result = await adapter.submit_order(order)
 
     assert result.success

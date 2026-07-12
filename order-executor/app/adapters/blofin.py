@@ -44,14 +44,21 @@ class BlofinAdapter(ExchangeAdapter):
             if mode == "demo"
             else "https://openapi.blofin.com"
         )
+        # One shared, connection-pooled client for the adapter's lifetime — a fresh
+        # AsyncClient per call was paying a full TCP+TLS handshake on every request,
+        # which compounded under concurrent load into multi-second latency (traced to
+        # the executor's own /health check occasionally timing out under load).
+        self._client = httpx.AsyncClient(base_url=self.base_url, timeout=10)
+
+    async def close(self) -> None:
+        await self._client.aclose()
 
     async def _refresh_instruments(self) -> None:
         """Fetch all SWAP instrument specs and populate the class-level cache."""
         path = "/api/v1/market/instruments?instType=SWAP"
         headers = self._headers("GET", path, "")
         try:
-            async with httpx.AsyncClient(base_url=self.base_url, timeout=10) as client:
-                resp = await client.get(path, headers=headers)
+            resp = await self._client.get(path, headers=headers)
             items = resp.json().get("data", [])
             if items:
                 BlofinAdapter._instruments[self.base_url] = {
@@ -138,8 +145,7 @@ class BlofinAdapter(ExchangeAdapter):
         try:
             path = f"/api/v1/trade/orders-pending?instId={symbol}"
             headers = self._headers("GET", path, "")
-            async with httpx.AsyncClient(base_url=self.base_url, timeout=10) as client:
-                resp = await client.get(path, headers=headers)
+            resp = await self._client.get(path, headers=headers)
             items = resp.json().get("data") or []
             for item in items:
                 if str(item.get("orderId")) == str(order_id):
@@ -161,8 +167,7 @@ class BlofinAdapter(ExchangeAdapter):
             try:
                 full_path = path_tpl.format(inst=symbol, oid=order_id)
                 headers = self._headers("GET", full_path, "")
-                async with httpx.AsyncClient(base_url=self.base_url, timeout=10) as client:
-                    response = await client.get(full_path, headers=headers)
+                response = await self._client.get(full_path, headers=headers)
                 if response.status_code != 200:
                     continue
                 data = response.json()
@@ -229,8 +234,7 @@ class BlofinAdapter(ExchangeAdapter):
             try:
                 full_path = path_tpl.format(inst=symbol)
                 headers = self._headers("GET", full_path, "")
-                async with httpx.AsyncClient(base_url=self.base_url, timeout=10) as client:
-                    response = await client.get(full_path, headers=headers)
+                response = await self._client.get(full_path, headers=headers)
                 if response.status_code != 200:
                     continue
                 data = response.json()
@@ -346,8 +350,7 @@ class BlofinAdapter(ExchangeAdapter):
         if key not in cache or age > _INSTRUMENTS_TTL:
             path = f"/api/v1/market/position-tiers?instId={inst_id}&marginMode={margin_mode}"
             try:
-                async with httpx.AsyncClient(base_url=self.base_url, timeout=10) as client:
-                    resp = await client.get(path)
+                resp = await self._client.get(path)
                 data = resp.json().get("data", [])
                 if data:
                     cache[key] = data
@@ -388,9 +391,8 @@ class BlofinAdapter(ExchangeAdapter):
         """Return the current mark price for `symbol`. Returns None on error."""
         try:
             path = f"/api/v1/market/mark-price?instId={symbol}"
-            async with httpx.AsyncClient(base_url=self.base_url, timeout=10) as client:
-                resp = await client.get(path)
-                resp.raise_for_status()
+            resp = await self._client.get(path)
+            resp.raise_for_status()
             data = resp.json().get("data") or []
             if not data:
                 return None
@@ -412,8 +414,7 @@ class BlofinAdapter(ExchangeAdapter):
         body_str = json.dumps(body_data, separators=(",", ":"))
         headers  = self._headers("POST", path, body_str)
         try:
-            async with httpx.AsyncClient(base_url=self.base_url, timeout=10) as client:
-                resp = await client.post(path, content=body_str, headers=headers)
+            resp = await self._client.post(path, content=body_str, headers=headers)
             data = resp.json()
             if str(data.get("code")) not in ("0", "200"):
                 logger.warning(f"BlofinAdapter: set-leverage failed for {inst_id}: {data.get('msg')}")
@@ -479,8 +480,7 @@ class BlofinAdapter(ExchangeAdapter):
             body_str = json.dumps(body_data, separators=(",", ":"))
             headers = self._headers("POST", path, body_str)
 
-            async with httpx.AsyncClient(base_url=self.base_url, timeout=10) as client:
-                response = await client.post(path, content=body_str, headers=headers)
+            response = await self._client.post(path, content=body_str, headers=headers)
 
             if response.status_code != 200:
                 logger.warning(f"Blofin order failed. Status: {response.status_code}, Response: {response.text}")
@@ -595,9 +595,8 @@ class BlofinAdapter(ExchangeAdapter):
     async def get_open_positions(self) -> List[Position]:
         path = "/api/v1/account/positions"
         headers = self._headers("GET", path, "")
-        async with httpx.AsyncClient(base_url=self.base_url, timeout=10) as client:
-            response = await client.get(path, headers=headers)
-        
+        response = await self._client.get(path, headers=headers)
+
         if response.status_code != 200:
             logger.error(f"Failed to fetch positions: {response.text}")
             raise ExchangeUnavailableError(
@@ -667,8 +666,7 @@ class BlofinAdapter(ExchangeAdapter):
         headers = self._headers("POST", path, body_str)
 
         since_ms = int(time.time() * 1000)
-        async with httpx.AsyncClient(base_url=self.base_url, timeout=10) as client:
-            response = await client.post(path, content=body_str, headers=headers)
+        response = await self._client.post(path, content=body_str, headers=headers)
 
         if response.status_code != 200:
             logger.warning(f"Blofin close failed. Status: {response.status_code}, Response: {response.text}")
@@ -759,8 +757,7 @@ class BlofinAdapter(ExchangeAdapter):
         headers  = self._headers("POST", path, body_str)
 
         since_ms = int(time.time() * 1000)
-        async with httpx.AsyncClient(base_url=self.base_url, timeout=10) as client:
-            response = await client.post(path, content=body_str, headers=headers)
+        response = await self._client.post(path, content=body_str, headers=headers)
 
         if response.status_code != 200:
             logger.warning(f"Blofin partial close failed. Status: {response.status_code}, Response: {response.text}")
@@ -837,12 +834,10 @@ class BlofinAdapter(ExchangeAdapter):
             # Use the existing signing pattern already in the adapter
             # to make an authenticated GET request
             headers  = self._headers("GET", full_path, "")
-            url      = f"{self.base_url}{full_path}"
 
-            async with httpx.AsyncClient(timeout=10) as client:
-                resp = await client.get(url, headers=headers)
-                resp.raise_for_status()
-                data = resp.json()
+            resp = await self._client.get(full_path, headers=headers)
+            resp.raise_for_status()
+            data = resp.json()
 
             code = str(data.get("code", "0"))
             if code not in ("0", "200"):
@@ -931,8 +926,7 @@ class BlofinAdapter(ExchangeAdapter):
         try:
             path = f"/api/v1/account/positions-history?instId={symbol}&limit=5"
             headers = self._headers("GET", path, "")
-            async with httpx.AsyncClient(base_url=self.base_url, timeout=10) as client:
-                resp = await client.get(path, headers=headers)
+            resp = await self._client.get(path, headers=headers)
             data = resp.json()
             entries = data.get("data") or []
             if not entries:
@@ -983,8 +977,7 @@ class BlofinAdapter(ExchangeAdapter):
             if symbol:
                 path += f"?instId={symbol}"
             headers = self._headers("GET", path, "")
-            async with httpx.AsyncClient(base_url=self.base_url, timeout=10) as client:
-                resp = await client.get(path, headers=headers)
+            resp = await self._client.get(path, headers=headers)
             data = resp.json()
             entries = data.get("data") or []
 
@@ -1096,8 +1089,7 @@ class BlofinAdapter(ExchangeAdapter):
         try:
             path = f"/api/v1/trade/orders-tpsl-pending?instId={symbol}"
             headers = self._headers("GET", path, "")
-            async with httpx.AsyncClient(base_url=self.base_url, timeout=10) as client:
-                resp = await client.get(path, headers=headers)
+            resp = await self._client.get(path, headers=headers)
             data = resp.json()
             entries = data.get("data") or []
             result = []
@@ -1122,8 +1114,7 @@ class BlofinAdapter(ExchangeAdapter):
             body_data = [{"instId": symbol, "tpslId": str(order_id)}]
             body_str = json.dumps(body_data, separators=(",", ":"))
             headers = self._headers("POST", path, body_str)
-            async with httpx.AsyncClient(base_url=self.base_url, timeout=10) as client:
-                resp = await client.post(path, content=body_str, headers=headers)
+            resp = await self._client.post(path, content=body_str, headers=headers)
             data = resp.json()
             code = str(data.get("code", "0"))
             if code in ("0", "200"):
@@ -1133,8 +1124,7 @@ class BlofinAdapter(ExchangeAdapter):
             body_data2 = {"instId": symbol, "orderId": str(order_id)}
             body_str2 = json.dumps(body_data2, separators=(",", ":"))
             headers2 = self._headers("POST", path2, body_str2)
-            async with httpx.AsyncClient(base_url=self.base_url, timeout=10) as client:
-                resp2 = await client.post(path2, content=body_str2, headers=headers2)
+            resp2 = await self._client.post(path2, content=body_str2, headers=headers2)
             data2 = resp2.json()
             code2 = str(data2.get("code", "0"))
             if code2 in ("0", "200"):
@@ -1181,8 +1171,7 @@ class BlofinAdapter(ExchangeAdapter):
                 path = "/api/v1/trade/order-tpsl"
                 body_str = json.dumps(body_data, separators=(",", ":"))
                 headers  = self._headers("POST", path, body_str)
-                async with httpx.AsyncClient(base_url=self.base_url, timeout=10) as client:
-                    resp = await client.post(path, content=body_str, headers=headers)
+                resp = await self._client.post(path, content=body_str, headers=headers)
                 data = resp.json()
                 code = str(data.get("code", "0"))
                 if code in ("0", "200"):

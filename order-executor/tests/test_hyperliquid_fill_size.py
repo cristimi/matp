@@ -88,11 +88,7 @@ async def test_hl_fill_size_from_total_sz():
         resp.json.return_value = exchange_resp
         return resp
 
-    with patch("app.adapters.hyperliquid.httpx.AsyncClient") as mock_client:
-        mock_client.return_value.__aenter__ = AsyncMock(
-            return_value=MagicMock(post=AsyncMock(side_effect=fake_post))
-        )
-        mock_client.return_value.__aexit__ = AsyncMock(return_value=False)
+    with patch.object(adapter, "_client", MagicMock(post=AsyncMock(side_effect=fake_post))):
         result = await adapter.submit_order(order)
 
     assert result.success, f"Expected success: {result}"
@@ -118,11 +114,7 @@ async def test_hl_fill_size_fallback_to_rounded_size():
         resp.json.return_value = exchange_resp
         return resp
 
-    with patch("app.adapters.hyperliquid.httpx.AsyncClient") as mock_client:
-        mock_client.return_value.__aenter__ = AsyncMock(
-            return_value=MagicMock(post=AsyncMock(side_effect=fake_post))
-        )
-        mock_client.return_value.__aexit__ = AsyncMock(return_value=False)
+    with patch.object(adapter, "_client", MagicMock(post=AsyncMock(side_effect=fake_post))):
         result = await adapter.submit_order(order)
 
     assert result.success, f"Expected success: {result}"

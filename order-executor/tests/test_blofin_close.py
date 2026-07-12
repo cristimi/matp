@@ -1,7 +1,7 @@
 """
 Unit tests for BlofinAdapter.submit_order — verify reduceOnly behaviour.
 
-No network calls are made: httpx.AsyncClient and _get_instrument are patched.
+No network calls are made: the adapter's pooled _client and _get_instrument are patched.
 """
 import json
 import pytest
@@ -89,14 +89,12 @@ async def test_submit_order_close_short_has_reduce_only():
     async def fake_get(url, headers=None, **kw):
         return _mock_fill_response()
 
+    mock_client = MagicMock(post=AsyncMock(side_effect=fake_post),
+                             get=AsyncMock(side_effect=fake_get))
+
     with patch.object(adapter, "_get_instrument", AsyncMock(return_value=HYPE_SPEC)), \
          patch.object(adapter, "_set_leverage", AsyncMock()), \
-         patch("app.adapters.blofin.httpx.AsyncClient") as mock_client:
-        mock_client.return_value.__aenter__ = AsyncMock(
-            return_value=MagicMock(post=AsyncMock(side_effect=fake_post),
-                                   get=AsyncMock(side_effect=fake_get))
-        )
-        mock_client.return_value.__aexit__ = AsyncMock(return_value=False)
+         patch.object(adapter, "_client", mock_client):
         result = await adapter.submit_order(order)
 
     assert result.success, f"Expected success, got: {result}"
@@ -122,14 +120,12 @@ async def test_submit_order_close_long_has_reduce_only():
     async def fake_get(url, headers=None, **kw):
         return _mock_fill_response()
 
+    mock_client = MagicMock(post=AsyncMock(side_effect=fake_post),
+                             get=AsyncMock(side_effect=fake_get))
+
     with patch.object(adapter, "_get_instrument", AsyncMock(return_value=HYPE_SPEC)), \
          patch.object(adapter, "_set_leverage", AsyncMock()), \
-         patch("app.adapters.blofin.httpx.AsyncClient") as mock_client:
-        mock_client.return_value.__aenter__ = AsyncMock(
-            return_value=MagicMock(post=AsyncMock(side_effect=fake_post),
-                                   get=AsyncMock(side_effect=fake_get))
-        )
-        mock_client.return_value.__aexit__ = AsyncMock(return_value=False)
+         patch.object(adapter, "_client", mock_client):
         result = await adapter.submit_order(order)
 
     assert result.success
@@ -154,14 +150,12 @@ async def test_submit_order_open_long_has_no_reduce_only():
     async def fake_get(url, headers=None, **kw):
         return _mock_fill_response()
 
+    mock_client = MagicMock(post=AsyncMock(side_effect=fake_post),
+                             get=AsyncMock(side_effect=fake_get))
+
     with patch.object(adapter, "_get_instrument", AsyncMock(return_value=HYPE_SPEC)), \
          patch.object(adapter, "_set_leverage", AsyncMock()), \
-         patch("app.adapters.blofin.httpx.AsyncClient") as mock_client:
-        mock_client.return_value.__aenter__ = AsyncMock(
-            return_value=MagicMock(post=AsyncMock(side_effect=fake_post),
-                                   get=AsyncMock(side_effect=fake_get))
-        )
-        mock_client.return_value.__aexit__ = AsyncMock(return_value=False)
+         patch.object(adapter, "_client", mock_client):
         result = await adapter.submit_order(order)
 
     assert result.success

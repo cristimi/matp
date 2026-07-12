@@ -31,6 +31,11 @@ class ExchangeAdapter(ABC):
         self.credentials = credentials
         self.mode = mode
 
+    async def close(self) -> None:
+        """Release any held resources (e.g. a pooled HTTP client). Called by the
+        registry on eviction/shutdown. Subclasses that hold a client must override."""
+        pass
+
     @abstractmethod
     async def submit_order(self, order: OrderRequest) -> OrderResult:
         """Submit a new order to the exchange."""
