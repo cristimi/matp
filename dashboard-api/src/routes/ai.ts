@@ -97,6 +97,10 @@ router.get('/models', async (req: Request, res: Response) => {
 // ── GET /usage — actual LLM token spend (total / per strategy / per model) ────
 // Actuals come from ai_signal_log.input/output/total_tokens (provider-reported,
 // migration 047; NULL on pre-047 rows and calls that failed before a response).
+// Scout tokens (migration 053, populated when both tiers ran) are folded into
+// the total and per-strategy sums. per_model stays main-columns-only: the log
+// row records only the DECIDING model, so scout spend cannot be attributed to
+// the scout model that actually spent it.
 
 router.get('/usage', async (req: Request, res: Response) => {
   const from = (req.query.from as string) || '1970-01-01';
@@ -107,9 +111,10 @@ router.get('/usage', async (req: Request, res: Response) => {
     const totalQ = getPool().query(
       `SELECT COUNT(*) FILTER (WHERE total_tokens IS NOT NULL) AS tracked_calls,
               COUNT(*)                                         AS llm_calls,
-              COALESCE(SUM(input_tokens), 0)  AS input_tokens,
-              COALESCE(SUM(output_tokens), 0) AS output_tokens,
-              COALESCE(SUM(total_tokens), 0)  AS total_tokens
+              COALESCE(SUM(input_tokens), 0)  + COALESCE(SUM(scout_input_tokens), 0)  AS input_tokens,
+              COALESCE(SUM(output_tokens), 0) + COALESCE(SUM(scout_output_tokens), 0) AS output_tokens,
+              COALESCE(SUM(total_tokens), 0)  + COALESCE(SUM(scout_total_tokens), 0)  AS total_tokens,
+              COALESCE(SUM(scout_total_tokens), 0) AS scout_total_tokens
        FROM ai_signal_log
        WHERE triggered_at >= $1 AND context_tokens > 0`,
       [from]
@@ -117,9 +122,10 @@ router.get('/usage', async (req: Request, res: Response) => {
     const perStrategyQ = getPool().query(
       `SELECT strategy_id,
               COUNT(*) FILTER (WHERE total_tokens IS NOT NULL) AS tracked_calls,
-              COALESCE(SUM(input_tokens), 0)  AS input_tokens,
-              COALESCE(SUM(output_tokens), 0) AS output_tokens,
-              COALESCE(SUM(total_tokens), 0)  AS total_tokens
+              COALESCE(SUM(input_tokens), 0)  + COALESCE(SUM(scout_input_tokens), 0)  AS input_tokens,
+              COALESCE(SUM(output_tokens), 0) + COALESCE(SUM(scout_output_tokens), 0) AS output_tokens,
+              COALESCE(SUM(total_tokens), 0)  + COALESCE(SUM(scout_total_tokens), 0)  AS total_tokens,
+              COALESCE(SUM(scout_total_tokens), 0) AS scout_total_tokens
        FROM ai_signal_log
        WHERE triggered_at >= $1 AND context_tokens > 0
        GROUP BY strategy_id
@@ -144,7 +150,7 @@ router.get('/usage', async (req: Request, res: Response) => {
     );
     res.json({
       from,
-      note: 'actuals from provider usage_metadata; rows before 2026-07-07 (migration 047) have no actuals',
+      note: 'actuals from provider usage_metadata; rows before 2026-07-07 (migration 047) have no actuals; total/per_strategy include scout tokens (migration 053), per_model is deciding-model spend only',
       total:        num(total.rows[0]),
       per_strategy: perStrategy.rows.map(num),
       per_model:    perModel.rows.map(num),
