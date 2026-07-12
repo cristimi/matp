@@ -176,7 +176,9 @@ async def internal_trigger(body: TriggerRequest):
                 a.cooldown_entry_minutes, a.cooldown_increase_minutes,
                 a.cooldown_stop_adj_minutes, a.template_id, a.custom_instructions,
                 a.dry_run,
-                a.llm_provider, a.llm_model
+                a.llm_provider, a.llm_model,
+                a.llm_scout_provider, a.llm_scout_model,
+                a.premium_force_interval, a.llm_fallback_chain
             FROM strategies s
             JOIN ai_strategy_config a ON a.strategy_id = s.id
             WHERE s.id = $1

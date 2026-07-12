@@ -43,7 +43,11 @@ class AgentState(TypedDict):
     llm_signal:         Optional[dict]     # LLMSignalOutput as dict
     llm_error:          Optional[str]      # set when llm_signal is None: provider/parse error detail
     context_tokens:     Optional[int]      # chars/4 input estimate (pre-call)
-    llm_usage:          Optional[dict]     # provider-reported actuals: input/output/total tokens
+    llm_usage:          Optional[dict]     # provider-reported actuals for the DECIDING call
+    llm_tier:           Optional[str]      # 'premium' | 'scout' | 'scout_escalated' | 'fallback'
+    llm_served_by:      Optional[dict]     # {'provider','model'} that actually served the deciding call
+    scout_usage:        Optional[dict]     # scout call usage when BOTH tiers ran (else None)
+    fallback_attempts:  Optional[list]     # [{'provider','model','error'}] failed attempts this cycle
 
     # Gate result (Node 3 output)
     gate_passed:           bool
