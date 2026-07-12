@@ -4,6 +4,7 @@ export interface PnlSnapshot {
   ts: number;
   strategies: Record<string, { open_pnl: number; position_ids: string[] }>;
   positions: Record<string, { mark_price: number; unrealized_pnl: number; liquidation_price: number | null }>;
+  pending_orders: Record<string, { mark_price: number | null }>;
 }
 
 const WS_PNL_URL = (import.meta.env.VITE_WS_PNL_URL as string | undefined) || '/ws/pnl';
@@ -26,7 +27,7 @@ export function useLivePnl(): PnlSnapshot | null {
       try {
         const msg = JSON.parse(e.data);
         if (msg.event === 'pnl') {
-          setSnapshot({ ts: msg.ts, strategies: msg.strategies, positions: msg.positions });
+          setSnapshot({ ts: msg.ts, strategies: msg.strategies, positions: msg.positions, pending_orders: msg.pending_orders ?? {} });
         }
       } catch {}
     };

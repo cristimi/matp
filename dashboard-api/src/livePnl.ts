@@ -12,6 +12,7 @@ export interface PnlSnapshot {
   ts: number;
   strategies: Record<string, { open_pnl: number; position_ids: string[] }>;
   positions: Record<string, { mark_price: number; unrealized_pnl: number; liquidation_price: number | null }>;
+  pending_orders: Record<string, { mark_price: number | null }>;
 }
 
 let _lastSnapshot: PnlSnapshot | null = null;
@@ -19,6 +20,15 @@ export function getLastSnapshot(): PnlSnapshot | null { return _lastSnapshot; }
 export function isSnapshotFresh(snap: PnlSnapshot): boolean {
   return Date.now() - snap.ts < STALE_MS;
 }
+
+// Pending-order mark price is refreshed on a slower cadence than the per-second
+// position tick — it hits a separate executor/exchange ticker call per unique
+// (account_id, symbol), and polling that every second measurably added to
+// executor load (observed request pile-up / timeouts). Every PENDING_MARK_EVERY_N
+// ticks is frequent enough to feel "live" without doubling request volume.
+const PENDING_MARK_EVERY_N_TICKS = 5;
+let _tickCount = 0;
+let _lastPendingOrdersSnap: Record<string, { mark_price: number | null }> = {};
 
 async function tick(): Promise<void> {
   const pool = getPool();
@@ -92,7 +102,49 @@ async function tick(): Promise<void> {
     }
   }
 
-  const snap: PnlSnapshot = { ts: Date.now(), strategies: strategiesSnap, positions: positionsSnap };
+  // Pending (resting, unfilled) orders — fan out a live mark price per unique
+  // (account_id, symbol) via the executor's public ticker endpoint, same as the
+  // one-shot fetch previously in routes/strategies.ts, but on a slower recurring
+  // cadence (see PENDING_MARK_EVERY_N_TICKS) so it stays live between page loads.
+  _tickCount++;
+  if (_tickCount % PENDING_MARK_EVERY_N_TICKS === 0) {
+    const pendingOrdersSnap: Record<string, { mark_price: number | null }> = {};
+    try {
+      const { rows: pendingRows } = await pool.query(`
+        SELECT o.id, o.account_id, o.symbol
+        FROM orders o
+        WHERE o.status = 'pending' AND o.account_id IS NOT NULL
+      `);
+
+      if (pendingRows.length > 0) {
+        const markKeys = [...new Set(pendingRows.map((o: any) => `${o.account_id}:${o.symbol}`))];
+        const markMap = new Map<string, number | null>();
+        await Promise.all(markKeys.map(async (key) => {
+          const [accountId, symbol] = key.split(':');
+          try {
+            const resp = await fetch(`${EXECUTOR_URL}/accounts/${accountId}/mark-price/${symbol}`, {
+              signal: AbortSignal.timeout(5000),
+            });
+            if (resp.ok) {
+              const data = await resp.json() as any;
+              markMap.set(key, data.mark_price != null ? Number(data.mark_price) : null);
+            }
+          } catch (e) {
+            console.error(`[livePnl] mark-price fetch failed for ${key}:`, e);
+          }
+        }));
+
+        for (const o of pendingRows) {
+          pendingOrdersSnap[o.id] = { mark_price: markMap.get(`${o.account_id}:${o.symbol}`) ?? null };
+        }
+      }
+    } catch (e) {
+      console.error('[livePnl] pending orders fetch failed:', e);
+    }
+    _lastPendingOrdersSnap = pendingOrdersSnap;
+  }
+
+  const snap: PnlSnapshot = { ts: Date.now(), strategies: strategiesSnap, positions: positionsSnap, pending_orders: _lastPendingOrdersSnap };
   const json = JSON.stringify(snap);
   await redis.set(SNAPSHOT_KEY, json);
   await redis.publish(SNAPSHOT_CHANNEL, json);

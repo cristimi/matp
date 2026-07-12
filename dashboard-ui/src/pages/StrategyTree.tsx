@@ -695,7 +695,7 @@ function StrategyCard({ strategy: s, onL1Refresh, livePnl }: { strategy: Strateg
             <>
               <SectionLabel text="Pending Orders" />
               {s.pending_orders.map(o => (
-                <PendingOrderCard key={o.id} order={o} />
+                <PendingOrderCard key={o.id} order={o} livePnl={livePnl} />
               ))}
             </>
           )}
@@ -1042,10 +1042,11 @@ function PositionCard({
 
 // ---- pending order card ----
 
-function PendingOrderCard({ order: o }: { order: PendingOrder }) {
+function PendingOrderCard({ order: o, livePnl }: { order: PendingOrder; livePnl: PnlSnapshot | null }) {
+  const displayMarkPrice = livePnl?.pending_orders?.[o.id]?.mark_price ?? o.mark_price;
   const priceCols = [
     { label: 'Price', value: formatPrice(o.symbol, o.price),      color: 'var(--muted)' },
-    { label: 'Mark',  value: o.mark_price != null ? formatPrice(o.symbol, o.mark_price) : '—', color: 'var(--green)' },
+    { label: 'Mark',  value: displayMarkPrice != null ? formatPrice(o.symbol, displayMarkPrice) : '—', color: 'var(--green)' },
     { label: 'SL',    value: o.sl_price   != null ? formatPrice(o.symbol, o.sl_price)   : '—', color: 'var(--muted)' },
     { label: 'TP',    value: o.tp_price   != null ? formatPrice(o.symbol, o.tp_price)   : '—', color: 'var(--muted)' },
   ];
@@ -1081,6 +1082,9 @@ function PendingOrderCard({ order: o }: { order: PendingOrder }) {
         }}>
           {priceCols.map(c => <span key={c.label} style={{ color: 'var(--dim)' }}>{c.label}</span>)}
           {priceCols.map(c => <span key={c.label + '_v'} style={{ color: c.color }}>{c.value}</span>)}
+        </div>
+        <div style={{ fontFamily: MONO, fontSize: 10, color: 'var(--dim)' }}>
+          Modified {formatRelative(o.updated_at)}
         </div>
       </div>
     </div>

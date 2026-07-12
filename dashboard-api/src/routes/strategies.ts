@@ -444,38 +444,20 @@ router.get('/tree', async (_req: Request, res: Response) => {
       console.error('Tree: snapshot read failed:', e);
     }
 
-    // Pending (resting, unfilled) orders per strategy, with a live mark price fanned
-    // out per unique (account_id, symbol) via the executor's public ticker endpoint.
+    // Pending (resting, unfilled) orders per strategy. Mark price for each comes from
+    // the live-PnL snapshot (kept fresh every tick by the server-side ticker in
+    // livePnl.ts, which fans it out per unique account/symbol via the executor's
+    // public ticker endpoint) so the frontend's websocket subscription can update it
+    // in real time — this initial REST payload is just the first value on page load.
     const pendingByStrategy = new Map<string, any[]>();
     try {
       const { rows: pendingRows } = await getPool().query(`
         SELECT o.id, o.strategy_id, o.account_id, o.symbol, o.side,
-               o.price, o.sl_price, o.tp_price, o.received_at
+               o.price, o.sl_price, o.tp_price, o.received_at, o.updated_at
         FROM orders o
         WHERE o.status = 'pending'
         ORDER BY o.received_at DESC
       `);
-
-      const markKeys = [...new Set(
-        pendingRows
-          .filter((o: any) => o.account_id)
-          .map((o: any) => `${o.account_id}:${o.symbol}`)
-      )];
-      const markMap = new Map<string, number | null>();
-      await Promise.all(markKeys.map(async (key) => {
-        const [accountId, symbol] = key.split(':');
-        try {
-          const resp = await fetch(`${EXECUTOR_URL}/accounts/${accountId}/mark-price/${symbol}`, {
-            signal: AbortSignal.timeout(5000),
-          });
-          if (resp.ok) {
-            const data = await resp.json() as any;
-            markMap.set(key, data.mark_price != null ? Number(data.mark_price) : null);
-          }
-        } catch (e) {
-          console.error(`[tree] mark-price fetch failed for ${key}:`, e);
-        }
-      }));
 
       for (const o of pendingRows) {
         const list = pendingByStrategy.get(o.strategy_id) ?? [];
@@ -486,8 +468,9 @@ router.get('/tree', async (_req: Request, res: Response) => {
           price:       o.price != null ? Number(o.price) : null,
           sl_price:    o.sl_price != null ? Number(o.sl_price) : null,
           tp_price:    o.tp_price != null ? Number(o.tp_price) : null,
-          mark_price:  o.account_id ? (markMap.get(`${o.account_id}:${o.symbol}`) ?? null) : null,
+          mark_price:  snapshot?.pending_orders?.[o.id]?.mark_price ?? null,
           received_at: (o.received_at as Date).toISOString(),
+          updated_at:  (o.updated_at as Date).toISOString(),
         });
         pendingByStrategy.set(o.strategy_id, list);
       }

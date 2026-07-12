@@ -200,6 +200,7 @@ export interface PendingOrder {
   tp_price: number | null;
   mark_price: number | null;
   received_at: string;
+  updated_at: string;
 }
 
 export interface TreePosition {
