@@ -345,6 +345,32 @@ _PROBE_FNS: dict[str, object] = {
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
+def known_providers() -> list[str]:
+    """All providers the registry knows about, in stable definition order."""
+    return list(_RAW_FNS.keys())
+
+
+def cached_ok_models(provider: str) -> list[str]:
+    """Model ids with a fresh 'ok' probe result for this provider — cache only,
+    never touches the network. Used by the LLM fallback chain, which must not
+    re-probe inline on a live cycle."""
+    now = time.monotonic()
+    out = []
+    for key, (status, expires_at) in _cache.items():
+        p, _, model_id = key.partition(":")
+        if p == provider and status == "ok" and now < expires_at:
+            out.append(model_id)
+    return out
+
+
+async def raw_models(provider: str) -> list[dict]:
+    """Provider's raw model list (network call). Cold-cache fallback for the
+    LLM chain: an unverified attempt beats a dead cycle."""
+    raw_fn = _RAW_FNS.get(provider)
+    return await raw_fn() if raw_fn else []
+
+
+
 async def get_available_models(provider: str) -> list[dict]:
     """
     Return models for the given provider, sorted verified-first.

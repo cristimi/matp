@@ -89,11 +89,18 @@ async def node_dispatch(state: AgentState) -> AgentState:
     if isinstance(triggered_at, str):
         triggered_at = datetime.fromisoformat(triggered_at)
 
-    llm_provider = sc.get('llm_provider', 'google')
-    llm_model    = sc.get('llm_model',    'gemini-2.0-flash')
+    # Log the model that actually produced the decision (a fallback model can
+    # differ from the configured one); configured is the fallback default.
+    served_by    = state.get('llm_served_by') or {}
+    llm_provider = served_by.get('provider') or sc.get('llm_provider', 'google')
+    llm_model    = served_by.get('model')    or sc.get('llm_model',    'gemini-2.0-flash')
 
     geometry_data = state.get('geometry_data')
     geometry_data_json = json.dumps(geometry_data) if geometry_data is not None else None
+
+    fallback_attempts = state.get('fallback_attempts')
+    fallback_attempts_json = json.dumps(fallback_attempts) if fallback_attempts else None
+    scout_usage = state.get('scout_usage') or {}
 
     # ── 1. Always write ai_signal_log ────────────────────────────────────
     signal_log_id = None
@@ -107,9 +114,11 @@ async def node_dispatch(state: AgentState) -> AgentState:
                     proposed_action, confidence, reasoning,
                     gate_passed, gate_rejection_reason, dry_run,
                     llm_provider, llm_model, geometry_data,
-                    input_tokens, output_tokens, total_tokens, missing_inputs
+                    input_tokens, output_tokens, total_tokens, missing_inputs,
+                    llm_tier, scout_input_tokens, scout_output_tokens,
+                    scout_total_tokens, fallback_attempts
                 ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16::jsonb,
-                          $17,$18,$19,$20)
+                          $17,$18,$19,$20,$21,$22,$23,$24,$25::jsonb)
                 RETURNING id
                 """,
                 state['strategy_id'],
@@ -132,6 +141,11 @@ async def node_dispatch(state: AgentState) -> AgentState:
                 (state.get('llm_usage') or {}).get('output_tokens'),
                 (state.get('llm_usage') or {}).get('total_tokens'),
                 _missing_inputs(sc, state),
+                state.get('llm_tier'),
+                scout_usage.get('input_tokens'),
+                scout_usage.get('output_tokens'),
+                scout_usage.get('total_tokens'),
+                fallback_attempts_json,
             )
     except Exception as exc:
         logger.error("Failed to write ai_signal_log: %s", exc)
