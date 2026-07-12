@@ -52,6 +52,9 @@ async def lifespan(app: FastAPI):
     from app.config_secrets import apply_llm_key_overrides
     await apply_llm_key_overrides(pool, settings)
 
+    from app.data.compute_executor import warmup as compute_warmup
+    compute_warmup()
+
     graph = build_graph()
 
     schedulers    = await start_all_schedulers(pool, graph)

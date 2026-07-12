@@ -44,7 +44,30 @@ async def _fetch_open_orders(strategy_id: str) -> list:
     return data
 
 
+# Candle-close-aligned schedulers wake every strategy in the same second, and
+# on this single-core host the resulting burst (~50 concurrent HTTP fetches,
+# each parsed in the event loop) blows the fetchers' 10s timeouts — observed
+# 2026-07-12 20:00: the first five strategies lost technical/sentiment inputs
+# while the two that happened to run after the herd cleared were 100% clean.
+# Bounding ingest concurrency reproduces that clean mode for everyone: wake
+# timing is untouched, later strategies just queue for a fetch slot.
+_INGEST_SLOTS = asyncio.Semaphore(2)
+
+
 async def node_ingest(state: AgentState) -> AgentState:
+    import time
+    _wait_start = time.monotonic()
+    async with _INGEST_SLOTS:
+        waited = time.monotonic() - _wait_start
+        if waited > 1:
+            logger.info(
+                "node_ingest strategy=%s waited %.1fs for an ingest slot",
+                state['strategy_id'], waited,
+            )
+        return await _node_ingest(state)
+
+
+async def _node_ingest(state: AgentState) -> AgentState:
     sc     = state['strategy_config']
     errors = list(state.get('data_fetch_errors') or [])
 
