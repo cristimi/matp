@@ -30,6 +30,67 @@ def _reject(state: AgentState, reason: str) -> AgentState:
     return {**state, 'gate_passed': False, 'gate_rejection_reason': reason}
 
 
+def _resolve_entry_sizing(sc: dict, entry_price: float, sl_pct: float) -> tuple[float, dict]:
+    """
+    Position size (base qty) for an opening action, plus audit metadata.
+
+    margin mode (default): notional = margin_per_trade × leverage — the
+    historical behavior. The $ lost at the stop is then sl_pct × notional,
+    which with structural (tight) stops is typically only 10-25% of the
+    allocated margin.
+
+    risk mode: notional = risk_per_trade / sl_frac, so a stop-out loses
+    ≈ risk_per_trade dollars regardless of how tight the LLM's stop is.
+    Hard-capped at margin_per_trade × leverage — margin_per_trade becomes
+    the collateral ceiling, and the order-listener's independent margin
+    clamp enforces the exact same bound downstream. When the cap binds,
+    the effective risk drops below target (flagged in the metadata).
+
+    sl_pct must already be validated within [_MIN_SL_TP_PCT, _MAX_SL_TP_PCT]
+    (guards the risk-mode division).
+    """
+    leverage     = int(sc.get('default_leverage') or 1)
+    margin_cap   = float(sc.get('margin_per_trade') or 5.0)
+    cap_notional = margin_cap * leverage
+    sl_frac      = sl_pct / 100.0
+
+    if sc.get('sizing_mode') == 'risk' and sc.get('risk_per_trade'):
+        target_risk     = float(sc['risk_per_trade'])
+        target_notional = target_risk / sl_frac
+        notional        = min(target_notional, cap_notional)
+        clamped         = target_notional > cap_notional
+        meta = {
+            'sizing_mode':        'risk',
+            'target_risk_usd':    round(target_risk, 2),
+            'effective_risk_usd': round(notional * sl_frac, 2),
+            'margin_usd':         round(notional / leverage, 2),
+            'risk_clamped_by_margin_cap': clamped,
+        }
+        if clamped:
+            logger.warning(
+                "risk sizing clamped: target risk $%.2f needs notional %.2f but "
+                "margin cap allows %.2f (margin_per_trade=%.2f × lev=%d) — "
+                "effective risk $%.2f",
+                target_risk, target_notional, cap_notional, margin_cap, leverage,
+                notional * sl_frac,
+            )
+    else:
+        notional = cap_notional
+        meta = {
+            'sizing_mode':    'margin',
+            'margin_usd':     round(margin_cap, 2),
+            'risk_at_sl_usd': round(notional * sl_frac, 2),
+        }
+
+    qty = round(notional / entry_price, 4)
+    logger.info(
+        "sizing: mode=%s qty=%s notional=%.2f margin=%.2f lev=%d sl_pct=%.3f risk_at_sl=%.2f",
+        meta['sizing_mode'], qty, notional, notional / leverage, leverage,
+        sl_pct, notional * sl_frac,
+    )
+    return qty, meta
+
+
 async def node_guard(state: AgentState) -> AgentState:
     sc   = state['strategy_config']
     rc   = state['risk_config']
@@ -89,6 +150,24 @@ async def node_guard(state: AgentState) -> AgentState:
         new_sl = signal.get('new_sl_price')
         if new_tp is None and new_sl is None:
             return _reject(state, 'adjust_stops_no_prices')
+        # Side validation: absolute prices from the LLM used to pass through
+        # unchecked — a TP below current price on a long (or SL above it)
+        # closes the position instantly at a loss the moment it lands.
+        pos_side      = state.get('position_side')
+        current_price = float((state.get('ohlcv_data') or {}).get('current_price') or 0)
+        if pos_side in ('long', 'short') and current_price > 0:
+            if pos_side == 'long':
+                wrong = ((new_sl is not None and float(new_sl) >= current_price)
+                         or (new_tp is not None and float(new_tp) <= current_price))
+            else:
+                wrong = ((new_sl is not None and float(new_sl) <= current_price)
+                         or (new_tp is not None and float(new_tp) >= current_price))
+            if wrong:
+                logger.warning(
+                    "node_guard reject adjust_stops: wrong-side stop for %s @ %s (sl=%s tp=%s)",
+                    pos_side, current_price, new_sl, new_tp,
+                )
+                return _reject(state, 'stop_wrong_side')
         return {
             **state,
             'gate_passed':           True,
@@ -113,10 +192,6 @@ async def node_guard(state: AgentState) -> AgentState:
                 if o.get('side') == side_wanted:
                     return _reject(state, 'duplicate_resting_order_same_side')
 
-            leverage = int(sc.get('default_leverage') or 1)
-            margin   = float(sc.get('margin_per_trade') or 5.0)
-            base_qty = round((margin * leverage) / limit_price, 4)
-
             sl_pct = abs(float(signal['stop_loss_pct']))
             tp_pct = abs(float(signal['take_profit_pct']))
             if not (_MIN_SL_TP_PCT <= sl_pct <= _MAX_SL_TP_PCT) or \
@@ -126,6 +201,8 @@ async def node_guard(state: AgentState) -> AgentState:
                     action, sl_pct, tp_pct, _MIN_SL_TP_PCT, _MAX_SL_TP_PCT,
                 )
                 return _reject(state, 'sl_tp_pct_out_of_range')
+
+            base_qty, sizing_meta = _resolve_entry_sizing(sc, limit_price, sl_pct)
 
             if action == 'place_limit_long':
                 sl_price = round(limit_price * (1 - sl_pct / 100.0), 4)
@@ -143,6 +220,7 @@ async def node_guard(state: AgentState) -> AgentState:
                 'resolved_tp_price':        tp_price,
                 'resolved_limit_price':     limit_price,
                 'resolved_target_order_id': None,
+                'sizing_meta':              sizing_meta,
             }
 
         except Exception as exc:
@@ -162,6 +240,30 @@ async def node_guard(state: AgentState) -> AgentState:
             if limit_price is None or float(limit_price) <= 0:
                 return _reject(state, 'amend_missing_price')
             resolved_limit_price = float(limit_price)
+            # Side validation for the carried SL/TP relative to the NEW limit
+            # price: an amended buy limit needs sl < limit < tp (sell mirrored).
+            # This is the hole the 2026-07-10 ETH trade went through — an
+            # amended long ended up with its TP below its own entry price.
+            order_side = next(
+                (o.get('side') for o in (state.get('open_orders') or [])
+                 if str(o.get('order_id')) == str(target_order_id)),
+                None,
+            )
+            amend_sl = signal.get('new_sl_price')
+            amend_tp = signal.get('new_tp_price')
+            if order_side in ('buy', 'sell'):
+                if order_side == 'buy':
+                    wrong = ((amend_sl is not None and float(amend_sl) >= resolved_limit_price)
+                             or (amend_tp is not None and float(amend_tp) <= resolved_limit_price))
+                else:
+                    wrong = ((amend_sl is not None and float(amend_sl) <= resolved_limit_price)
+                             or (amend_tp is not None and float(amend_tp) >= resolved_limit_price))
+                if wrong:
+                    logger.warning(
+                        "node_guard reject amend_order: wrong-side stop for %s limit %s (sl=%s tp=%s)",
+                        order_side, resolved_limit_price, amend_sl, amend_tp,
+                    )
+                    return _reject(state, 'stop_wrong_side')
             # Carry the re-fitted SL/TP the LLM computed for the new limit price —
             # dropping these here (as before) leaves the order's stored tp_price/
             # sl_price frozen at whatever the ORIGINAL placement set, which drifts
@@ -185,16 +287,13 @@ async def node_guard(state: AgentState) -> AgentState:
     # ── Size resolution (opening actions) ───────────────────────────────
     if action in ('open_long', 'open_short'):
         try:
-            leverage      = int(sc.get('default_leverage') or 1)
-            margin        = float(sc.get('margin_per_trade') or 5.0)
             current_price = float((state.get('ohlcv_data') or {}).get('current_price') or 0)
 
             if current_price <= 0:
                 return _reject(state, 'size_resolution_failed')
 
-            base_qty = round((margin * leverage) / current_price, 4)
-            sl_pct   = abs(float(signal['stop_loss_pct']))
-            tp_pct   = abs(float(signal['take_profit_pct']))
+            sl_pct = abs(float(signal['stop_loss_pct']))
+            tp_pct = abs(float(signal['take_profit_pct']))
 
             if not (_MIN_SL_TP_PCT <= sl_pct <= _MAX_SL_TP_PCT) or \
                not (_MIN_SL_TP_PCT <= tp_pct <= _MAX_SL_TP_PCT):
@@ -203,6 +302,8 @@ async def node_guard(state: AgentState) -> AgentState:
                     action, sl_pct, tp_pct, _MIN_SL_TP_PCT, _MAX_SL_TP_PCT,
                 )
                 return _reject(state, 'sl_tp_pct_out_of_range')
+
+            base_qty, sizing_meta = _resolve_entry_sizing(sc, current_price, sl_pct)
 
             if action == 'open_long':
                 sl_price = round(current_price * (1 - sl_pct / 100.0), 4)
@@ -218,6 +319,7 @@ async def node_guard(state: AgentState) -> AgentState:
                 'resolved_size':         base_qty,
                 'resolved_sl_price':     sl_price,
                 'resolved_tp_price':     tp_price,
+                'sizing_meta':           sizing_meta,
             }
 
         except Exception as exc:

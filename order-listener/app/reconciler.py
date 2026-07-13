@@ -637,9 +637,39 @@ async def _reconcile_pending_orders(pool) -> None:
                 )
 
                 if row["tp_price"] is not None or row["sl_price"] is not None:
+                    # A limit can fill away from its requested price (price
+                    # improvement) — stops computed from the request price can
+                    # end up degenerate or on the wrong side of the actual fill
+                    # (seen live: SL $0.09 from fill; fill below its own SL).
+                    from app.stop_revalidation import revalidate_stops_for_fill
+                    _sl_final, _tp_final, _stop_changes = revalidate_stops_for_fill(
+                        pos_side, row["price"], marginal_price,
+                        sl_price=row["sl_price"], tp_price=row["tp_price"],
+                    )
+                    if _stop_changes:
+                        try:
+                            async with pool.acquire() as conn:
+                                await conn.execute(
+                                    """
+                                    UPDATE orders
+                                    SET sl_price = COALESCE($2, sl_price),
+                                        tp_price = COALESCE($3, tp_price),
+                                        signal_metadata = COALESCE(signal_metadata, '{}'::jsonb) || $4::jsonb,
+                                        updated_at = NOW()
+                                    WHERE id = $1
+                                    """,
+                                    row["id"], _sl_final, _tp_final,
+                                    json.dumps({"stops_reanchored_to_fill": _stop_changes,
+                                                "fill_price_at_reanchor": str(marginal_price)}),
+                                )
+                        except Exception as _exc:
+                            logger.error(
+                                f"reconciler: failed to persist re-anchored stops for order "
+                                f"{row['id']}: {_exc}"
+                            )
                     stop_result = await call_executor_modify_stops(
                         account_id=acct_id, symbol=symbol, side=pos_side,
-                        tp_price=row["tp_price"], sl_price=row["sl_price"],
+                        tp_price=_tp_final, sl_price=_sl_final,
                     )
                     sl_requested = row["sl_price"] is not None
                     sl_ok = stop_result.get("sl_ok")

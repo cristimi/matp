@@ -55,6 +55,7 @@ async def build_payload(state: AgentState) -> dict:
             'trigger_reason': state.get('trigger_reason', 'scheduled'),
             'template_id':    sc.get('template_id', 'trend_following'),
             'dry_run':        sc.get('dry_run', True),
+            **({'sizing': state['sizing_meta']} if state.get('sizing_meta') else {}),
         },
     }
 

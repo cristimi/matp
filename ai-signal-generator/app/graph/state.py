@@ -57,6 +57,7 @@ class AgentState(TypedDict):
     resolved_tp_price:     Optional[float]
     resolved_limit_price:     Optional[float]     # place_limit_* entry price / amend_order new price
     resolved_target_order_id: Optional[str]        # cancel_order / amend_order target
+    sizing_meta:              Optional[dict]       # sizing audit: mode, margin_usd, risk figures
 
     # Open orders (Node 1 output, Phase 2)
     open_orders:           Optional[list]

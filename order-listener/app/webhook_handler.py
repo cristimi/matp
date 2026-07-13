@@ -1691,6 +1691,57 @@ async def _process_order(
                     effective_leverage, effective_margin_mode,
                 )
 
+                # ── Fill-price stop revalidation ──────────────────────────────
+                # The attached SL/TP were computed from a pre-fill reference
+                # price; market slippage can leave them degenerate or on the
+                # wrong side of the actual fill (seen live: a short filled
+                # below its own TP). Re-anchor and modify exchange-side stops.
+                if result.actual_fill_price and (tp_price is not None or sl_price is not None):
+                    from app.stop_revalidation import revalidate_stops_for_fill
+                    _stop_ref = (
+                        (payload.signal_metadata or {}).get("entry_ref")
+                        or payload.indicator_price or price or result.actual_fill_price
+                    )
+                    _sl_final, _tp_final, _stop_changes = revalidate_stops_for_fill(
+                        pos_side, _stop_ref, result.actual_fill_price,
+                        sl_price=sl_price, tp_price=tp_price,
+                    )
+                    if _stop_changes:
+                        from app.executor_client import call_executor_modify_stops
+                        _fix = await call_executor_modify_stops(
+                            account_id=account_id, symbol=pos_symbol, side=pos_side,
+                            tp_price=float(_tp_final) if _tp_final is not None else None,
+                            sl_price=float(_sl_final) if _sl_final is not None else None,
+                        )
+                        if not _fix.get("success"):
+                            logger.error(
+                                f"Order {order_id}: fill-price stop re-anchor FAILED to land "
+                                f"on exchange — stops may sit wrong-side of fill "
+                                f"{result.actual_fill_price}: {_fix.get('error_msg')}"
+                            )
+                        try:
+                            async with pool.acquire() as conn:
+                                await conn.execute(
+                                    """
+                                    UPDATE orders
+                                    SET sl_price = COALESCE($2, sl_price),
+                                        tp_price = COALESCE($3, tp_price),
+                                        signal_metadata = COALESCE(signal_metadata, '{}'::jsonb) || $4::jsonb,
+                                        updated_at = NOW()
+                                    WHERE id = $1
+                                    """,
+                                    order_id, _sl_final, _tp_final,
+                                    json.dumps({
+                                        "stops_reanchored_to_fill": _stop_changes,
+                                        "fill_price_at_reanchor":   str(result.actual_fill_price),
+                                        "reanchor_landed":          bool(_fix.get("success")),
+                                    }),
+                                )
+                        except Exception as _exc:
+                            logger.error(
+                                f"Order {order_id}: failed to persist re-anchored stops: {_exc}"
+                            )
+
                 # ── Flip: if exchange netted an opposite position, close its DB leg ──
                 flip_pnl = exec_result.get("pnl") or exec_result.get("realized_pnl")
                 if flip_pnl is not None and float(flip_pnl) != 0:

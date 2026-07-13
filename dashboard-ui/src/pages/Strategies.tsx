@@ -820,6 +820,8 @@ interface AiFormState {
   use_limit_orders:        boolean;
   confidence_threshold:   string;
   cooldown_entry_minutes: string;
+  sizing_mode:            'margin' | 'risk';
+  risk_per_trade:         string;
   llm_provider:           string;
   llm_model:              string;
   llm_scout_provider:     string;   // '' = scout tiering disabled
@@ -855,6 +857,8 @@ const AI_FORM_DEFAULTS: AiFormState = {
   use_limit_orders:        false,
   confidence_threshold:   '0.72',
   cooldown_entry_minutes: '240',
+  sizing_mode:            'margin',
+  risk_per_trade:         '',
   llm_provider:           'google',
   llm_model:              '',
   llm_scout_provider:     '',
@@ -1095,6 +1099,8 @@ export default function Strategies() {
           use_limit_orders:        config.use_limit_orders        ?? false,
           confidence_threshold:   String(config.confidence_threshold   ?? '0.72'),
           cooldown_entry_minutes: String(config.cooldown_entry_minutes ?? '240'),
+          sizing_mode:            config.sizing_mode === 'risk' ? 'risk' : 'margin',
+          risk_per_trade:         config.risk_per_trade != null ? String(config.risk_per_trade) : '',
           llm_provider:           config.llm_provider           ?? 'google',
           llm_model:              config.llm_model              ?? '',
           llm_scout_provider:     config.llm_scout_provider     ?? '',
@@ -1145,6 +1151,12 @@ export default function Strategies() {
     if (!editTarget) return;
     if (parseFloat(editForm.margin_per_trade ?? '0') <= 0) {
       setEditError('Margin per trade must be greater than 0');
+      return;
+    }
+    if (editTarget.strategy_source === 'ai_engine'
+        && aiEditForm.sizing_mode === 'risk'
+        && !(parseFloat(aiEditForm.risk_per_trade) > 0)) {
+      setEditError('Risk-based sizing requires a positive Risk per Trade');
       return;
     }
     // Fallback-chain override: must be valid JSON of [{provider, model}] or empty
@@ -1215,6 +1227,10 @@ export default function Strategies() {
             use_limit_orders:        aiEditForm.use_limit_orders,
             confidence_threshold:   parseFloat(aiEditForm.confidence_threshold),
             cooldown_entry_minutes: parseInt(aiEditForm.cooldown_entry_minutes),
+            sizing_mode:            aiEditForm.sizing_mode,
+            ...(aiEditForm.sizing_mode === 'risk'
+              ? { risk_per_trade: parseFloat(aiEditForm.risk_per_trade) }
+              : {}),
             llm_provider:           aiEditForm.llm_provider,
             llm_model:              aiEditForm.llm_model,
             llm_scout_provider:     aiEditForm.llm_scout_provider || null,
@@ -1951,6 +1967,33 @@ export default function Strategies() {
                       style={inputStyle} />
                   </div>
                 </div>
+
+                <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'10px', marginBottom:'14px' }}>
+                  <div>
+                    <label style={labelStyle}>Position Sizing</label>
+                    <select value={aiEditForm.sizing_mode}
+                      onChange={e => setAiEditForm(f => ({ ...f, sizing_mode: e.target.value as 'margin' | 'risk' }))}
+                      style={inputStyle}>
+                      <option value="margin">Margin-based (notional = margin × leverage)</option>
+                      <option value="risk">Risk-based (lose ≈ $X at the stop)</option>
+                    </select>
+                  </div>
+                  {aiEditForm.sizing_mode === 'risk' && (
+                    <div>
+                      <label style={labelStyle}>Risk per Trade ($ at stop-loss)</label>
+                      <input type="number" step="0.5" min="0.5"
+                        value={aiEditForm.risk_per_trade}
+                        onChange={e => setAiEditForm(f => ({ ...f, risk_per_trade: e.target.value }))}
+                        style={inputStyle} />
+                    </div>
+                  )}
+                </div>
+                {aiEditForm.sizing_mode === 'risk' && (
+                  <div style={{ fontSize:'10.5px', color:'var(--muted)', marginTop:'-8px', marginBottom:'14px' }}>
+                    Margin per Trade acts as the collateral cap: notional never exceeds margin × leverage,
+                    so very tight stops may yield less than the target risk (flagged in order metadata).
+                  </div>
+                )}
 
                 {/* Section 3: LLM Configuration */}
                 <SectionDivider label="LLM Configuration" />

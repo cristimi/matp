@@ -20,6 +20,7 @@ const ALLOWED_CONFIG_FIELDS = [
   'volume_spike_threshold', 'funding_spike_threshold', 'dry_run',
   'llm_provider', 'llm_model',
   'llm_scout_provider', 'llm_scout_model', 'premium_force_interval', 'llm_fallback_chain',
+  'sizing_mode', 'risk_per_trade',
   'use_mtf_structure', 'use_orderbook', 'use_volume_profile', 'use_cvd',
   'use_momentum_divergence', 'use_volatility_regime', 'use_funding_history',
   'use_liquidations', 'use_limit_orders',
@@ -43,6 +44,7 @@ function formatConfig(row: any): any {
     confidence_threshold:    Number(row.confidence_threshold),
     volume_spike_threshold:  Number(row.volume_spike_threshold),
     funding_spike_threshold: Number(row.funding_spike_threshold),
+    risk_per_trade:          row.risk_per_trade != null ? Number(row.risk_per_trade) : null,
   };
 }
 
@@ -439,6 +441,31 @@ router.put('/strategies/:id/config', async (req: Request, res: Response) => {
     const v = Number(body.premium_force_interval);
     if (!Number.isInteger(v) || v < 1 || v > 1000) {
       return res.status(400).json({ error: 'premium_force_interval must be an integer between 1 and 1000' });
+    }
+  }
+  if (body.sizing_mode !== undefined && !['margin', 'risk'].includes(body.sizing_mode)) {
+    return res.status(400).json({ error: "sizing_mode must be 'margin' or 'risk'" });
+  }
+  if (body.risk_per_trade !== undefined && body.risk_per_trade !== null) {
+    const v = Number(body.risk_per_trade);
+    if (isNaN(v) || v <= 0 || v > 100000) {
+      return res.status(400).json({ error: 'risk_per_trade must be a positive number (max 100000)' });
+    }
+  }
+  // The DB CHECK requires risk_per_trade when sizing_mode='risk' — fail fast
+  // with a clear message instead of a constraint violation.
+  if (body.sizing_mode === 'risk'
+      && (body.risk_per_trade === undefined || body.risk_per_trade === null)) {
+    try {
+      const { rows } = await getPool().query(
+        'SELECT risk_per_trade FROM ai_strategy_config WHERE strategy_id = $1',
+        [strategyId]
+      );
+      if (!rows[0]?.risk_per_trade) {
+        return res.status(400).json({ error: "sizing_mode='risk' requires risk_per_trade to be set" });
+      }
+    } catch {
+      // pre-check unavailable — the DB CHECK constraint still enforces it below
     }
   }
   if (body.llm_fallback_chain !== undefined && body.llm_fallback_chain !== null) {
