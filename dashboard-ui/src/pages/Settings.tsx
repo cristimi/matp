@@ -105,6 +105,7 @@ const LLM_PROVIDERS: { id: string; label: string }[] = [
   { id: 'groq',      label: 'Groq' },
   { id: 'cerebras',  label: 'Cerebras' },
   { id: 'zhipu',     label: 'Zhipu (GLM)' },
+  { id: 'openrouter', label: 'OpenRouter' },
 ];
 
 interface LlmKeyRow {

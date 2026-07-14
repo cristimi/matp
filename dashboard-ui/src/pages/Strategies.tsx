@@ -685,6 +685,7 @@ const PROVIDERS = [
   { value: 'groq',      label: 'Groq' },
   { value: 'cerebras',  label: 'Cerebras' },
   { value: 'zhipu',     label: 'Zhipu (GLM)' },
+  { value: 'openrouter', label: 'OpenRouter' },
 ];
 
 const DATA_SOURCES: { key: keyof AiFormState; label: string }[] = [

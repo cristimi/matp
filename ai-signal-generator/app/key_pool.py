@@ -47,6 +47,7 @@ _ENV_ATTR = {
     "groq":      "groq_api_key",
     "cerebras":  "cerebras_api_key",
     "zhipu":     "zhipu_api_key",
+    "openrouter": "openrouter_api_key",
 }
 
 _COOLDOWN_BASE = 60      # seconds after the first rate-limit
@@ -88,6 +89,10 @@ class KeyPool:
     def __init__(self):
         self._entries: dict[str, list[_Entry]] = {}   # slug → priority-ordered entries
         self._pool: asyncpg.Pool | None = None
+        # True env-var key values, snapshotted on first load(). Must NOT be read
+        # live from settings after that: a deleted DB key would otherwise leak
+        # back in as a phantom "env" key via any stale settings mutation.
+        self._env_defaults: dict[str, str] | None = None
 
     @staticmethod
     def _slug(provider: str) -> str:
@@ -99,6 +104,9 @@ class KeyPool:
         """(Re)load keys from llm_keys. Runtime state (cooldown/dead) carries over
         for rows whose id and ciphertext are unchanged."""
         self._pool = pool
+        if self._env_defaults is None:
+            self._env_defaults = {slug: getattr(settings, attr, "") or ""
+                                  for slug, attr in _ENV_ATTR.items()}
         rows = await pool.fetch(
             "SELECT id, provider, label, encrypted_key FROM llm_keys "
             "WHERE enabled ORDER BY provider, priority, id"
@@ -123,22 +131,15 @@ class KeyPool:
                 entry.consecutive_429 = prev.consecutive_429
             entries.setdefault(row["provider"], []).append(entry)
 
-        # Env-var fallback for providers with no DB rows.
-        for slug, attr in _ENV_ATTR.items():
-            if slug not in entries and getattr(settings, attr, ""):
+        # Env-var fallback for providers with no DB rows (snapshotted values only).
+        for slug in _ENV_ATTR:
+            if slug not in entries and self._env_defaults.get(slug):
                 entries[slug] = [_Entry(handle=KeyHandle(
-                    id=None, provider=slug, label="env", key=getattr(settings, attr)))]
+                    id=None, provider=slug, label="env", key=self._env_defaults[slug]))]
 
         self._entries = entries
         counts = {p: len(es) for p, es in entries.items()}
         log.info("key_pool: loaded %s", counts or "no keys")
-
-        # Keep settings in sync with the top-priority key so code paths that still
-        # read settings.<provider>_api_key (probes' cold paths, vendored code) work.
-        for slug, es in entries.items():
-            attr = _ENV_ATTR.get(slug)
-            if attr and es:
-                setattr(settings, attr, es[0].handle.key)
 
     async def reload(self) -> dict:
         if self._pool is None:
@@ -150,9 +151,14 @@ class KeyPool:
 
     def _env_handle(self, slug: str) -> KeyHandle | None:
         """Ephemeral env-var key for a provider the pool has no entries for —
-        covers the window before load() and unit tests that only set settings."""
-        attr = _ENV_ATTR.get(slug)
-        key = getattr(settings, attr, "") if attr else ""
+        covers the window before load() and unit tests that only set settings.
+        After load(), only the snapshot is consulted (an unlisted provider then
+        means "no keys", not "check settings again")."""
+        if self._env_defaults is not None:
+            key = self._env_defaults.get(slug, "")
+        else:
+            attr = _ENV_ATTR.get(slug)
+            key = getattr(settings, attr, "") if attr else ""
         return KeyHandle(id=None, provider=slug, label="env", key=key) if key else None
 
     def acquire(self, provider: str) -> KeyHandle | None:

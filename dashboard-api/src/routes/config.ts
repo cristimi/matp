@@ -6,7 +6,7 @@ import { encryptConfigValue } from '../configSecret';
 // ── Config Router ──────────────────────────────────────────────────────────────
 export const configRouter = Router();
 
-const LLM_PROVIDERS = ['anthropic', 'openai', 'gemini', 'groq', 'cerebras', 'zhipu'] as const;
+const LLM_PROVIDERS = ['anthropic', 'openai', 'gemini', 'groq', 'cerebras', 'zhipu', 'openrouter'] as const;
 type LlmProvider = typeof LLM_PROVIDERS[number];
 
 const AI_URL = process.env.AI_SIGNAL_GENERATOR_URL || 'http://ai-signal-generator:8005';

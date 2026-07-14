@@ -196,6 +196,18 @@ def test_all_keys_rate_limited_falls_through_to_next_candidate(monkeypatch):
     assert len(result['attempts']) == 2                    # both gemini keys burned
 
 
+def test_deleted_db_key_does_not_leak_back_via_env(monkeypatch):
+    """Regression: after the first load() snapshots env defaults, a provider with
+    no DB rows and no real env key must yield NO key — even if settings got
+    mutated with the (since-deleted) key at some point."""
+    from app.key_pool import KeyPool
+    pool = KeyPool()
+    pool._env_defaults = {'openrouter': ''}   # snapshot: no env key at startup
+    monkeypatch.setattr(settings, 'openrouter_api_key', 'sk-stale', raising=False)
+    assert pool.acquire('openrouter') is None
+    assert not pool.has_key('openrouter')
+
+
 def test_non_key_error_does_not_rotate_keys(monkeypatch):
     pool = _pool_with('gemini', ['first', 'second'])
     monkeypatch.setattr(llm_chain, 'key_pool', pool)

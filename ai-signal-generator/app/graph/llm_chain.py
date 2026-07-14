@@ -61,8 +61,9 @@ class LLMSignalOutput(BaseModel):
 # validation on the full LLMSignalOutput schema (seen live with zhipu/glm-4.5).
 # "function_calling" (the older tool-calling API) is far more universally supported.
 _STRUCTURED_OUTPUT_METHOD = {
-    'zhipu':    'function_calling',
-    'cerebras': 'function_calling',
+    'zhipu':      'function_calling',
+    'cerebras':   'function_calling',
+    'openrouter': 'function_calling',
 }
 
 def _get_llm(provider: str, model: str, api_key: str | None):
@@ -106,6 +107,15 @@ def _get_llm(provider: str, model: str, api_key: str | None):
             temperature=0.1,
             api_key=api_key or None,
             base_url=settings.zhipu_base_url,
+            max_retries=2,
+        )
+    elif provider == 'openrouter':
+        from langchain_openai import ChatOpenAI
+        return ChatOpenAI(
+            model=model,
+            temperature=0.1,
+            api_key=api_key or None,
+            base_url=settings.openrouter_base_url,
             max_retries=2,
         )
     else:  # google (default)

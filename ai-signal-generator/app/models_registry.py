@@ -169,13 +169,36 @@ async def _raw_zhipu() -> list[dict]:
         return _ZHIPU_FALLBACK
 
 
+async def _raw_openrouter() -> list[dict]:
+    """OpenRouter's native /models endpoint (richer than the OpenAI-compat one):
+    its metadata lets us keep only tool-calling-capable models, since every
+    signal cycle needs structured output. The full catalog is 300+ models."""
+    if not _key('openrouter'):
+        return []
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(f"{settings.openrouter_base_url}/models")
+            resp.raise_for_status()
+            data = resp.json().get("data", [])
+        return [
+            {"id": m["id"], "display_name": m.get("name", m["id"]), "provider": "openrouter"}
+            for m in data
+            if "tools" in (m.get("supported_parameters") or [])
+        ]
+    except Exception as exc:
+        logger.error("Failed to list OpenRouter models: %s", exc)
+        return []
+
+
 _RAW_FNS: dict[str, object] = {
-    "google":    _raw_google,
-    "openai":    _raw_openai,
-    "anthropic": _raw_anthropic,
-    "groq":      _raw_groq,
-    "cerebras":  _raw_cerebras,
-    "zhipu":     _raw_zhipu,
+    "google":     _raw_google,
+    "openai":     _raw_openai,
+    "anthropic":  _raw_anthropic,
+    "groq":       _raw_groq,
+    "cerebras":   _raw_cerebras,
+    "zhipu":      _raw_zhipu,
+    "openrouter": _raw_openrouter,
 }
 
 
@@ -340,6 +363,12 @@ async def _probe_zhipu(model_id: str) -> bool:
         return True
 
 
+# openrouter is deliberately absent: its catalog is 300+ models, and probing each
+# with a live generation call (daily!) would be slow and spend real money on the
+# paid ones. probe_all_models() skips providers without a probe fn, so openrouter
+# models always show as unverified (⚠) and never enter auto-derived fallback
+# chains (cached_ok_models stays empty) — usable as a primary or in a manual
+# llm_fallback_chain, which is the intended role.
 _PROBE_FNS: dict[str, object] = {
     "google":    _probe_google,
     "openai":    _probe_openai,
