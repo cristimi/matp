@@ -166,22 +166,14 @@ async def internal_trigger(body: TriggerRequest):
     strategy_id = body.strategy_id
 
     async with pool.acquire() as conn:
+        # s.*, a.* — the same shape the scheduler loads. A hand-picked column
+        # list here silently dropped every newer use_* flag (use_orderbook,
+        # use_cvd, use_geometry, ...), so manual-trigger cycles ran with those
+        # data sources disabled and the LLM held citing "missing flow data"
+        # while scheduled cycles saw the full context.
         strategy = await conn.fetchrow(
             """
-            SELECT
-                s.id, s.name, s.symbol, s.webhook_secret, s.account_id,
-                s.platform, s.default_leverage, s.margin_mode, s.pnl_today, s.enabled,
-                a.interval_no_position, a.interval_position_open, a.interval_at_risk,
-                a.at_risk_threshold_pct,
-                a.use_technical, a.use_fear_greed, a.use_funding_rate, a.use_open_interest,
-                a.use_news, a.use_btc_dominance, a.use_macro,
-                a.indicators, a.lookback_days, a.confidence_threshold,
-                a.cooldown_entry_minutes, a.cooldown_increase_minutes,
-                a.cooldown_stop_adj_minutes, a.template_id, a.custom_instructions,
-                a.dry_run,
-                a.llm_provider, a.llm_model,
-                a.llm_scout_provider, a.llm_scout_model,
-                a.premium_force_interval, a.llm_fallback_chain
+            SELECT s.*, a.*
             FROM strategies s
             JOIN ai_strategy_config a ON a.strategy_id = s.id
             WHERE s.id = $1

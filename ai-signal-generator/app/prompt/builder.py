@@ -590,16 +590,23 @@ def _render_task(state: dict) -> str:
         ]
     else:
         lines += [
-            "Identify whether current market conditions present a high-conviction trade setup.",
+            "Identify whether current market conditions present a tradeable setup.",
             'If a setup exists: output "open_long" or "open_short" with full parameters.',
             'If conditions are unclear or insufficient confluence: output "hold".',
+            'Propose the trade you actually see and score it honestly — a marginal',
+            'setup with honest confidence is more useful than a defensive "hold";',
+            'downstream risk controls decide whether it executes.',
         ]
 
+    # Deliberately no mention of the strategy's execution threshold: telling
+    # the model a band "will be rejected" teaches it to output hold instead of
+    # an honestly-scored proposal, which starves the gate of anything to judge
+    # (observed live: 3 strategies with 0 entry proposals in 14 days).
     lines += [
         '',
         'CONFIDENCE SCALE:',
-        '0.50-0.65: Speculative — below threshold, will be rejected',
-        '0.65-0.75: Moderate — meets minimum threshold',
+        '0.50-0.65: Speculative — weak or mixed evidence',
+        '0.65-0.75: Moderate — reasonable setup, partial confluence',
         '0.75-0.85: High conviction — clear confluence',
         '0.85-0.95: Exceptional setup — multiple independent signals aligned',
         'Never output confidence above 0.95.',
