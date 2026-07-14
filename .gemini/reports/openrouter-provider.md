@@ -66,3 +66,28 @@ dashboard-api, dashboard-ui redeployed and healthy.
 Add an OpenRouter key in Settings → LLM Provider Keys → OpenRouter, then pick
 provider "OpenRouter" in a strategy's LLM config; the model dropdown lists all
 tool-capable OpenRouter models (unverified ⚠ by design).
+
+## Addendum (2026-07-14, later): real-key live test + mobile Save button fix
+
+User added their OpenRouter key via the Settings UI (id 10, label "Matp"); pool
+hot-reloaded it. Live structured-output test through the production
+`call_llm_chain` path with three free-tier candidates exercised the full machinery
+in one run:
+
+```
+attempt 1 [openrouter/tencent/hy3:free]              → structured-output parse failed → chain fallback
+attempt 2 [openrouter/google/gemma-4-31b-it:free]    → real 429 (upstream) → classified rate_limit,
+                                                       key_pool: openrouter/Matp cooldown 60s
+attempt 3 [openrouter/nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free] → SERVED
+served_by: {'provider': 'openrouter', 'model': 'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free', 'key_label': 'Matp'}
+signal:   {'action': 'hold', 'confidence': 0.5, 'reasoning': 'Market is in a consolidation phase...'}
+usage:    {'input_tokens': 853, 'output_tokens': 2230, 'total_tokens': 3083}
+```
+
+Cooldown expired on schedule; key back to `active` in /internal/llm-keys/status.
+
+Mobile bug (reported by user): the add-key form put label + key + Save/Cancel in one
+flex row, overflowing on phones — Save was off-screen. Fixed: form stacks vertically
+below the `sm:` breakpoint (`flex-col sm:flex-row`, inputs `w-full` on mobile).
+Deployed as asset `index-B3qceSM0.js` (verified live via curl + grep in the served
+container).

@@ -270,13 +270,14 @@ function LlmKeysSection() {
                 )}
                 {isAdding && (
                   <div className="mt-2 space-y-2">
-                    <div className="flex items-center gap-2">
+                    {/* Stacks on mobile so the Save button stays on-screen; single row from sm: up */}
+                    <div className="flex flex-col sm:flex-row sm:items-center gap-2">
                       <input
                         type="text"
                         value={labelInput}
                         onChange={e => setLabelInput(e.target.value)}
                         placeholder="Label (e.g. personal, work)"
-                        className="w-40 text-xs font-mono px-2 py-1.5 rounded border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-950 text-gray-700 dark:text-gray-200"
+                        className="w-full sm:w-40 text-xs font-mono px-2 py-1.5 rounded border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-950 text-gray-700 dark:text-gray-200"
                       />
                       <input
                         type="password"
@@ -284,12 +285,14 @@ function LlmKeysSection() {
                         value={keyInput}
                         onChange={e => setKeyInput(e.target.value)}
                         placeholder="Paste API key"
-                        className="flex-1 text-xs font-mono px-2 py-1.5 rounded border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-950 text-gray-700 dark:text-gray-200"
+                        className="w-full sm:flex-1 text-xs font-mono px-2 py-1.5 rounded border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-950 text-gray-700 dark:text-gray-200"
                       />
-                      <button className="btn-primary text-xs px-3 py-1.5" disabled={saving} onClick={() => addKey(id)}>
-                        {saving ? 'Saving…' : 'Save'}
-                      </button>
-                      <button className="text-xs text-gray-400 hover:text-gray-600" onClick={() => setAdding(null)}>Cancel</button>
+                      <div className="flex items-center gap-3 shrink-0">
+                        <button className="btn-primary text-xs px-3 py-1.5" disabled={saving} onClick={() => addKey(id)}>
+                          {saving ? 'Saving…' : 'Save'}
+                        </button>
+                        <button className="text-xs text-gray-400 hover:text-gray-600" onClick={() => setAdding(null)}>Cancel</button>
+                      </div>
                     </div>
                     {error && <p className="text-xs text-red-500">{error}</p>}
                   </div>
