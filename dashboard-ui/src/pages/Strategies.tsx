@@ -1679,7 +1679,7 @@ export default function Strategies() {
                   marginBottom:'14px',
                 }}>
                   {([
-                    { key:'interval_no_position'   as const, label:'No Position', opts:['1h','2h','4h','8h','1d'] },
+                    { key:'interval_no_position'   as const, label:'No Position', opts:['5m','15m','30m','1h','2h','4h','8h','1d'] },
                     { key:'interval_position_open' as const, label:'Position Open', opts:['5m','10m','15m','30m'] },
                     { key:'interval_at_risk'       as const, label:'At Risk', opts:['1m','5m','10m'] },
                   ]).map(f => (
@@ -1914,7 +1914,7 @@ export default function Strategies() {
                 </p>
                 <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:'8px', marginBottom:'14px' }}>
                   {([
-                    { key:'interval_no_position'   as const, label:'No Position', opts:['1h','2h','4h','8h','1d'] },
+                    { key:'interval_no_position'   as const, label:'No Position', opts:['5m','15m','30m','1h','2h','4h','8h','1d'] },
                     { key:'interval_position_open' as const, label:'Position Open', opts:['5m','10m','15m','30m'] },
                     { key:'interval_at_risk'       as const, label:'At Risk', opts:['1m','5m','10m'] },
                   ]).map(f => (
