@@ -85,7 +85,7 @@ def _wire(monkeypatch, *, pool, scout_outcome=None, premium_result=None):
     monkeypatch.setattr(na, 'build_prompt', fake_build_prompt)
     monkeypatch.setattr(na, 'get_estimated_tokens', lambda _p: 1234)
 
-    async def fake_attempt(provider, model, prompt, timeout):
+    async def fake_attempt(provider, model, prompt, timeout, api_key=None):
         calls['scout'].append((provider, model))
         if isinstance(scout_outcome, Exception):
             raise scout_outcome

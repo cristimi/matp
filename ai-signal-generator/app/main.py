@@ -49,8 +49,8 @@ async def lifespan(app: FastAPI):
     await init_db()
     pool  = get_pool()
 
-    from app.config_secrets import apply_llm_key_overrides
-    await apply_llm_key_overrides(pool, settings)
+    from app.key_pool import key_pool
+    await key_pool.load(pool)
 
     from app.data.compute_executor import warmup as compute_warmup
     compute_warmup()
@@ -136,6 +136,25 @@ async def list_models(provider: str):
     except Exception as exc:
         logger.error("Failed to list models for %s: %s", provider, exc)
         return {"provider": provider, "models": [], "key_configured": False, "error": str(exc)}
+
+
+# ── /internal/llm-keys ───────────────────────────────────────────────────────
+
+@app.post("/internal/llm-keys/reload")
+async def reload_llm_keys():
+    """Re-read llm_keys from the DB without a restart. Called by dashboard-api
+    after any key add/edit/delete so changes apply immediately."""
+    from app.key_pool import key_pool
+    counts = await key_pool.reload()
+    return {"status": "ok", "keys_per_provider": counts}
+
+
+@app.get("/internal/llm-keys/status")
+async def llm_keys_status():
+    """Runtime key state (active / cooldown / auth_failed) — in-memory, this
+    process only. Proxied by dashboard-api for the Settings UI."""
+    from app.key_pool import key_pool
+    return {"providers": key_pool.status()}
 
 
 @app.post("/internal/models/verify")

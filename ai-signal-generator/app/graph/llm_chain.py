@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field
 
 from app.config import settings
 from app import models_registry
+from app.key_pool import key_pool
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +31,10 @@ _LLM_TIMEOUT          = 90  # seconds — hard ceiling for the primary call
 # Worst case total: 90 + 3*45 = 225 s (see _MAX_FALLBACK_ATTEMPTS).
 _FALLBACK_TIMEOUT     = 45
 _MAX_FALLBACK_ATTEMPTS = 3   # beyond the primary
+# Key rotation happens WITHIN a candidate: a rate-limited/invalid key retries the
+# same (provider, model) with the provider's next key before the chain moves on.
+# Rate-limit rejections return fast, so this barely dents the time budget.
+_MAX_KEYS_PER_CANDIDATE = 3
 
 
 class LLMSignalOutput(BaseModel):
@@ -60,24 +65,13 @@ _STRUCTURED_OUTPUT_METHOD = {
     'cerebras': 'function_calling',
 }
 
-# provider → settings attribute holding its API key (empty string = not configured)
-_PROVIDER_KEY_ATTR = {
-    'google':    'gemini_api_key',
-    'openai':    'openai_api_key',
-    'anthropic': 'anthropic_api_key',
-    'groq':      'groq_api_key',
-    'cerebras':  'cerebras_api_key',
-    'zhipu':     'zhipu_api_key',
-}
-
-
-def _get_llm(provider: str, model: str):
+def _get_llm(provider: str, model: str, api_key: str | None):
     if provider == 'openai':
         from langchain_openai import ChatOpenAI
         return ChatOpenAI(
             model=model,
             temperature=0.1,
-            api_key=settings.openai_api_key or None,
+            api_key=api_key or None,
             max_retries=2,
         )
     elif provider == 'anthropic':
@@ -85,7 +79,7 @@ def _get_llm(provider: str, model: str):
         return ChatAnthropic(
             model=model,
             temperature=0.1,
-            api_key=settings.anthropic_api_key or None,
+            api_key=api_key or None,
             max_retries=2,
         )
     elif provider == 'groq':
@@ -93,7 +87,7 @@ def _get_llm(provider: str, model: str):
         return ChatGroq(
             model=model,
             temperature=0.1,
-            api_key=settings.groq_api_key or None,
+            api_key=api_key or None,
             max_retries=2,
         )
     elif provider == 'cerebras':
@@ -101,7 +95,7 @@ def _get_llm(provider: str, model: str):
         return ChatOpenAI(
             model=model,
             temperature=0.1,
-            api_key=settings.cerebras_api_key or None,
+            api_key=api_key or None,
             base_url="https://api.cerebras.ai/v1",
             max_retries=2,
         )
@@ -110,7 +104,7 @@ def _get_llm(provider: str, model: str):
         return ChatOpenAI(
             model=model,
             temperature=0.1,
-            api_key=settings.zhipu_api_key or None,
+            api_key=api_key or None,
             base_url=settings.zhipu_base_url,
             max_retries=2,
         )
@@ -119,14 +113,37 @@ def _get_llm(provider: str, model: str):
         return ChatGoogleGenerativeAI(
             model=model,
             temperature=0.1,
-            google_api_key=settings.gemini_api_key or None,
+            google_api_key=api_key or None,
             max_retries=2,
         )
 
 
 def _provider_has_key(provider: str) -> bool:
-    attr = _PROVIDER_KEY_ATTR.get(provider)
-    return bool(attr and getattr(settings, attr, ''))
+    return key_pool.has_key(provider)
+
+
+# Provider error strings that identify a KEY problem (as opposed to a model/server
+# problem). Rate limits rotate to the next key after a cooldown; auth failures kill
+# the key for this process. Anything else is the model's fault → next chain candidate.
+_RATE_LIMIT_MARKERS = (
+    '429', 'rate limit', 'rate_limit', 'ratelimit',
+    'RESOURCE_EXHAUSTED', 'quota', 'Too Many Requests',
+)
+_AUTH_MARKERS = (
+    '401', '403', 'invalid api key', 'invalid_api_key', 'API key not valid',
+    'authentication_error', 'PERMISSION_DENIED', 'invalid x-api-key', 'Incorrect API key',
+)
+
+
+def classify_llm_error(exc: Exception) -> str:
+    """'rate_limit' | 'auth' | 'other' — decides key rotation vs chain fallback."""
+    text = f"{type(exc).__name__}: {exc}"
+    lower = text.lower()
+    if any(m.lower() in lower for m in _RATE_LIMIT_MARKERS):
+        return 'rate_limit'
+    if any(m.lower() in lower for m in _AUTH_MARKERS):
+        return 'auth'
+    return 'other'
 
 
 def _parse_manual_chain(raw) -> list[tuple[str, str]]:
@@ -193,10 +210,11 @@ async def build_fallback_chain(
     return chain[:_MAX_FALLBACK_ATTEMPTS]
 
 
-async def _attempt(provider: str, model: str, prompt, timeout: int) -> dict:
+async def _attempt(provider: str, model: str, prompt, timeout: int,
+                   api_key: str | None = None) -> dict:
     """One structured-output call. Returns {'signal','usage'} on success;
     raises on exception/timeout; returns {'signal': None, ...} on parse failure."""
-    llm = _get_llm(provider, model)
+    llm = _get_llm(provider, model, api_key)
     method_kwargs = {}
     if provider in _STRUCTURED_OUTPUT_METHOD:
         method_kwargs['method'] = _STRUCTURED_OUTPUT_METHOD[provider]
@@ -226,17 +244,60 @@ async def _attempt(provider: str, model: str, prompt, timeout: int) -> dict:
     return {'signal': signal, 'usage': llm_usage, 'error': None}
 
 
+async def _attempt_with_keys(provider: str, model: str, prompt, timeout: int,
+                             attempts: list[dict]) -> dict | None:
+    """Run one chain candidate, rotating the provider's keys on rate-limit/auth
+    failures (up to _MAX_KEYS_PER_CANDIDATE). Returns the _attempt result dict
+    on success/parse-failure, or None when the candidate is exhausted — key
+    failures are appended to `attempts` as they happen."""
+    tried_ids: set[int | None] = set()
+    handle = key_pool.acquire(provider)
+
+    for _ in range(_MAX_KEYS_PER_CANDIDATE):
+        key = handle.key if handle else None
+        label = handle.label if handle else 'none'
+        try:
+            result = await _attempt(provider, model, prompt, timeout, api_key=key)
+        except Exception as exc:
+            error = f"{type(exc).__name__}: {exc}"
+            kind = classify_llm_error(exc)
+            attempts.append({'provider': provider, 'model': model,
+                             'key_label': label, 'error': error})
+            logger.warning("LLM attempt [%s/%s] key=%s failed (%s): %s",
+                           provider, model, label, kind, error)
+            if handle is None or kind == 'other':
+                return None            # not a key problem — move to next candidate
+            if kind == 'rate_limit':
+                key_pool.report_rate_limited(handle)
+            else:  # auth
+                key_pool.report_auth_failed(handle, error)
+            tried_ids.add(handle.id)
+            handle = key_pool.acquire_after(provider, tried_ids)
+            if handle is None:
+                return None            # no more keys for this provider
+            continue
+
+        if handle is not None:
+            key_pool.report_ok(handle)
+        result['key_label'] = label
+        return result
+
+    return None
+
+
 async def call_llm_chain(prompt, candidates: list[tuple[str, str]]) -> dict:
     """
     Try each (provider, model) candidate in order; first success wins.
     A failure = exception, timeout, or structured-output parse failure.
+    Rate-limited / invalid keys rotate to the provider's next key within the
+    same candidate before the chain moves on (see _attempt_with_keys).
 
     Returns:
       signal    LLMSignalOutput | None (None = chain exhausted)
       usage     deciding call's token usage (on exhaustion: last attempt's
                 usage if any tokens were spent, so cost accounting survives)
-      served_by {'provider','model'} of the successful candidate, or None
-      attempts  [{'provider','model','error'}] — every FAILED attempt in order
+      served_by {'provider','model','key_label'} of the successful candidate, or None
+      attempts  [{'provider','model','key_label','error'}] — every FAILED attempt in order
       error     summary string when exhausted, else None
     """
     attempts: list[dict] = []
@@ -244,23 +305,20 @@ async def call_llm_chain(prompt, candidates: list[tuple[str, str]]) -> dict:
 
     for i, (provider, model) in enumerate(candidates):
         timeout = _LLM_TIMEOUT if i == 0 else _FALLBACK_TIMEOUT
-        try:
-            result = await _attempt(provider, model, prompt, timeout)
-        except Exception as exc:
-            error = f"{type(exc).__name__}: {exc}"
-            attempts.append({'provider': provider, 'model': model, 'error': error})
-            logger.warning("LLM attempt %d [%s/%s] failed: %s", i + 1, provider, model, error)
+        result = await _attempt_with_keys(provider, model, prompt, timeout, attempts)
+        if result is None:
             continue
 
         if result['usage']:
             last_usage = result['usage']
 
         if result['signal'] is None:
-            attempts.append({'provider': provider, 'model': model, 'error': result['error']})
+            attempts.append({'provider': provider, 'model': model,
+                             'key_label': result.get('key_label'), 'error': result['error']})
             logger.warning("LLM attempt %d [%s/%s] failed: %s", i + 1, provider, model, result['error'])
             continue
 
-        if i > 0:
+        if attempts:
             logger.warning(
                 "LLM fallback served: [%s/%s] answered after %d failed attempt(s); failed: %s",
                 provider, model, len(attempts),
@@ -269,7 +327,8 @@ async def call_llm_chain(prompt, candidates: list[tuple[str, str]]) -> dict:
         return {
             'signal':    result['signal'],
             'usage':     result['usage'],
-            'served_by': {'provider': provider, 'model': model},
+            'served_by': {'provider': provider, 'model': model,
+                          'key_label': result.get('key_label')},
             'attempts':  attempts,
             'error':     None,
         }

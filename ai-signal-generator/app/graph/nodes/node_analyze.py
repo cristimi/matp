@@ -80,13 +80,17 @@ async def _premium_result(prompt, provider: str, model: str, strategy_config: di
 
 
 async def _scout_result(prompt, provider: str, model: str) -> dict:
-    """Single scout attempt — deliberately NO fallback chain (walking the
-    chain for the cheap tier would defeat the cost purpose). Any failure
-    escalates directly to premium."""
-    try:
-        result = await llm_chain._attempt(provider, model, prompt, llm_chain._LLM_TIMEOUT)
-    except Exception as exc:
-        return {'signal': None, 'usage': None, 'error': f"{type(exc).__name__}: {exc}"}
+    """Single scout candidate — deliberately NO model fallback chain (walking
+    the chain for the cheap tier would defeat the cost purpose). A rate-limited
+    or invalid key still rotates to the provider's next key within this one
+    candidate. Any other failure escalates directly to premium."""
+    attempts: list[dict] = []
+    result = await llm_chain._attempt_with_keys(
+        provider, model, prompt, llm_chain._LLM_TIMEOUT, attempts,
+    )
+    if result is None:
+        error = "; ".join(a['error'] for a in attempts) or 'no usable key'
+        return {'signal': None, 'usage': None, 'error': error}
     return result
 
 

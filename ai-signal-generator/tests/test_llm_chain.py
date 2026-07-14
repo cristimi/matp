@@ -47,7 +47,7 @@ class _AttemptScript:
         self.script = script
         self.calls: list[tuple[str, str]] = []
 
-    async def __call__(self, provider, model, prompt, timeout):
+    async def __call__(self, provider, model, prompt, timeout, api_key=None):
         self.calls.append((provider, model))
         outcome = self.script[(provider, model)]
         if isinstance(outcome, Exception):
@@ -66,7 +66,8 @@ def test_primary_success_no_fallback(monkeypatch):
     monkeypatch.setattr(llm_chain, '_attempt', script)
     result = _run(call_llm_chain('p', [('google', 'gemini-2.5-flash'), ('google', 'gemini-2.5-pro')]))
     assert result['signal'] is not None
-    assert result['served_by'] == {'provider': 'google', 'model': 'gemini-2.5-flash'}
+    assert result['served_by']['provider'] == 'google'
+    assert result['served_by']['model'] == 'gemini-2.5-flash'
     assert result['attempts'] == []
     assert result['error'] is None
     assert script.calls == [('google', 'gemini-2.5-flash')]  # second candidate never called
@@ -80,7 +81,8 @@ def test_primary_exception_fallback_serves(monkeypatch):
     monkeypatch.setattr(llm_chain, '_attempt', script)
     result = _run(call_llm_chain('p', [('google', 'gemini-2.5-flash'), ('google', 'gemini-2.5-pro')]))
     assert result['signal'] is not None
-    assert result['served_by'] == {'provider': 'google', 'model': 'gemini-2.5-pro'}
+    assert result['served_by']['provider'] == 'google'
+    assert result['served_by']['model'] == 'gemini-2.5-pro'
     assert len(result['attempts']) == 1
     assert result['attempts'][0]['model'] == 'gemini-2.5-flash'
     assert 'provider down' in result['attempts'][0]['error']
@@ -93,7 +95,8 @@ def test_primary_timeout_fallback_serves(monkeypatch):
     })
     monkeypatch.setattr(llm_chain, '_attempt', script)
     result = _run(call_llm_chain('p', [('google', 'gemini-2.5-flash'), ('groq', 'llama-3.3-70b')]))
-    assert result['served_by'] == {'provider': 'groq', 'model': 'llama-3.3-70b'}
+    assert result['served_by']['provider'] == 'groq'
+    assert result['served_by']['model'] == 'llama-3.3-70b'
     assert len(result['attempts']) == 1
 
 
@@ -105,7 +108,8 @@ def test_parse_failure_fallback_serves(monkeypatch):
     monkeypatch.setattr(llm_chain, '_attempt', script)
     result = _run(call_llm_chain('p', [('zhipu', 'glm-4.5'), ('google', 'gemini-2.5-pro')]))
     assert result['signal'] is not None
-    assert result['served_by'] == {'provider': 'google', 'model': 'gemini-2.5-pro'}
+    assert result['served_by']['provider'] == 'google'
+    assert result['served_by']['model'] == 'gemini-2.5-pro'
     assert 'parse failed' in result['attempts'][0]['error']
 
 
@@ -124,6 +128,90 @@ def test_chain_exhausted(monkeypatch):
     assert 'e1' in result['error'] and 'parse failed' in result['error']
     # token spend of the parse-failed attempt survives for cost accounting
     assert result['usage'] == {'input_tokens': 9, 'output_tokens': 0, 'total_tokens': 9}
+
+
+# ── key rotation within a candidate ───────────────────────────────────────────
+
+def _pool_with(slug: str, labels: list[str]):
+    """A KeyPool preloaded with in-memory keys k0, k1, ... for one provider."""
+    from app.key_pool import KeyPool, KeyHandle, _Entry
+    pool = KeyPool()
+    pool._entries = {slug: [
+        _Entry(handle=KeyHandle(id=i + 1, provider=slug, label=lab, key=f'k{i}'))
+        for i, lab in enumerate(labels)
+    ]}
+    return pool
+
+
+def test_rate_limit_rotates_to_next_key_same_candidate(monkeypatch):
+    pool = _pool_with('gemini', ['first', 'second'])
+    monkeypatch.setattr(llm_chain, 'key_pool', pool)
+    keys_used = []
+
+    async def attempt(provider, model, prompt, timeout, api_key=None):
+        keys_used.append(api_key)
+        if api_key == 'k0':
+            raise RuntimeError('429 Too Many Requests')
+        return _ok()
+
+    monkeypatch.setattr(llm_chain, '_attempt', attempt)
+    result = _run(call_llm_chain('p', [('google', 'gemini-2.5-flash')]))
+    assert result['signal'] is not None
+    assert keys_used == ['k0', 'k1']                       # same model, rotated key
+    assert result['served_by']['key_label'] == 'second'
+    assert len(result['attempts']) == 1                    # the rate-limited try
+    assert pool.acquire('google').label == 'second'        # first key is cooling down
+
+
+def test_auth_failure_disables_key_and_rotates(monkeypatch):
+    pool = _pool_with('gemini', ['first', 'second'])
+    monkeypatch.setattr(llm_chain, 'key_pool', pool)
+
+    async def attempt(provider, model, prompt, timeout, api_key=None):
+        if api_key == 'k0':
+            raise RuntimeError('401 invalid api key')
+        return _ok()
+
+    monkeypatch.setattr(llm_chain, '_attempt', attempt)
+    result = _run(call_llm_chain('p', [('google', 'gemini-2.5-flash')]))
+    assert result['served_by']['key_label'] == 'second'
+    entry = pool._entries['gemini'][0]
+    assert entry.dead and 'invalid api key' in entry.dead_reason
+    assert pool.has_key('google')                          # second key still alive
+
+
+def test_all_keys_rate_limited_falls_through_to_next_candidate(monkeypatch):
+    pool = _pool_with('gemini', ['first', 'second'])
+    pool._entries['openai'] = _pool_with('openai', ['oai'])._entries['openai']
+    monkeypatch.setattr(llm_chain, 'key_pool', pool)
+
+    async def attempt(provider, model, prompt, timeout, api_key=None):
+        if provider == 'google':
+            raise RuntimeError('429 quota exceeded')
+        return _ok()
+
+    monkeypatch.setattr(llm_chain, '_attempt', attempt)
+    result = _run(call_llm_chain('p', [('google', 'g-model'), ('openai', 'o-model')]))
+    assert result['served_by']['provider'] == 'openai'
+    assert len(result['attempts']) == 2                    # both gemini keys burned
+
+
+def test_non_key_error_does_not_rotate_keys(monkeypatch):
+    pool = _pool_with('gemini', ['first', 'second'])
+    monkeypatch.setattr(llm_chain, 'key_pool', pool)
+    keys_used = []
+
+    async def attempt(provider, model, prompt, timeout, api_key=None):
+        keys_used.append((provider, api_key))
+        if provider == 'google':
+            raise RuntimeError('500 internal server error')
+        return _ok()
+
+    monkeypatch.setattr(llm_chain, '_attempt', attempt)
+    result = _run(call_llm_chain('p', [('google', 'g-model'), ('openai', 'o-model')]))
+    # server error is the model's problem: one try only, no second key burned
+    assert keys_used[0] == ('google', 'k0')
+    assert all(p != 'google' for p, _ in keys_used[1:])
 
 
 # ── build_fallback_chain ──────────────────────────────────────────────────────

@@ -14,8 +14,15 @@ import time
 from pydantic import BaseModel
 
 from app.config import settings
+from app.key_pool import key_pool
 
 logger = logging.getLogger(__name__)
+
+
+def _key(provider: str) -> str:
+    """Current best API key for a provider (pool-managed, env fallback)."""
+    handle = key_pool.acquire(provider)
+    return handle.key if handle else ""
 
 _TTL            = 86_400   # cache TTL: 24 h
 _PROBE_TIMEOUT  = 15       # seconds per probe call
@@ -50,14 +57,14 @@ def clear_cache(provider: str | None = None) -> None:
 # ── Raw model lists ───────────────────────────────────────────────────────────
 
 async def _raw_google() -> list[dict]:
-    if not settings.gemini_api_key:
+    if not _key('google'):
         return []
     try:
         import google.generativeai as genai
         import warnings
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            genai.configure(api_key=settings.gemini_api_key)
+            genai.configure(api_key=_key('google'))
             models = genai.list_models()
         return [
             {"id": m.name.replace("models/", ""), "display_name": m.display_name, "provider": "google"}
@@ -70,11 +77,11 @@ async def _raw_google() -> list[dict]:
 
 
 async def _raw_openai() -> list[dict]:
-    if not settings.openai_api_key:
+    if not _key('openai'):
         return []
     try:
         from openai import AsyncOpenAI
-        client = AsyncOpenAI(api_key=settings.openai_api_key)
+        client = AsyncOpenAI(api_key=_key('openai'))
         page = await client.models.list()
         return [
             {"id": m.id, "display_name": m.id, "provider": "openai"}
@@ -94,12 +101,12 @@ _ANTHROPIC_FALLBACK = [
 
 
 async def _raw_anthropic() -> list[dict]:
-    if not settings.anthropic_api_key:
+    if not _key('anthropic'):
         # No key — return fallback so the UI shows options even before key is configured
         return _ANTHROPIC_FALLBACK
     try:
         import anthropic
-        client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+        client = anthropic.Anthropic(api_key=_key('anthropic'))
         page = client.models.list(limit=100)
         return [
             {"id": m.id, "display_name": m.display_name, "provider": "anthropic"}
@@ -111,11 +118,11 @@ async def _raw_anthropic() -> list[dict]:
 
 
 async def _raw_groq() -> list[dict]:
-    if not settings.groq_api_key:
+    if not _key('groq'):
         return []
     try:
         from groq import AsyncGroq
-        client = AsyncGroq(api_key=settings.groq_api_key)
+        client = AsyncGroq(api_key=_key('groq'))
         page = await client.models.list()
         return [
             {"id": m.id, "display_name": m.id, "provider": "groq"}
@@ -134,11 +141,11 @@ _ZHIPU_FALLBACK = [
 
 
 async def _raw_cerebras() -> list[dict]:
-    if not settings.cerebras_api_key:
+    if not _key('cerebras'):
         return []
     try:
         from openai import AsyncOpenAI
-        client = AsyncOpenAI(api_key=settings.cerebras_api_key,
+        client = AsyncOpenAI(api_key=_key('cerebras'),
                              base_url="https://api.cerebras.ai/v1")
         page = await client.models.list()
         return [{"id": m.id, "display_name": m.id, "provider": "cerebras"} for m in page.data]
@@ -148,11 +155,11 @@ async def _raw_cerebras() -> list[dict]:
 
 
 async def _raw_zhipu() -> list[dict]:
-    if not settings.zhipu_api_key:
+    if not _key('zhipu'):
         return []
     try:
         from openai import AsyncOpenAI
-        client = AsyncOpenAI(api_key=settings.zhipu_api_key,
+        client = AsyncOpenAI(api_key=_key('zhipu'),
                              base_url=settings.zhipu_base_url)
         page = await client.models.list()
         models = [{"id": m.id, "display_name": m.id, "provider": "zhipu"} for m in page.data]
@@ -187,7 +194,7 @@ async def _probe_google(model_id: str) -> bool:
         llm = ChatGoogleGenerativeAI(
             model=model_id,
             temperature=0.1,
-            google_api_key=settings.gemini_api_key,
+            google_api_key=_key('google'),
             max_retries=0,
         )
         resp = await asyncio.wait_for(llm.ainvoke(_PROBE_PROMPT), timeout=_PROBE_TIMEOUT)
@@ -208,7 +215,7 @@ async def _probe_openai(model_id: str) -> bool:
         llm = ChatOpenAI(
             model=model_id,
             temperature=0.1,
-            api_key=settings.openai_api_key,
+            api_key=_key('openai'),
             max_retries=0,
         )
         resp = await asyncio.wait_for(llm.ainvoke(_PROBE_PROMPT), timeout=_PROBE_TIMEOUT)
@@ -223,14 +230,14 @@ async def _probe_openai(model_id: str) -> bool:
 
 
 async def _probe_anthropic(model_id: str) -> bool:
-    if not settings.anthropic_api_key:
+    if not _key('anthropic'):
         return True  # no key to verify with — pass through
     try:
         from langchain_anthropic import ChatAnthropic
         llm = ChatAnthropic(
             model=model_id,
             temperature=0.1,
-            api_key=settings.anthropic_api_key,
+            api_key=_key('anthropic'),
             max_retries=0,
         )
         resp = await asyncio.wait_for(llm.ainvoke(_PROBE_PROMPT), timeout=_PROBE_TIMEOUT)
@@ -263,7 +270,7 @@ async def _probe_groq(model_id: str) -> bool:
         llm = ChatGroq(
             model=model_id,
             temperature=0.1,
-            api_key=settings.groq_api_key,
+            api_key=_key('groq'),
             max_retries=0,
         )
         structured = llm.with_structured_output(_ProbeSchema, include_raw=True)
@@ -289,7 +296,7 @@ async def _probe_cerebras(model_id: str) -> bool:
     try:
         from langchain_openai import ChatOpenAI
         llm = ChatOpenAI(model=model_id, temperature=0.1,
-                         api_key=settings.cerebras_api_key,
+                         api_key=_key('cerebras'),
                          base_url="https://api.cerebras.ai/v1", max_retries=0)
         # method="function_calling": matches node_analyze._STRUCTURED_OUTPUT_METHOD —
         # the default "json_schema" method isn't reliably honored by this
@@ -313,7 +320,7 @@ async def _probe_zhipu(model_id: str) -> bool:
     try:
         from langchain_openai import ChatOpenAI
         llm = ChatOpenAI(model=model_id, temperature=0.1,
-                         api_key=settings.zhipu_api_key,
+                         api_key=_key('zhipu'),
                          base_url=settings.zhipu_base_url, max_retries=0)
         # method="function_calling": matches node_analyze._STRUCTURED_OUTPUT_METHOD —
         # the default "json_schema" method isn't reliably honored by this

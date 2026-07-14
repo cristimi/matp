@@ -107,48 +107,82 @@ const LLM_PROVIDERS: { id: string; label: string }[] = [
   { id: 'zhipu',     label: 'Zhipu (GLM)' },
 ];
 
-interface LlmKeyStatus { configured: boolean; updated_at: string | null; }
+interface LlmKeyRow {
+  id: number;
+  provider: string;
+  label: string;
+  enabled: boolean;
+  priority: number;
+  created_at: string;
+  updated_at: string;
+}
+
+interface LlmKeyRuntime {
+  id: number | null;
+  label: string;
+  state: 'active' | 'cooldown' | 'auth_failed';
+  cooldown_remaining_s: number | null;
+  dead_reason: string | null;
+}
+
+function RuntimeBadge({ rt }: { rt: LlmKeyRuntime | undefined }) {
+  if (!rt || rt.state === 'active') {
+    return <span className="text-[10px] font-mono text-emerald-600 dark:text-emerald-400">ACTIVE</span>;
+  }
+  if (rt.state === 'cooldown') {
+    return (
+      <span className="text-[10px] font-mono text-amber-600 dark:text-amber-500">
+        COOLDOWN{rt.cooldown_remaining_s ? ` ${rt.cooldown_remaining_s}s` : ''}
+      </span>
+    );
+  }
+  return (
+    <span className="text-[10px] font-mono text-red-500" title={rt.dead_reason ?? undefined}>
+      AUTH FAILED
+    </span>
+  );
+}
 
 function LlmKeysSection() {
-  const [status, setStatus]   = useState<Record<string, LlmKeyStatus>>({});
+  const [keys, setKeys]       = useState<Record<string, LlmKeyRow[]>>({});
+  const [runtime, setRuntime] = useState<Record<string, LlmKeyRuntime[]>>({});
   const [loading, setLoading] = useState(true);
-  const [editing, setEditing] = useState<string | null>(null);
-  const [inputValue, setInputValue] = useState('');
+  const [adding, setAdding]   = useState<string | null>(null);   // provider id
+  const [keyInput, setKeyInput]     = useState('');
+  const [labelInput, setLabelInput] = useState('');
   const [saving, setSaving]   = useState(false);
   const [error, setError]     = useState<string | null>(null);
-  const [justSaved, setJustSaved] = useState<string | null>(null);
 
   const load = () => {
-    api.get<Record<string, LlmKeyStatus>>('/config/llm-keys')
-      .then(setStatus)
+    api.get<Record<string, LlmKeyRow[]>>('/config/llm-keys')
+      .then(setKeys)
       .finally(() => setLoading(false));
+    api.get<{ providers: Record<string, LlmKeyRuntime[]> }>('/config/llm-keys/status')
+      .then(r => setRuntime(r.providers || {}))
+      .catch(() => setRuntime({}));
   };
 
   useEffect(() => { load(); }, []);
 
-  const startEdit = (id: string) => {
-    setEditing(id);
-    setInputValue('');
+  const startAdd = (provider: string) => {
+    setAdding(provider);
+    setKeyInput('');
+    setLabelInput('');
     setError(null);
   };
 
-  const cancelEdit = () => {
-    setEditing(null);
-    setInputValue('');
-    setError(null);
-  };
-
-  const save = async (id: string) => {
-    if (!inputValue.trim()) { setError('API key is required'); return; }
+  const addKey = async (provider: string) => {
+    if (!keyInput.trim()) { setError('API key is required'); return; }
     setSaving(true);
     setError(null);
     try {
-      await api.put(`/config/llm-keys/${id}`, { api_key: inputValue.trim() });
-      setEditing(null);
-      setInputValue('');
-      setJustSaved(id);
+      await api.post('/config/llm-keys', {
+        provider,
+        label: labelInput.trim() || `key ${(keys[provider]?.length ?? 0) + 1}`,
+        api_key: keyInput.trim(),
+      });
+      setAdding(null);
       load();
-      setTimeout(() => setJustSaved(cur => (cur === id ? null : cur)), 4000);
     } catch (e: any) {
       setError(e.message || 'Failed to save');
     } finally {
@@ -156,66 +190,108 @@ function LlmKeysSection() {
     }
   };
 
+  const toggleKey = async (row: LlmKeyRow) => {
+    await api.patch(`/config/llm-keys/${row.id}`, { enabled: !row.enabled });
+    load();
+  };
+
+  const deleteKey = async (row: LlmKeyRow) => {
+    if (!window.confirm(`Delete key "${row.label}" for ${row.provider}?`)) return;
+    await api.delete(`/config/llm-keys/${row.id}`);
+    load();
+  };
+
   return (
     <section className="stat-card space-y-4 shadow-sm transition-colors">
       <h3 className="font-semibold text-gray-700 dark:text-gray-200">LLM Provider Keys</h3>
       <p className="text-xs text-gray-500">
-        Used by AI Signal Generator, Strategy Tester, and the Social Listener. Keys are encrypted
-        at rest. Saving a key here takes effect the next time those services restart — it does
-        not hot-reload an already-running container.
+        Each provider can hold several keys. The AI Signal Generator uses them in the order
+        listed and rotates to the next key when one hits a rate limit — changes apply
+        immediately there. Strategy Tester and Social Listener pick up the first key on
+        their next restart. Keys are encrypted at rest and never shown again.
       </p>
       {loading ? (
         <p className="text-xs text-gray-400">Loading…</p>
       ) : (
         <div className="space-y-1">
           {LLM_PROVIDERS.map(({ id, label }) => {
-            const s = status[id];
-            const isEditing = editing === id;
+            const rows = keys[id] ?? [];
+            const rts  = runtime[id] ?? [];
+            const isAdding = adding === id;
             return (
               <div key={id} className="py-2.5 border-b border-gray-100 dark:border-gray-800 last:border-0">
                 <div className="flex items-center justify-between">
                   <span className="text-sm text-gray-600 dark:text-gray-300 font-medium">{label}</span>
-                  {!isEditing && (
-                    <div className="flex items-center gap-3">
-                      {s?.configured ? (
-                        <span className="text-xs text-emerald-600 dark:text-emerald-400 font-mono">
-                          ✓ SET{s.updated_at ? ` · ${new Date(s.updated_at).toLocaleDateString()}` : ''}
-                        </span>
-                      ) : (
-                        <span className="text-xs text-gray-400 dark:text-gray-600 font-mono bg-gray-50 dark:bg-gray-950 px-2 py-1 rounded">
-                          NOT CONFIGURED
-                        </span>
-                      )}
-                      <button
-                        className="text-xs text-indigo-600 dark:text-indigo-400 font-bold hover:underline"
-                        onClick={() => startEdit(id)}
-                      >
-                        {s?.configured ? 'Replace' : 'Set'}
-                      </button>
-                    </div>
-                  )}
-                </div>
-                {isEditing && (
-                  <div className="mt-2 flex items-center gap-2">
-                    <input
-                      type="password"
-                      autoFocus
-                      value={inputValue}
-                      onChange={e => setInputValue(e.target.value)}
-                      placeholder="Paste new API key"
-                      className="flex-1 text-xs font-mono px-2 py-1.5 rounded border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-950 text-gray-700 dark:text-gray-200"
-                    />
-                    <button className="btn-primary text-xs px-3 py-1.5" disabled={saving} onClick={() => save(id)}>
-                      {saving ? 'Saving…' : 'Save'}
+                  <div className="flex items-center gap-3">
+                    {rows.length === 0 && (
+                      <span className="text-xs text-gray-400 dark:text-gray-600 font-mono bg-gray-50 dark:bg-gray-950 px-2 py-1 rounded">
+                        NOT CONFIGURED
+                      </span>
+                    )}
+                    <button
+                      className="text-xs text-indigo-600 dark:text-indigo-400 font-bold hover:underline"
+                      onClick={() => startAdd(id)}
+                    >
+                      + Add key
                     </button>
-                    <button className="text-xs text-gray-400 hover:text-gray-600" onClick={cancelEdit}>Cancel</button>
+                  </div>
+                </div>
+                {rows.length > 0 && (
+                  <div className="mt-1.5 space-y-1">
+                    {rows.map(row => (
+                      <div key={row.id} className="flex items-center justify-between pl-3 py-1 rounded bg-gray-50 dark:bg-gray-950">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <span className={`text-xs font-mono truncate ${row.enabled ? 'text-gray-600 dark:text-gray-300' : 'text-gray-400 dark:text-gray-600 line-through'}`}>
+                            {row.label}
+                          </span>
+                          {row.enabled && <RuntimeBadge rt={rts.find(r => r.id === row.id)} />}
+                        </div>
+                        <div className="flex items-center gap-2 shrink-0 pr-2">
+                          <span className="text-[10px] text-gray-400 dark:text-gray-600 font-mono">
+                            {new Date(row.updated_at).toLocaleDateString()}
+                          </span>
+                          <button
+                            className="text-[10px] text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 font-bold uppercase"
+                            onClick={() => toggleKey(row)}
+                          >
+                            {row.enabled ? 'Disable' : 'Enable'}
+                          </button>
+                          <button
+                            className="text-[10px] text-red-400 hover:text-red-600 font-bold uppercase"
+                            onClick={() => deleteKey(row)}
+                          >
+                            Delete
+                          </button>
+                        </div>
+                      </div>
+                    ))}
                   </div>
                 )}
-                {isEditing && error && <p className="text-xs text-red-500 mt-1">{error}</p>}
-                {justSaved === id && (
-                  <p className="text-xs text-emerald-600 dark:text-emerald-400 mt-1">
-                    ✓ Saved — restart the affected service(s) to apply.
-                  </p>
+                {isAdding && (
+                  <div className="mt-2 space-y-2">
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="text"
+                        value={labelInput}
+                        onChange={e => setLabelInput(e.target.value)}
+                        placeholder="Label (e.g. personal, work)"
+                        className="w-40 text-xs font-mono px-2 py-1.5 rounded border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-950 text-gray-700 dark:text-gray-200"
+                      />
+                      <input
+                        type="password"
+                        autoFocus
+                        value={keyInput}
+                        onChange={e => setKeyInput(e.target.value)}
+                        placeholder="Paste API key"
+                        className="flex-1 text-xs font-mono px-2 py-1.5 rounded border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-950 text-gray-700 dark:text-gray-200"
+                      />
+                      <button className="btn-primary text-xs px-3 py-1.5" disabled={saving} onClick={() => addKey(id)}>
+                        {saving ? 'Saving…' : 'Save'}
+                      </button>
+                      <button className="text-xs text-gray-400 hover:text-gray-600" onClick={() => setAdding(null)}>Cancel</button>
+                    </div>
+                    {error && <p className="text-xs text-red-500">{error}</p>}
+                  </div>
                 )}
               </div>
             );
