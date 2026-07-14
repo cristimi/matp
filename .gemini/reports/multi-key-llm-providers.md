@@ -104,3 +104,33 @@ contains the new Settings section (grep in the served container confirmed).
   key); the DB `enabled` flag is only ever changed by the user.
 - strategy-tester / social-listener stay startup-only consumers (top-priority key, no
   rotation) — acceptable since backtests are manual and restartable.
+
+## Addendum (2026-07-14, later): gemini + anthropic env keys imported to DB
+
+Both keys that previously existed only in `.env` were imported through the API
+(`POST /config/llm-keys`, label "imported from .env") so they are visible and
+manageable in the Settings UI. Verification:
+
+```
+POST → {'id': 6, 'provider': 'gemini',    'label': 'imported from .env', 'enabled': True, 'priority': 0}
+POST → {'id': 7, 'provider': 'anthropic', 'label': 'imported from .env', 'enabled': True, 'priority': 0}
+key_pool: loaded {'anthropic': 1, 'cerebras': 1, 'gemini': 1, 'groq': 1, 'openai': 1, 'zhipu': 1}   (hot reload)
+```
+
+Decrypt-equality check inside the ai-signal-generator container (no key material
+printed): DB ciphertext decrypts to exactly the value of the env var —
+
+```
+gemini db-key == env-key: True
+anthropic db-key == env-key: True
+```
+
+Runtime status now serves the DB-backed handles (previously label "env"):
+
+```
+gemini    [{'id': 6, 'label': 'imported from .env', 'state': 'active'}]
+anthropic [{'id': 7, 'label': 'imported from .env', 'state': 'active'}]
+```
+
+`.env` entries left in place as harmless fallback (only used if a provider has
+zero DB rows).
