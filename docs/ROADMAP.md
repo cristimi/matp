@@ -44,6 +44,7 @@ Changes required: DB migration, one line in `node_ingest.py`, `ai.ts` GET/PUT, U
 ## Known Issues Fixed
 | Date | Issue | Fix |
 |------|-------|-----|
+| 2026-07-15 | Every zhipu glm-4.5/4.6/4.7 call failed with 400 error 1210 ("API 调用参数有误") — zhipu stopped accepting a **forced** `tool_choice` (`{"type":"function","function":{...}}`), which langchain's `function_calling` structured-output method always sends; only the glm-4.5-air fallback kept hype/tao cycles alive. Isolated live: `tools` alone OK, `tool_choice="auto"` OK, forced tool_choice → 1210 | zhipu branch in `_attempt` (`llm_chain.py`): `bind_tools([LLMSignalOutput], tool_choice='auto')` + manual tool-call parse into the same `{'raw','parsed','parsing_error'}` shape; zhipu removed from `_STRUCTURED_OUTPUT_METHOD`. Live-verified in the running container: glm-4.5/4.6/4.7/4.5-air all return parsed signals with usage |
 | 2026-06-10 | OHLCV returning stale price (~2400 instead of ~1600) because `since=90d_ago` + exchange candle cap left last candle 50 days in past | Removed `since` param — exchange now returns most recent N candles |
 | 2026-06-10 | `gemini-3-pro-preview` deprecated, returning 404 | Updated eth-range strategy to `gemini-3.1-pro-preview` |
 | 2026-06-10 | Config-reload was a no-op; scheduler slept full interval after interval change | Added interruptible sleep + immediate cycle on config reload |

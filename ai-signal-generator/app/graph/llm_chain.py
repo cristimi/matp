@@ -61,8 +61,11 @@ class LLMSignalOutput(BaseModel):
 # conversationally and can wrap its JSON in a markdown fence, which fails Pydantic
 # validation on the full LLMSignalOutput schema (seen live with zhipu/glm-4.5).
 # "function_calling" (the older tool-calling API) is far more universally supported.
+# zhipu is handled separately in _attempt: as of 2026-07 its glm-4.5/4.6/4.7 reject
+# a FORCED tool_choice ({"type":"function","function":{...}}) with error 1210, and
+# "function_calling" always forces the tool — so zhipu binds tools with
+# tool_choice="auto" and the tool call is parsed manually.
 _STRUCTURED_OUTPUT_METHOD = {
-    'zhipu':      'function_calling',
     'cerebras':   'function_calling',
     'openrouter': 'function_calling',
 }
@@ -246,14 +249,31 @@ async def _attempt(provider: str, model: str, prompt, timeout: int,
     """One structured-output call. Returns {'signal','usage'} on success;
     raises on exception/timeout; returns {'signal': None, ...} on parse failure."""
     llm = _get_llm(provider, model, api_key)
-    method_kwargs = {}
-    if provider in _STRUCTURED_OUTPUT_METHOD:
-        method_kwargs['method'] = _STRUCTURED_OUTPUT_METHOD[provider]
-    # include_raw: the plain structured wrapper returns only the parsed
-    # Pydantic object and discards usage_metadata — raw is needed to
-    # account actual token spend (input/output incl. thinking).
-    structured_llm = llm.with_structured_output(LLMSignalOutput, include_raw=True, **method_kwargs)
-    resp = await asyncio.wait_for(structured_llm.ainvoke(prompt), timeout=timeout)
+    if provider == 'zhipu':
+        # zhipu rejects a forced tool_choice (error 1210, see
+        # _STRUCTURED_OUTPUT_METHOD comment) — bind with "auto" and parse the
+        # tool call manually into the same {'raw','parsed','parsing_error'}
+        # shape with_structured_output(include_raw=True) returns.
+        llm_tools = llm.bind_tools([LLMSignalOutput], tool_choice='auto')
+        raw_msg = await asyncio.wait_for(llm_tools.ainvoke(prompt), timeout=timeout)
+        parsed, parse_error = None, None
+        if raw_msg.tool_calls:
+            try:
+                parsed = LLMSignalOutput(**raw_msg.tool_calls[0]['args'])
+            except Exception as exc:
+                parse_error = exc
+        else:
+            parse_error = "model made no tool call"
+        resp = {'raw': raw_msg, 'parsed': parsed, 'parsing_error': parse_error}
+    else:
+        method_kwargs = {}
+        if provider in _STRUCTURED_OUTPUT_METHOD:
+            method_kwargs['method'] = _STRUCTURED_OUTPUT_METHOD[provider]
+        # include_raw: the plain structured wrapper returns only the parsed
+        # Pydantic object and discards usage_metadata — raw is needed to
+        # account actual token spend (input/output incl. thinking).
+        structured_llm = llm.with_structured_output(LLMSignalOutput, include_raw=True, **method_kwargs)
+        resp = await asyncio.wait_for(structured_llm.ainvoke(prompt), timeout=timeout)
 
     raw    = resp.get('raw')
     signal = resp.get('parsed')
