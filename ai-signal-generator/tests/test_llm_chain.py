@@ -226,6 +226,41 @@ def test_non_key_error_does_not_rotate_keys(monkeypatch):
     assert all(p != 'google' for p, _ in keys_used[1:])
 
 
+# ── classify_llm_error ────────────────────────────────────────────────────────
+
+def test_server_error_with_401_in_request_id_is_not_auth():
+    """Regression (2026-07-15): a Zhipu server 500 carried an error-id timestamp
+    containing '…0401…'; bare substring matching classified it as auth and
+    killed a healthy key until reload."""
+    exc = type('InternalServerError', (Exception,), {})(
+        "Error code: 500 - {'error': {'code': '1234', 'message': "
+        "'网络错误，错误id：20260715040130d17f55d03efd418e，请稍后重试'}}"
+    )
+    assert llm_chain.classify_llm_error(exc) == 'other'
+
+
+def test_standalone_status_codes_still_classified():
+    assert llm_chain.classify_llm_error(RuntimeError('HTTP 401 Unauthorized')) == 'auth'
+    assert llm_chain.classify_llm_error(RuntimeError('Error code: 403 - denied')) == 'auth'
+    assert llm_chain.classify_llm_error(RuntimeError('got 429 from upstream')) == 'rate_limit'
+
+
+def test_sdk_exception_class_names_classified():
+    assert llm_chain.classify_llm_error(
+        type('RateLimitError', (Exception,), {})('slow down')) == 'rate_limit'
+    assert llm_chain.classify_llm_error(
+        type('AuthenticationError', (Exception,), {})('bad key')) == 'auth'
+
+
+def test_status_code_attribute_beats_message_text():
+    """A 5xx response is the server's fault even if the body mentions quota."""
+    exc = type('APIStatusError', (Exception,), {'status_code': 503})(
+        'quota subsystem unavailable')
+    assert llm_chain.classify_llm_error(exc) == 'other'
+    exc429 = type('APIStatusError', (Exception,), {'status_code': 429})('slow down')
+    assert llm_chain.classify_llm_error(exc429) == 'rate_limit'
+
+
 # ── build_fallback_chain ──────────────────────────────────────────────────────
 
 def _clear_registry_cache():

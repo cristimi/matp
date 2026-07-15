@@ -12,6 +12,7 @@ llm_fallback_chain override.
 import asyncio
 import json
 import logging
+import re
 from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
@@ -136,22 +137,42 @@ def _provider_has_key(provider: str) -> bool:
 # problem). Rate limits rotate to the next key after a cooldown; auth failures kill
 # the key for this process. Anything else is the model's fault → next chain candidate.
 _RATE_LIMIT_MARKERS = (
-    '429', 'rate limit', 'rate_limit', 'ratelimit',
-    'RESOURCE_EXHAUSTED', 'quota', 'Too Many Requests',
+    'rate limit', 'rate_limit', 'ratelimit', 'resourceexhausted',
+    'resource_exhausted', 'quota', 'too many requests',
 )
 _AUTH_MARKERS = (
-    '401', '403', 'invalid api key', 'invalid_api_key', 'API key not valid',
-    'authentication_error', 'PERMISSION_DENIED', 'invalid x-api-key', 'Incorrect API key',
+    'invalid api key', 'invalid_api_key', 'api key not valid',
+    'authentication_error', 'permission_denied', 'invalid x-api-key',
+    'incorrect api key',
 )
+# Bare status codes must stand alone: provider error bodies embed request ids /
+# timestamps that can contain these digits (a Zhipu 500 whose error-id contained
+# "…0401…" once got a healthy key killed as auth-failed).
+_STATUS_CODE_RE = re.compile(r'(?<![0-9A-Za-z])(401|403|429)(?![0-9A-Za-z])')
 
 
 def classify_llm_error(exc: Exception) -> str:
     """'rate_limit' | 'auth' | 'other' — decides key rotation vs chain fallback."""
-    text = f"{type(exc).__name__}: {exc}"
-    lower = text.lower()
-    if any(m.lower() in lower for m in _RATE_LIMIT_MARKERS):
+    # Structured signals are authoritative: SDK exception class names and HTTP
+    # status codes. Free-text matching is only a fallback.
+    name = type(exc).__name__
+    if 'RateLimit' in name:                     # openai/anthropic/groq RateLimitError
         return 'rate_limit'
-    if any(m.lower() in lower for m in _AUTH_MARKERS):
+    if 'Authentication' in name or 'PermissionDenied' in name:
+        return 'auth'
+    status = getattr(exc, 'status_code', None)  # openai/anthropic APIStatusError
+    if isinstance(status, int):
+        if status == 429:
+            return 'rate_limit'
+        if status in (401, 403):
+            return 'auth'
+        if status >= 500:
+            return 'other'                      # server fault, never the key's
+    lower = f"{name}: {exc}".lower()
+    code = _STATUS_CODE_RE.search(lower)
+    if any(m in lower for m in _RATE_LIMIT_MARKERS) or (code and code.group(1) == '429'):
+        return 'rate_limit'
+    if any(m in lower for m in _AUTH_MARKERS) or code:
         return 'auth'
     return 'other'
 
