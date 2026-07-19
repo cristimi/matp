@@ -44,9 +44,32 @@ held at all, momentum-gating it strictly dominates naive holding (same Sharpe,
 25pp shallower drawdown, ex-2021 flat vs −50%); and **when** a euphoric funding
 regime returns, delta-neutral harvesting monetizes it without price risk.
 
-## Open next steps
+## Phase-2 results: anchored walk-forward (`walkforward.py`, report in `.gemini/reports/edge-research-phase2-walkforward.md`)
 
-- Walk-forward validation (fit thresholds on 2021–2023, test 2024–2026).
+For each test year 2023–2026, the best config was selected on prior years only
+(cash always a candidate), then scored on the unseen year. Verdict: **walk-forward
+kills both as standing edges.**
+
+- **Momentum** OOS 2023–2026: +15.5% CAGR, Sharpe 0.56, maxDD −53% — but BTC
+  buy&hold over the identical window did +46.7% CAGR at Sharpe 1.05 with the same
+  drawdown. The selection also drifted (30d → 14d in 2025) and then lost two years
+  straight (−30.9%, −12.1%). Phase-1's shine was fit-window hindsight. Residual
+  value: drawdown-limited *crypto exposure* (maxDD −53% vs −71% EW), not alpha.
+- **Funding harvest** OOS: +0.1% total over 3.6y at Binance-ish costs, +2.1% at
+  HL-ish costs. Dormant exactly as the per-year table predicted — it even slept
+  through the 2024 bull (+2.2% that year, on notional). Confirmed: an episodic
+  premium worth *monitoring* (arm when trailing funding runs >40–60% annualized),
+  not an allocation.
+
+**Bottom line vs the original 10y question: neither strategy produced
+out-of-sample evidence of beating a US index fund. The index remains the honest
+recommendation for investment capital.** These scripts stay as the template for
+testing any future hypothesis — the discipline (real costs, cash as a candidate,
+anchored OOS) is the durable output of this research.
+
+## Remaining open threads (only if pursued deliberately)
+
 - Hyperliquid funding/fee validation (hourly funding, real HL fee tiers).
-- Weekly-rebalance and vol-targeted momentum variants.
 - Basis-path risk for the funding trade (currently ignored; converges at exit).
+- A funding-regime monitor (alert when trailing funding > 40% ann. for 3+ days)
+  would cost little and arms the one genuinely defensible opportunistic trade.
