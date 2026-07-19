@@ -119,6 +119,35 @@ Still open before capital: overlap-free portfolio sim (2025 had 105 events —
 clusters overlap, so per-event sums overstate a realizable equity curve),
 walk-forward, and the phase-3 multiple-window caveat (5 windows examined).
 
+## Phase-5 results: cross-venue funding-spread capture (`fetch_hl_funding.py`, `funding_spread_study.py`; report in `.gemini/reports/edge-research-phase5-funding-spread.md`)
+
+Hyperliquid hourly funding (3y, 24 coins, ~26k points each) vs Binance 8h
+funding (proxy for the CEX leg — in production it would be Blofin, whose
+adapter already exists). Delta-neutral pair: long the venue where longs are
+paid/pay less, short the other; collects |spread| every settlement.
+
+- **The spread landscape is rich**: mean |spread| 11–27%/yr annualized per
+  coin; SEI spends 48% of hours above 15%/yr, BLUR/TIA/JTO 32–37%.
+- **Naive capture churns to death** (24h trail, enter 15%: 3,956 episodes of
+  ~20h → −90%/yr). **Slow capture works**: 168h trail, enter 30%/exit 10%,
+  0.3%/episode → 286 episodes averaging 109h, **+17.6%/yr on notional**
+  (+21.3%/yr at HL/Blofin-like 0.2% costs), in-market ~52% of hours, and —
+  unlike everything else tested — **both sample halves positive in all four
+  slow configs** (e.g. +24.9% / +28.9%).
+- Honesty check on the |spread| accounting: holding the entry direction fixed
+  (no mid-episode flips) retains **86%** of gross — call it realistically
+  **+12–18%/yr on notional**, ≈+6–9%/yr on 2× unlevered capital,
+  market-neutral and uncorrelated with everything else in the book.
+
+First candidate in the program to clear the bar on paper. Remaining gates:
+**validate against real Blofin funding history** (Binance is a proxy; the
+actual spread HL-vs-Blofin may differ), walk-forward the thresholds,
+model entry basis/execution (marks differ across venues at entry), and
+leg-liquidation margin policy. If it survives, it slots directly into the
+funding-harvest staged pipeline (monitor + armed planner already built) with
+no spot support needed — both legs are perps on venues MATP already has
+adapters for.
+
 ## Remaining open threads (only if pursued deliberately)
 
 - Hyperliquid funding/fee validation (hourly funding, real HL fee tiers).
