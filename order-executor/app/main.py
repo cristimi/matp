@@ -25,8 +25,12 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
+    from app.spread_trade import watcher_loop
+    spread_watcher_task = asyncio.create_task(watcher_loop(), name="spread_watcher")
+    app.state.spread_watcher_task = spread_watcher_task
     logger.info("Order Executor ready — AccountRegistry active")
     yield
+    spread_watcher_task.cancel()
     await registry.close_all()
     logger.info("Order Executor shutting down")
 
@@ -56,6 +60,41 @@ async def execute_order(request: OrderRequest):
 async def invalidate_account(account_id: str):
     await registry.invalidate(account_id)
     return {"invalidated": account_id}
+
+
+# ── Cross-venue spread trade (docs/design/SPREAD_HARVEST.md phases 2-3) ───────
+
+@app.post("/spread/execute")
+async def spread_execute(body: dict):
+    """Turn an armed spread plan into a live two-leg position (operator confirm)."""
+    from app.spread_trade import execute_plan
+    plan_id = body.get("plan_id")
+    if not plan_id:
+        raise HTTPException(status_code=400, detail="plan_id required")
+    try:
+        return await execute_plan(plan_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.post("/spread/close")
+async def spread_close(body: dict):
+    """Close both legs of an open spread position (reason: cooled|abort|manual)."""
+    from app.spread_trade import close_spread
+    try:
+        return await close_spread(position_id=body.get("position_id"),
+                                  coin=body.get("coin"),
+                                  reason=body.get("reason", "manual"))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/spread/positions")
+async def spread_positions(limit: int = 20):
+    from app.spread_trade import list_positions
+    return {"positions": await list_positions(limit)}
 
 
 import base64

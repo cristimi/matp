@@ -166,7 +166,9 @@ class SpreadMonitor:
                 elif prev == "hot" and abs(tr) < settings.spread_exit_ann:
                     state = "cool"
                     expired = await expire_plans(coin)
-                    await self._emit("spread.cooled", coin, tr, expired_plans=expired)
+                    closed = await self._unwind_open_position(coin)
+                    await self._emit("spread.cooled", coin, tr, expired_plans=expired,
+                                     position_closed=closed)
                 if state != prev:
                     await redis.hset(STATE_KEY, coin, state)
                 self._status[coin] = {"trailing_ann_pct": round(tr * 100, 2),
@@ -181,6 +183,24 @@ class SpreadMonitor:
         pool = get_pool()
         row = await pool.fetchrow("SELECT count(*) AS n FROM spread_plans WHERE status='armed'")
         return int(row["n"])
+
+    async def _unwind_open_position(self, coin: str) -> bool | None:
+        """Regime cooled — ask the executor to close both legs of any open
+        position for this coin (exits are automatic; entries need confirm).
+        Returns True if a position was closed, None if there was none/failed."""
+        try:
+            async with httpx.AsyncClient(timeout=60) as client:
+                r = await client.post(f"{settings.matp_executor_url}/spread/close",
+                                      json={"coin": coin, "reason": "cooled"})
+                r.raise_for_status()
+                data = r.json()
+            if data.get("closed"):
+                logger.info("Spread monitor: unwound open position for %s (cooled)", coin)
+                return True
+            return None
+        except Exception as exc:  # noqa: BLE001 — unwind failure must not kill the cycle
+            logger.error("Spread monitor: unwind for %s failed: %s", coin, exc)
+            return None
 
     async def _emit(self, event, coin, trailing_ann, **extra) -> None:
         try:

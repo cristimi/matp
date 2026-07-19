@@ -36,6 +36,11 @@ def compute_dedup_key(event: str, data: dict) -> str | None:
         symbol = data.get("symbol")
         state = "hot" if event == "spread.hot" else "cooled"
         return f"spread:{symbol}:{state}"
+    if event in ("spread.executed", "spread.closed"):
+        pid = data.get("position_id")
+        state = "executed" if event == "spread.executed" else "closed"
+        return f"spread-pos:{pid}:{state}" if pid else None
+    # spread.leg_failure / spread.margin_warning: never dedup — every one matters
     return None
 
 
@@ -197,6 +202,55 @@ def render(event: str, data: dict) -> dict | None:
             "tag": f"spread:{symbol}",
             "renotify": True,
             "data": {"symbol": symbol},
+        }
+
+    if event == "spread.executed":
+        symbol = data.get("symbol", "?")
+        return {
+            "title": f"\u2705 Spread executed: {symbol}",
+            "body": (
+                f"{_fmt(data.get('size'), '{:.6g}')} {symbol} both legs filled \u2014 "
+                f"short {data.get('short_venue')} @ {_fmt(data.get('short_price'))} / "
+                f"long {data.get('long_venue')} @ {_fmt(data.get('long_price'))}, "
+                f"${_fmt(data.get('notional_usd'), '{:.0f}')}/leg. Collecting."
+            ),
+            "tag": f"spread-pos:{data.get('position_id')}",
+            "renotify": True,
+            "data": {"symbol": symbol, "position_id": data.get("position_id")},
+        }
+
+    if event == "spread.closed":
+        symbol = data.get("symbol", "?")
+        reason = data.get("reason", "?")
+        pnl = data.get("pnl_realized")
+        pnl_str = f"  \u2022  PnL {_fmt(pnl, '{:+.2f}')}" if pnl is not None else ""
+        emoji = "\U0001f6d1" if reason == "abort" else "\U0001f3c1"
+        return {
+            "title": f"{emoji} Spread closed: {symbol} ({reason})",
+            "body": f"Both legs closed.{pnl_str}",
+            "tag": f"spread-pos:{data.get('position_id')}",
+            "renotify": True,
+            "data": {"symbol": symbol, "position_id": data.get("position_id")},
+        }
+
+    if event == "spread.leg_failure":
+        symbol = data.get("symbol", "?")
+        return {
+            "title": f"\U0001f6a8 SPREAD LEG FAILURE: {symbol}",
+            "body": data.get("detail", "One leg failed \u2014 verify both venues manually NOW."),
+            "tag": f"spread-fail:{symbol}",
+            "renotify": True,
+            "data": {"symbol": symbol},
+        }
+
+    if event == "spread.margin_warning":
+        symbol = data.get("symbol", "?")
+        return {
+            "title": f"\u26a0\ufe0f Spread margin warning: {symbol}",
+            "body": data.get("detail", "A leg is approaching liquidation \u2014 add margin or close."),
+            "tag": f"spread-margin:{symbol}",
+            "renotify": True,
+            "data": {"symbol": symbol, "position_id": data.get("position_id")},
         }
 
     return None

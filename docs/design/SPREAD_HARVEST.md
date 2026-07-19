@@ -34,7 +34,7 @@ spread each settlement. Walk-forward OOS +14.2%/yr on notional; realistic
 
 ## Phases
 
-1. **Monitor + armed planner (this phase)** — `app/spread_monitor.py` in
+1. **Monitor + armed planner (BUILT 2026-07-19)** — `app/spread_monitor.py` in
    ai-signal-generator. Hourly, per coin: fetch last ~168h of HL hourly
    funding + Blofin settlements (2 public requests/coin), compute the trailing
    annualized spread, hysteresis per coin with state in Redis. On cool→hot
@@ -45,10 +45,10 @@ spread each settlement. Walk-forward OOS +14.2%/yr on notional; realistic
    notify (`spread.cooled`). Endpoints: `GET /internal/spread-monitor/status`,
    `GET /internal/spread-harvest/plans`,
    `POST /internal/spread-harvest/plan/{coin}` (preview/test hook).
-2. **Paired execution model** — two-venue paired position representation in
+2. **Paired execution model (BUILT 2026-07-19)** — two-venue paired position representation in
    the executor; leg-failure rollback (if leg 2 fails, immediately flatten
    leg 1).
-3. **Armed execute + episode management** — one-confirmation execute; the
+3. **Armed execute + episode management (BUILT 2026-07-19; see phase 2-3 report)** — one-confirmation execute; the
    abort watcher (±25%), margin top-up watcher, exit-on-cooled unwind.
 4. **Full auto** — after ≥1 real episode handled cleanly through phase 3.
 
