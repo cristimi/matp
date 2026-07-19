@@ -65,16 +65,22 @@ async def lifespan(app: FastAPI):
     from app.collector import collector
     collector_task = asyncio.create_task(collector.run(), name="stream_collector")
 
-    app.state.schedulers     = schedulers
-    app.state.watcher_tasks  = watcher_tasks
-    app.state.graph          = graph
-    app.state.probe_task     = probe_task
-    app.state.collector_task = collector_task
+    from app.funding_monitor import funding_monitor
+    funding_monitor_task = asyncio.create_task(funding_monitor.run(), name="funding_monitor")
+
+    app.state.schedulers           = schedulers
+    app.state.watcher_tasks        = watcher_tasks
+    app.state.graph                = graph
+    app.state.probe_task           = probe_task
+    app.state.collector_task       = collector_task
+    app.state.funding_monitor_task = funding_monitor_task
 
     yield
 
     # ── Shutdown ──────────────────────────────────────────────────────────────
     probe_task.cancel()
+    funding_monitor.stop()
+    funding_monitor_task.cancel()
     collector_task.cancel()
     await collector.stop()
     await stop_all_schedulers(schedulers)
@@ -98,6 +104,12 @@ app = FastAPI(
 async def health():
     from app.collector import collector
     return {"status": "ok", "service": "ai-signal-generator", "collector": collector.status()}
+
+
+@app.get("/internal/funding-monitor/status")
+async def funding_monitor_status():
+    from app.funding_monitor import funding_monitor
+    return funding_monitor.status()
 
 
 # ── /internal/preview-prompt ─────────────────────────────────────────────────

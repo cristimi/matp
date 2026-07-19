@@ -28,6 +28,10 @@ def compute_dedup_key(event: str, data: dict) -> str | None:
         service = data.get("service")
         state = "down" if event == "service.down" else "up"
         return f"service:{service}:{state}"
+    if event in ("funding.hot", "funding.cooled"):
+        symbol = data.get("symbol")
+        state = "hot" if event == "funding.hot" else "cooled"
+        return f"funding:{symbol}:{state}"
     return None
 
 
@@ -111,6 +115,32 @@ def render(event: str, data: dict) -> dict | None:
             "tag": f"service:{service}",
             "renotify": True,
             "data": {"service": service},
+        }
+
+    if event == "funding.hot":
+        symbol = data.get("symbol", "?")
+        ann = _fmt(data.get("trailing_ann"), "{:.1%}")
+        enter = _fmt(data.get("enter_ann"), "{:.0%}")
+        return {
+            "title": f"🔥 Funding hot: {symbol} {ann}/yr",
+            "body": (
+                f"Trailing 3d funding annualizes above {enter}. "
+                "Delta-neutral harvest conditions active (short perp + long spot collects funding)."
+            ),
+            "tag": f"funding:{symbol}",
+            "renotify": True,
+            "data": {"symbol": symbol, "venue": data.get("venue")},
+        }
+
+    if event == "funding.cooled":
+        symbol = data.get("symbol", "?")
+        ann = _fmt(data.get("trailing_ann"), "{:.1%}")
+        return {
+            "title": f"🧊 Funding cooled: {symbol} {ann}/yr",
+            "body": "Trailing 3d funding dropped below the exit threshold; harvest window closed.",
+            "tag": f"funding:{symbol}",
+            "renotify": True,
+            "data": {"symbol": symbol, "venue": data.get("venue")},
         }
 
     return None
