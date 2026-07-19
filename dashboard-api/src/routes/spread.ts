@@ -7,6 +7,19 @@ import { getPool } from '../db';
 
 const router = Router();
 const EXECUTOR_URL = process.env.EXECUTOR_URL || 'http://order-executor:8004';
+const AI_URL = process.env.AI_SIGNAL_GENERATOR_URL || 'http://ai-signal-generator:8005';
+
+// GET /spread/monitor — live per-coin trailing spreads from the monitor
+router.get('/monitor', async (_req: Request, res: Response) => {
+  try {
+    const resp = await fetch(`${AI_URL}/internal/spread-monitor/status`, {
+      signal: AbortSignal.timeout(10_000),
+    });
+    res.status(resp.status).json(await resp.json());
+  } catch (e: any) {
+    res.status(502).json({ error: e.message });
+  }
+});
 
 // GET /spread/plans — recent plans, newest first
 router.get('/plans', async (_req: Request, res: Response) => {

@@ -11,9 +11,11 @@ import SignalLogPage from './pages/SignalLog';
 import AiSignalLog from './pages/AiSignalLog';
 import StrategyTreePage from './pages/StrategyTree';
 import { useNavCounts } from './hooks/useNavCounts';
+import SpreadPage from './pages/Spread';
 
 const NAV = [
   { to: '/tree',       label: 'Tree',       icon: '🌳' },
+  { to: '/spread',     label: 'Spread',     icon: '⚡' },
   { to: '/accounts',   label: 'Accounts',   icon: '🔑' },
   { to: '/signals',    label: 'Signals',    icon: '📡' },
   { to: '/ai-signals', label: 'AI Log',     icon: '🤖' },
@@ -194,6 +196,7 @@ export default function App() {
           <Route path="/ai-signals" element={<AiSignalLog />} />
           <Route path="/strategy/:id" element={<StrategyDetail />} />
           <Route path="/tree"       element={<StrategyTreePage />} />
+          <Route path="/spread"     element={<SpreadPage />} />
           <Route path="/settings"   element={<SettingsPage />} />
         </Routes>
       </main>
