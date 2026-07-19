@@ -96,6 +96,29 @@ funding history for these 12 alts), an overlap-free portfolio sim (monthly
 unlockers' windows overlap — inflates t-stats), and walk-forward on the run-up
 effect.
 
+## Phase-4 results: funding-adjusted study (`funding_adjusted_bleed.py`; report in `.gemini/reports/edge-research-phase4-funding-adjusted.md`)
+
+Real Binance 8h funding for all 12 alts + BTC, applied to phase 3's two
+survivors:
+
+- **The secular-bleed short is dead — but not for the suspected reason.**
+  Funding on the alts is mild (basket mean −0.8%/yr for shorts). What kills it:
+  (1) **volatility drag** — a continuously-held short basket of ~80%-vol assets
+  loses ≈σ²/2 geometrically even while the assets bleed in log terms: price legs
+  alone made −27.6% CAGR (Sharpe 0.05, maxDD −97%, 2022 −94% when the early
+  2-token basket was steamrolled by the GMT/APE pumps); (2) the long-BTC hedge
+  leg pays BTC's persistently positive funding (total funding drag −12.1%/yr).
+  Longs really do lose on these tokens; shorts still can't harvest it. The
+  asymmetry is the answer to "why does the bleed persist".
+- **The unlock run-up trade survives funding**: hedged short D-8..D-1 nets
+  **+2.13%/event after fees AND funding** (was +2.26% before funding), t=3.58,
+  64% win, and the yearly sums are positive in all five years 2022–2026.
+  This is now the single surviving edge candidate of the whole program.
+
+Still open before capital: overlap-free portfolio sim (2025 had 105 events —
+clusters overlap, so per-event sums overstate a realizable equity curve),
+walk-forward, and the phase-3 multiple-window caveat (5 windows examined).
+
 ## Remaining open threads (only if pursued deliberately)
 
 - Hyperliquid funding/fee validation (hourly funding, real HL fee tiers).
