@@ -61,6 +61,17 @@ Changes required: DB migration, one line in `node_ingest.py`, `ai.ts` GET/PUT, U
 ---
 
 ## Deferred Backlog
+- **SOL/XRP zero-proposal check (~2026-08-02): threshold cut alone may not be enough**: on
+  2026-07-19 SOL (`sol-ai-6486`) and XRP (`xrp-ai-3844`) had their `confidence_threshold`
+  lowered 0.65 → 0.55 because neither had ever produced a non-hold proposal (SOL: 0 in 237
+  signals, XRP: 0 in 413 — including 149/292 cycles *after* the a432082 prompt softening).
+  The guard threshold only filters proposals that exist; the `trend_following` and `breakout`
+  templates are strict multi-leg AND-gates with several explicit "output hold" instructions,
+  so the models may simply never propose. **Check around 2026-08-02** (~2 weeks): if
+  `ai_signal_log` still shows 0 non-hold proposals for both, the next lever is softening
+  those two templates (or per-strategy `custom_instructions`) — not further threshold cuts.
+  Context report: `.gemini/reports/disable-hype-rethreshold-sol-xrp.md` (same change
+  disabled `hype-breakout-da2e` for worst live expectancy: −$9.68 over 6 trades).
 - **`config.max_order_size_btc` / `max_order_size_eth` look dead — investigate dropping**: these two
   rows exist in the `config` table (seeded by `db/init.sql`, last touched 2026-05-18) but a full-repo
   grep for `max_order_size` (2026-07-08) found zero reads in any service — not order-listener,
