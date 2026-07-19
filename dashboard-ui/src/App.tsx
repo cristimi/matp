@@ -15,7 +15,7 @@ import SpreadPage from './pages/Spread';
 
 const NAV = [
   { to: '/tree',       label: 'Tree',       icon: '🌳' },
-  { to: '/spread',     label: 'Spread',     icon: '⚡' },
+  { to: '/spread',     label: 'Harvest',    icon: '⚡' },
   { to: '/accounts',   label: 'Accounts',   icon: '🔑' },
   { to: '/signals',    label: 'Signals',    icon: '📡' },
   { to: '/ai-signals', label: 'AI Log',     icon: '🤖' },

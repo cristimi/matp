@@ -21,6 +21,30 @@ router.get('/monitor', async (_req: Request, res: Response) => {
   }
 });
 
+// GET /spread/funding-monitor — live per-coin trailing 3d Binance funding
+router.get('/funding-monitor', async (_req: Request, res: Response) => {
+  try {
+    const resp = await fetch(`${AI_URL}/internal/funding-monitor/status`, {
+      signal: AbortSignal.timeout(10_000),
+    });
+    res.status(resp.status).json(await resp.json());
+  } catch (e: any) {
+    res.status(502).json({ error: e.message });
+  }
+});
+
+// GET /spread/funding-plans — single-venue funding-harvest plans (execution
+// for these is not built yet — surfaced as informational cards)
+router.get('/funding-plans', async (_req: Request, res: Response) => {
+  try {
+    const result = await getPool().query(
+      'SELECT * FROM funding_harvest_plans ORDER BY created_at DESC LIMIT 50');
+    res.json({ plans: result.rows });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // GET /spread/plans — recent plans, newest first
 router.get('/plans', async (_req: Request, res: Response) => {
   try {
