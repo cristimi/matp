@@ -32,6 +32,10 @@ def compute_dedup_key(event: str, data: dict) -> str | None:
         symbol = data.get("symbol")
         state = "hot" if event == "funding.hot" else "cooled"
         return f"funding:{symbol}:{state}"
+    if event in ("spread.hot", "spread.cooled"):
+        symbol = data.get("symbol")
+        state = "hot" if event == "spread.hot" else "cooled"
+        return f"spread:{symbol}:{state}"
     return None
 
 
@@ -155,6 +159,44 @@ def render(event: str, data: dict) -> dict | None:
             "tag": f"funding:{symbol}",
             "renotify": True,
             "data": {"symbol": symbol, "venue": data.get("venue")},
+        }
+
+    if event == "spread.hot":
+        symbol = data.get("symbol", "?")
+        ann = _fmt(data.get("trailing_ann"), "{:+.1%}")
+        plan = data.get("plan")
+        if plan:
+            body = (
+                f"HL-vs-Blofin funding spread {ann}/yr (7d trail). "
+                f"ARMED: ${_fmt(plan.get('notional_usd'), '{:.0f}')}/leg "
+                f"short {plan.get('short_venue')} / long {plan.get('long_venue')}, "
+                f"~${_fmt(plan.get('est_daily_usd'), '{:.2f}')}/day, "
+                f"breakeven {_fmt(plan.get('breakeven_days'), '{:.1f}')}d, "
+                f"abort ±{_fmt((plan.get('details') or {}).get('abort_pct'), '{:.0%}')}. "
+                "Confirm to execute."
+            )
+        else:
+            body = (f"HL-vs-Blofin funding spread {ann}/yr crossed the enter threshold. "
+                    "No plan armed (concurrency cap or thin book) — see plans endpoint.")
+        return {
+            "title": f"⚡ Spread hot: {symbol} {ann}/yr",
+            "body": body,
+            "tag": f"spread:{symbol}",
+            "renotify": True,
+            "data": {"symbol": symbol, "plan_id": (plan or {}).get("id")},
+        }
+
+    if event == "spread.cooled":
+        symbol = data.get("symbol", "?")
+        ann = _fmt(data.get("trailing_ann"), "{:+.1%}")
+        expired = data.get("expired_plans")
+        suffix = f" {expired} armed plan(s) expired." if expired else ""
+        return {
+            "title": f"🧊 Spread cooled: {symbol} {ann}/yr",
+            "body": f"Cross-venue funding spread dropped below the exit threshold.{suffix}",
+            "tag": f"spread:{symbol}",
+            "renotify": True,
+            "data": {"symbol": symbol},
         }
 
     return None

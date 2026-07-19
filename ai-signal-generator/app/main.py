@@ -68,12 +68,16 @@ async def lifespan(app: FastAPI):
     from app.funding_monitor import funding_monitor
     funding_monitor_task = asyncio.create_task(funding_monitor.run(), name="funding_monitor")
 
+    from app.spread_monitor import spread_monitor
+    spread_monitor_task = asyncio.create_task(spread_monitor.run(), name="spread_monitor")
+
     app.state.schedulers           = schedulers
     app.state.watcher_tasks        = watcher_tasks
     app.state.graph                = graph
     app.state.probe_task           = probe_task
     app.state.collector_task       = collector_task
     app.state.funding_monitor_task = funding_monitor_task
+    app.state.spread_monitor_task  = spread_monitor_task
 
     yield
 
@@ -81,6 +85,8 @@ async def lifespan(app: FastAPI):
     probe_task.cancel()
     funding_monitor.stop()
     funding_monitor_task.cancel()
+    spread_monitor.stop()
+    spread_monitor_task.cancel()
     collector_task.cancel()
     await collector.stop()
     await stop_all_schedulers(schedulers)
@@ -116,6 +122,34 @@ async def funding_monitor_status():
 async def funding_harvest_plans(limit: int = 20):
     from app.funding_harvest import list_plans
     return {"plans": await list_plans(limit)}
+
+
+@app.get("/internal/spread-monitor/status")
+async def spread_monitor_status():
+    from app.spread_monitor import spread_monitor
+    return spread_monitor.status()
+
+
+@app.get("/internal/spread-harvest/plans")
+async def spread_harvest_plans(limit: int = 20):
+    from app.spread_monitor import list_plans
+    return {"plans": await list_plans(limit)}
+
+
+@app.post("/internal/spread-harvest/plan/{coin}")
+async def spread_harvest_plan(coin: str, persist: bool = False):
+    """On-demand spread plan preview (and planner test hook). persist=true arms it."""
+    import httpx as _httpx
+    from app.spread_monitor import build_plan, trailing_spread
+    coin = coin.upper()
+    async with _httpx.AsyncClient(timeout=20) as client:
+        tr = await trailing_spread(client, coin)
+    if tr is None:
+        raise HTTPException(502, f"could not compute trailing spread for {coin}")
+    plan = await build_plan(coin, tr, persist=persist)
+    if plan is None:
+        raise HTTPException(502, f"plan for {coin} failed (thin book or venue error) — see logs")
+    return plan
 
 
 @app.post("/internal/funding-harvest/plan/{coin}")

@@ -30,6 +30,22 @@ class Settings(BaseSettings):
     funding_monitor_exit_ann:   float = 0.20   # cooled when it drops back below 20%/yr
     funding_monitor_interval_s: int   = 3600
 
+    # cross-venue spread monitor + planner (app/spread_monitor.py,
+    # docs/design/SPREAD_HARVEST.md; thresholds from edge-research phase 6)
+    spread_monitor_enabled:    bool  = True
+    spread_monitor_symbols:    str   = ("BTC,ETH,SOL,XRP,DOGE,AVAX,LINK,LTC,DOT,NEAR,"
+                                        "BNB,ADA,APT,ARB,SUI,TIA,SEI,JTO,PYTH,JUP,"
+                                        "APE,BLUR,STRK,GMT")
+    spread_enter_ann:          float = 0.50
+    spread_exit_ann:           float = 0.10
+    spread_trail_hours:        int   = 168
+    spread_monitor_interval_s: int   = 3600
+    spread_max_concurrent:     int   = 3
+    spread_capital_usd:        float = 200.0
+    spread_leg_leverage:       int   = 2
+    spread_abort_pct:          float = 0.25
+    spread_roundtrip_cost:     float = 0.003
+
     # funding-harvest planner (app/funding_harvest.py, docs/design/FUNDING_HARVEST.md)
     funding_harvest_capital_usd:   float = 150.0
     funding_harvest_perp_leverage: int   = 2
