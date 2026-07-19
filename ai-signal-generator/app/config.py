@@ -30,6 +30,12 @@ class Settings(BaseSettings):
     funding_monitor_exit_ann:   float = 0.20   # cooled when it drops back below 20%/yr
     funding_monitor_interval_s: int   = 3600
 
+    # funding-harvest planner (app/funding_harvest.py, docs/design/FUNDING_HARVEST.md)
+    funding_harvest_capital_usd:   float = 150.0
+    funding_harvest_perp_leverage: int   = 2
+    hl_spot_taker_fee:             float = 0.0007   # HL Unit spot taker, base tier
+    hl_perp_taker_fee:             float = 0.00045  # HL perp taker, base tier
+
     class Config:
         env_file = ".env"
         case_sensitive = False

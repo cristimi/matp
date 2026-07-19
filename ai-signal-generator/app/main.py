@@ -112,6 +112,28 @@ async def funding_monitor_status():
     return funding_monitor.status()
 
 
+@app.get("/internal/funding-harvest/plans")
+async def funding_harvest_plans(limit: int = 20):
+    from app.funding_harvest import list_plans
+    return {"plans": await list_plans(limit)}
+
+
+@app.post("/internal/funding-harvest/plan/{coin}")
+async def funding_harvest_plan(coin: str, persist: bool = False):
+    """On-demand plan preview (and planner test hook). persist=true arms it."""
+    from app.funding_harvest import build_plan, SPOT_TOKEN
+    from app.funding_monitor import funding_monitor
+    coin = coin.upper()
+    if coin not in SPOT_TOKEN:
+        raise HTTPException(400, f"no HL spot support for {coin}; supported: {sorted(SPOT_TOKEN)}")
+    coin_status = funding_monitor.status()["coins"].get(coin, {})
+    trailing = (coin_status.get("trailing_ann_pct") or 0.0) / 100
+    plan = await build_plan(coin, trailing, persist=persist)
+    if plan is None:
+        raise HTTPException(502, f"plan for {coin} failed (thin book or venue error) — see logs")
+    return plan
+
+
 # ── /internal/preview-prompt ─────────────────────────────────────────────────
 
 class PreviewPromptRequest(BaseModel):

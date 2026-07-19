@@ -97,10 +97,15 @@ class FundingMonitor:
                 state = prev
                 if prev != "hot" and trail_ann > settings.funding_monitor_enter_ann:
                     state = "hot"
-                    await self._emit("funding.hot", coin, trail_ann)
+                    from app.funding_harvest import build_plan
+                    plan = await build_plan(coin, trail_ann)   # None if unsupported/thin
+                    await self._emit("funding.hot", coin, trail_ann, plan=plan)
                 elif prev == "hot" and trail_ann < settings.funding_monitor_exit_ann:
                     state = "cool"
-                    await self._emit("funding.cooled", coin, trail_ann)
+                    from app.funding_harvest import expire_plans
+                    expired = await expire_plans(coin)
+                    await self._emit("funding.cooled", coin, trail_ann,
+                                     expired_plans=expired)
                 if state != prev:
                     await redis.hset(STATE_KEY, coin, state)
                 self._status[coin] = {
@@ -114,7 +119,7 @@ class FundingMonitor:
             len(self._status), hot or "none",
         )
 
-    async def _emit(self, event: str, coin: str, trail_ann: float) -> None:
+    async def _emit(self, event: str, coin: str, trail_ann: float, **extra) -> None:
         """xadd onto the notification stream. Never raises — an alert failure
         must not kill the monitor loop."""
         try:
@@ -126,6 +131,7 @@ class FundingMonitor:
                 "trailing_ann": round(trail_ann, 4),
                 "enter_ann": settings.funding_monitor_enter_ann,
                 "exit_ann": settings.funding_monitor_exit_ann,
+                **{k: v for k, v in extra.items() if v is not None},
             }
             await get_redis().xadd(STREAM_KEY, {"data": json.dumps(data)})
             logger.info("Funding monitor: emitted %s for %s (trailing %.1f%%/yr)",

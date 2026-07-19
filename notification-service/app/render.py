@@ -121,23 +121,37 @@ def render(event: str, data: dict) -> dict | None:
         symbol = data.get("symbol", "?")
         ann = _fmt(data.get("trailing_ann"), "{:.1%}")
         enter = _fmt(data.get("enter_ann"), "{:.0%}")
+        plan = data.get("plan")
+        if plan:
+            body = (
+                f"Signal {ann}/yr (Binance 3d). ARMED: ${_fmt(plan.get('notional_usd'), '{:.0f}')}/leg "
+                f"short {plan.get('perp_symbol')} perp {plan.get('perp_leverage')}x + long {plan.get('spot_pair')}, "
+                f"~${_fmt(plan.get('est_daily_funding_usd'), '{:.2f}')}/day at HL "
+                f"{_fmt(plan.get('hl_funding_ann'), '{:.0%}')}/yr, "
+                f"breakeven {_fmt(plan.get('breakeven_days'), '{:.1f}')}d. Confirm to execute."
+            )
+        else:
+            body = (
+                f"Trailing 3d funding annualizes above {enter}. "
+                "No auto-plan (no liquid HL spot for this coin) — manual assessment only."
+            )
         return {
             "title": f"🔥 Funding hot: {symbol} {ann}/yr",
-            "body": (
-                f"Trailing 3d funding annualizes above {enter}. "
-                "Delta-neutral harvest conditions active (short perp + long spot collects funding)."
-            ),
+            "body": body,
             "tag": f"funding:{symbol}",
             "renotify": True,
-            "data": {"symbol": symbol, "venue": data.get("venue")},
+            "data": {"symbol": symbol, "venue": data.get("venue"),
+                     "plan_id": (plan or {}).get("id")},
         }
 
     if event == "funding.cooled":
         symbol = data.get("symbol", "?")
         ann = _fmt(data.get("trailing_ann"), "{:.1%}")
+        expired = data.get("expired_plans")
+        suffix = f" {expired} armed plan(s) expired." if expired else ""
         return {
             "title": f"🧊 Funding cooled: {symbol} {ann}/yr",
-            "body": "Trailing 3d funding dropped below the exit threshold; harvest window closed.",
+            "body": f"Trailing 3d funding dropped below the exit threshold; harvest window closed.{suffix}",
             "tag": f"funding:{symbol}",
             "renotify": True,
             "data": {"symbol": symbol, "venue": data.get("venue")},
