@@ -71,5 +71,7 @@ anchored OOS) is the durable output of this research.
 
 - Hyperliquid funding/fee validation (hourly funding, real HL fee tiers).
 - Basis-path risk for the funding trade (currently ignored; converges at exit).
-- A funding-regime monitor (alert when trailing funding > 40% ann. for 3+ days)
-  would cost little and arms the one genuinely defensible opportunistic trade.
+- ~~A funding-regime monitor~~ **Built** (2026-07-19, on `main`):
+  `ai-signal-generator/app/funding_monitor.py` alerts via notification-service
+  when trailing 3d funding > 40%/yr (exit < 20%/yr). See
+  `.gemini/reports/funding-regime-monitor.md`.
