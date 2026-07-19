@@ -67,6 +67,35 @@ recommendation for investment capital.** These scripts stay as the template for
 testing any future hypothesis — the discipline (real costs, cash as a candidate,
 anchored OOS) is the durable output of this research.
 
+## Phase-3 results: token-unlock event study (`fetch_unlocks.py`, `event_study_unlocks.py`, `unlock_controls.py`; report in `.gemini/reports/edge-research-phase3-unlocks.md`)
+
+311 cliff-unlock events (2022–2026, 12 Binance-perp tokens) extracted free from
+the DefiLlama emissions CDN (`defillama-datasets.llama.fi/emissions/{slug}` —
+the paid API is not needed; some tokens encode schedules as pure linear streams
+and drop out: DYDX/IMX/WLD/ENA/AXS).
+
+- **The naive trade is dead**: hedged short D-2→D+1 around the unlock day nets
+  t=0.11. "Sell the unlock day" doesn't work — the market isn't that lazy.
+- **The headline anomaly was a confound**: raw abnormal returns look spectacular
+  (drift D+7..D+30: −7.3%, t=−6.7) but the baseline control kills it — every
+  token in the universe bleeds −0.12…−0.50%/day vs BTC *regardless of unlocks*
+  (low-float/high-FDV secular underperformance). Excess-over-baseline drift:
+  t=−1.11. The "unlock drift edge" was ~85% "short VC coins always".
+- **What genuinely survives**: a modest run-up effect — the week *before* a
+  cliff (D-8..D-1) shows −1.47% excess beyond the token's own bleed, t=−2.44,
+  56% negative, present in both sample halves. Real but small, and t=2.4 with
+  five windows examined carries selection risk.
+- **The accidental bigger finding**: the baseline bleed itself (12/12 tokens
+  negative vs BTC, ≈−0.26%/day median) is the strongest pattern in the data —
+  but it's a secular short-VC-coins bet whose viability hangs entirely on the
+  funding cost of holding alt perp shorts for months (frequently negative
+  funding = shorts pay; likely *why* it persists). Unmodeled as yet.
+
+Open before any capital: funding-cost modeling for the short alt legs (Binance
+funding history for these 12 alts), an overlap-free portfolio sim (monthly
+unlockers' windows overlap — inflates t-stats), and walk-forward on the run-up
+effect.
+
 ## Remaining open threads (only if pursued deliberately)
 
 - Hyperliquid funding/fee validation (hourly funding, real HL fee tiers).
