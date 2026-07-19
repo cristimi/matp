@@ -139,14 +139,35 @@ paid/pay less, short the other; collects |spread| every settlement.
   **+12–18%/yr on notional**, ≈+6–9%/yr on 2× unlevered capital,
   market-neutral and uncorrelated with everything else in the book.
 
-First candidate in the program to clear the bar on paper. Remaining gates:
-**validate against real Blofin funding history** (Binance is a proxy; the
-actual spread HL-vs-Blofin may differ), walk-forward the thresholds,
-model entry basis/execution (marks differ across venues at entry), and
-leg-liquidation margin policy. If it survives, it slots directly into the
-funding-harvest staged pipeline (monitor + armed planner already built) with
-no spot support needed — both legs are perps on venues MATP already has
-adapters for.
+First candidate in the program to clear the bar on paper. All four gates were
+then run (`spread_gates.py`; report
+`.gemini/reports/edge-research-phase6-spread-gates.md`):
+
+1. **Blofin validation — PASS.** With the real second leg (full 3y of Blofin
+   funding, dynamic 4h/8h settlement intervals handled), the slow configs hold
+   and improve: 168h 50%/10% → **+18.8%/yr on notional**, halves
+   +29.0%/+28.4%. Fast configs churn out on Blofin — only slow capture is
+   robust on both legs.
+2. **Walk-forward — PASS.** Half-year anchored folds pick 168h 50%/10% every
+   time; stitched OOS 2024-07→2026-07: **+28.4% on notional = +14.2%/yr**,
+   every fold ≥ 0.
+3. **Entry basis — PASS with a noise note.** HL-vs-Blofin hourly basis: majors
+   2–4bps std, small coins 10–26bps. Per-episode basis PnL mean +27bps,
+   std 60bps — material variance vs the ~40–50bps/episode funding collect, but
+   no systematic drag.
+4. **Margin — CONDITIONAL PASS; it defines the build.** Hot-spread coins pump:
+   p90 adverse move against the short leg +85%, p99 +297% over ~20-day
+   episodes. Naive isolated margin is unviable (<0.3x leverage to survive).
+   A **±25% abort rule** (close both legs when price moves 25% off entry)
+   retains **86% of P&L** (+96.8% vs +113.1% in the uncapped per-coin sim) and
+   makes 2–3x per-leg leverage safe. Auto margin top-up + the abort rule are
+   hard requirements of any build, not options.
+
+Net verdict after all gates: ≈ **+12–16%/yr on notional**, market-neutral, at
+roughly 1x capital-to-notional with 2x legs. Build shape: slots into the
+funding-harvest staged pipeline (monitor → armed plan → confirm) with no spot
+support needed — both legs are perps on venues MATP already has adapters for.
+Prerequisite: funded (non-demo) accounts on both venues.
 
 ## Remaining open threads (only if pursued deliberately)
 
