@@ -280,3 +280,46 @@ def test_partial_close_not_gated(monkeypatch):
     st = _close_state(entry=100.0, price=100.05, action='partial_close')
     out = _run_guard(st, monkeypatch)
     assert out['gate_passed'] is True
+
+
+# ── Confidence threshold vs order management ───────────────────────────────
+# cancel_order/amend_order manage an already-approved resting order and cannot
+# open new exposure, so the ENTRY confidence threshold must not apply to them.
+# eth-ai-34d2 lost 8 consecutive re-fit amends at 0.68 against a 0.690
+# threshold on 2026-07-25 while its limits sat on a dissolved channel.
+
+def test_amend_below_confidence_threshold_passes(monkeypatch):
+    st = _amend_state(limit=100.0, sl=98.0, tp=104.0, side='buy')
+    st['strategy_config']['confidence_threshold'] = 0.69
+    st['llm_signal']['confidence'] = 0.68
+    out = _run_guard(st, monkeypatch)
+    assert out['gate_passed'] is True
+    assert out['resolved_limit_price'] == 100.0
+
+
+def test_cancel_below_confidence_threshold_passes(monkeypatch):
+    st = _state('cancel_order',
+                sc_extra={'confidence_threshold': 0.69},
+                signal_extra={'confidence': 0.10,
+                              'target_order_id': '56947163834'})
+    out = _run_guard(st, monkeypatch)
+    assert out['gate_passed'] is True
+    assert out['resolved_target_order_id'] == '56947163834'
+
+
+def test_entry_below_confidence_threshold_still_rejected(monkeypatch):
+    # The exemption is scoped to management actions — entries are unchanged.
+    st = _state('open_long', sc_extra={'confidence_threshold': 0.69},
+                signal_extra={'confidence': 0.68})
+    out = _run_guard(st, monkeypatch)
+    assert out['gate_passed'] is False
+    assert out['gate_rejection_reason'] == 'confidence_below_threshold'
+
+
+def test_cancel_still_needs_target_order_id(monkeypatch):
+    # The 2026-07-25 06:00 shape: high confidence, order named in prose only.
+    st = _state('cancel_order', sc_extra={'confidence_threshold': 0.69},
+                signal_extra={'confidence': 0.78})
+    out = _run_guard(st, monkeypatch)
+    assert out['gate_passed'] is False
+    assert out['gate_rejection_reason'] == 'target_order_id_missing'

@@ -122,9 +122,18 @@ async def node_guard(state: AgentState) -> AgentState:
         return {**state, 'gate_passed': False, 'gate_rejection_reason': 'hold_or_adjust'}
 
     # ── 3. Confidence threshold ──────────────────────────────────────────
-    threshold = float(sc.get('confidence_threshold') or 0.72)
-    if signal['confidence'] < threshold:
-        return _reject(state, 'confidence_below_threshold')
+    # cancel_order/amend_order manage an ALREADY-approved resting order and
+    # cannot open new exposure — cancel is pure de-risking, amend just re-fits
+    # the price/stops of an order that already passed this gate when it was
+    # placed. Holding them to the ENTRY threshold strands orders: eth-ai-34d2
+    # had 8 re-fit amends rejected at 0.68 against a 0.690 threshold on
+    # 2026-07-25 while its limits sat on a channel that had dissolved (12 such
+    # rejections fleet-wide since 2026-07-10). Same failure direction the
+    # cooldown grouping already reasons about for partial_close above.
+    if action not in ('cancel_order', 'amend_order'):
+        threshold = float(sc.get('confidence_threshold') or 0.72)
+        if signal['confidence'] < threshold:
+            return _reject(state, 'confidence_below_threshold')
 
     # ── 4. Action coherence ──────────────────────────────────────────────
     position_open = state.get('position_open', False)
