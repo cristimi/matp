@@ -66,12 +66,25 @@ def test_unknown_timeframe_falls_back_to_1h():
 # ── fetch_ohlcv integration: closed_candles vs candles/current_price ───────
 
 class _FakeExchange:
+    """Mirrors the slice of the ccxt async API that ohlcv.py actually uses.
+
+    fetch_ohlcv() goes through load_markets_cached(), which calls
+    fetch_markets() and hands the result to set_markets() — the fake predated
+    that caching layer and only offered load_markets(), so market resolution
+    blew up with AttributeError and fetch_ohlcv swallowed it into a None
+    return.
+    """
+    id = 'binance'
+
     def __init__(self, raw):
-        self.markets = {'BTC/USDT': {}}
+        self.markets = {}
         self._raw = raw
 
-    async def load_markets(self):
-        pass
+    async def fetch_markets(self):
+        return [{'symbol': 'BTC/USDT', 'base': 'BTC', 'quote': 'USDT', 'type': 'spot'}]
+
+    def set_markets(self, markets):
+        self.markets = {m['symbol']: m for m in markets}
 
     async def fetch_ohlcv(self, symbol, timeframe, limit):
         return self._raw
@@ -89,6 +102,10 @@ def test_fetch_ohlcv_separates_closed_candles_from_live_price(monkeypatch):
         [int((now - 5) * 1000),          108, 108, 108, 108, 14],  # forming
     ]
     monkeypatch.setattr('app.data.ohlcv._make_exchange', lambda ex_id: _FakeExchange(raw))
+    # load_markets_cached memoizes per exchange_id at module scope — clear it so
+    # this test resolves through the fake regardless of what ran before it.
+    monkeypatch.setattr('app.data.ohlcv._markets_cache', {})
+    monkeypatch.setattr('app.data.ohlcv._markets_locks', {})
 
     result = asyncio.run(fetch_ohlcv('binance', 'BTC/USDT', '15m', lookback_days=1))
 

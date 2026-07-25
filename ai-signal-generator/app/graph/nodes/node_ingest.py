@@ -54,6 +54,39 @@ async def _fetch_open_orders(strategy_id: str) -> list:
 _INGEST_SLOTS = asyncio.Semaphore(2)
 
 
+def _unrealized_pnl_pct(state: AgentState, ohlcv_data: dict | None) -> float | None:
+    """Unrealized P&L on the open position, as a signed percentage.
+
+    The schedulers build initial state before any price is known and seed this
+    as None; ingest is the first point where current_price exists. Left as None
+    it renders as "Current P&L: N/A%" in the position header
+    (prompt/builder.py) — the model was being asked to manage an exit while
+    told its own P&L was unknown.
+
+    The unit is the PRICE move in the position's favour, which is the unit the
+    model already sets stop_loss_pct/take_profit_pct in (node_guard derives the
+    stop prices as entry × (1 ± pct/100)). That keeps "Current P&L" directly
+    comparable to the target the model itself chose, which is what the
+    templates lean on when they say to trail once the move covers half the
+    target. It is deliberately NOT the leveraged return on margin.
+
+    Returns the incoming value unchanged when there is no position or no usable
+    price, so a missing input stays N/A rather than becoming a bogus 0.0%.
+    """
+    if not state.get('position_open'):
+        return state.get('position_unrealized_pnl_pct')
+
+    entry   = state.get('position_entry_price')
+    current = (ohlcv_data or {}).get('current_price')
+    try:
+        if entry is not None and current is not None and float(entry) > 0:
+            move = (float(current) - float(entry)) / float(entry) * 100.0
+            return round(move if state.get('position_side') != 'short' else -move, 3)
+    except (TypeError, ValueError) as exc:
+        logger.warning("unrealized P&L computation failed: %s", exc)
+    return state.get('position_unrealized_pnl_pct')
+
+
 async def node_ingest(state: AgentState) -> AgentState:
     import time
     _wait_start = time.monotonic()
@@ -311,6 +344,7 @@ async def _node_ingest(state: AgentState) -> AgentState:
 
     return {
         **state,
+        'position_unrealized_pnl_pct': _unrealized_pnl_pct(state, ohlcv_data),
         'ohlcv_data':           ohlcv_data,
         'technical_indicators': technical_indicators,
         'geometry_data':        geometry_data,
