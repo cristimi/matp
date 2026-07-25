@@ -1,4 +1,5 @@
 import logging
+from datetime import datetime, timezone
 
 from app.config import settings
 
@@ -26,11 +27,21 @@ def _target_state(action_type: str, direction: str | None) -> str | None:
     return None
 
 
-def evaluate(rec: dict, phase: str, cur_state: str, mark: float | None) -> dict:
+def evaluate(
+    rec: dict,
+    phase: str,
+    cur_state: str,
+    mark: float | None,
+    implied_ref: float | None = None,
+    now: datetime | None = None,
+) -> dict:
     """Pure gate + staleness check. Returns decision dict; caller persists state + shadow row.
 
     Keys in result: decision, reason, to_state, intended_signal, mark_price, advance.
     advance=True means the state machine should advance to to_state.
+
+    `implied_ref` is the market price at posted_at, used as the reference when the
+    post cites none — without it a priceless signal has nothing to gate against.
     """
     asset = (rec.get("asset") or "").upper() or None
     conf  = rec.get("confidence") or 0.0
@@ -67,11 +78,28 @@ def evaluate(rec: dict, phase: str, cur_state: str, mark: float | None) -> dict:
     if phase == "backfill":
         return act("backfill_replay", tgt, sig)
 
-    # live path: check staleness
+    # ---- live path ----
+
+    # Age backstop, before any price logic. A signal recovered by catchup hours
+    # after the post is stale no matter what the price says.
+    posted_at = rec.get("posted_at")
+    if posted_at is not None:
+        age = ((now or datetime.now(timezone.utc)) - posted_at).total_seconds()
+        if age > settings.max_signal_age_seconds:
+            return skip("signal_too_old", to=tgt, sig=sig)
+
+    # No cited price: fall back to the market price at the moment of the post, so
+    # the same staleness check still applies. Only when neither exists do we take
+    # an ungated market entry — and by then the age gate above has already
+    # established the signal is fresh.
+    reason_ok = "ok"
     if ref is None:
-        if settings.entry_on_missing_price == "market":
-            return act("priceless_market", tgt, sig)
-        return skip("priceless_no_entry", to=tgt, sig=sig)
+        if settings.entry_on_missing_price != "market":
+            return skip("priceless_no_entry", to=tgt, sig=sig)
+        if implied_ref is None:
+            return act("priceless_recent", tgt, sig)
+        ref = implied_ref
+        reason_ok = "ok_implied_ref"
 
     if mark is None:
         return skip("no_mark", to=tgt, sig=sig)
@@ -80,6 +108,6 @@ def evaluate(rec: dict, phase: str, cur_state: str, mark: float | None) -> dict:
     going_long = tgt == "LONG"
     chased = (moved > settings.staleness_pct) if going_long else (-moved > settings.staleness_pct)
     if chased:
-        return skip("stale_price", to=tgt, sig=sig)
+        return skip("stale_price" if reason_ok == "ok" else "stale_implied_ref", to=tgt, sig=sig)
 
-    return act("ok", tgt, sig)
+    return act(reason_ok, tgt, sig)

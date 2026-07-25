@@ -53,5 +53,15 @@ class Settings(BaseSettings):
     staleness_pct: float = 0.01             # skip priced entry if mark already moved >1% the signal's way
     entry_on_missing_price: str = "market"  # priceless signal -> enter at market
 
+    # A signal is only tradeable while it's fresh. This is the backstop for every
+    # live decision — it also catches priced signals recovered by the catchup loop
+    # long after the fact (a listener outage, a dropped update).
+    max_signal_age_seconds: int = 900
+
+    # When a post cites no price, reconstruct one from the 1m bar covering
+    # posted_at so the staleness gate can still run, instead of entering blind.
+    implied_ref_lookback_ms: int = 600_000  # how far back to scan the stream
+    implied_ref_max_gap_ms: int = 300_000   # reject a bar this much older than the post
+
 
 settings = Settings()

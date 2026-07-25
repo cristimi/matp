@@ -47,12 +47,17 @@ async def handle(msg, phase: str):
         asset = (rec["asset"] or "").upper() or None
         cur = await db.get_state(asset) if asset else "FLAT"
 
-        # fetch mark only for live priced signals (backfill: skip mark; priceless: no mark needed)
-        mark = None
-        if phase == "live" and asset and rec["reference_price"] is not None:
+        # Live signals need a mark whether or not the post cited a price — a
+        # priceless one is gated against the market price at posted_at instead.
+        mark = implied_ref = None
+        if phase == "live" and asset:
             mark = await marketdata.get_mark(asset)
+            if rec["reference_price"] is None and rec.get("posted_at") is not None:
+                implied_ref = await marketdata.get_close_at(
+                    asset, int(rec["posted_at"].timestamp() * 1000)
+                )
 
-        d = evaluate(rec, phase, cur, mark)
+        d = evaluate(rec, phase, cur, mark, implied_ref)
 
         await db.insert_shadow_order({
             "channel_msg_id": rec["channel_msg_id"],
