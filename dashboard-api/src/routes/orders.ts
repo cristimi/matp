@@ -64,10 +64,12 @@ router.get('/:id', async (req: Request, res: Response) => {
 });
 
 // GET /orders/:id/detail — L4 full order detail (lazy)
-// ai_reasoning/ai_confidence/exchange_fee read directly off orders (signal_log_id,
-// exchange_fee), so they resolve for close orders too, not just opens. The OEL join
-// is best-effort and only used for open-only execution-panel fields (requested_price,
-// exchange_order_id, placed_at, filled_at) — those legitimately stay null on closes.
+// ai_reasoning/ai_confidence/exchange_fee read off orders first (signal_log_id,
+// exchange_fee), so they resolve for close orders too, not just opens — closes have no
+// OEL row. exchange_fee falls back to OEL for legacy opens that predate the orders
+// column being populated. The rest of the OEL join is best-effort and only feeds
+// open-only execution-panel fields (requested_price, exchange_order_id, placed_at,
+// filled_at) — those legitimately stay null on closes.
 router.get('/:id/detail', async (req: Request, res: Response) => {
   try {
     const pool = getPool();
@@ -78,7 +80,7 @@ router.get('/:id/detail', async (req: Request, res: Response) => {
           o.raw_webhook,
           o.signal_metadata,
           o.indicator_price,
-          o.exchange_fee,
+          COALESCE(o.exchange_fee, oel.exchange_fee) AS exchange_fee,
           oel.requested_price,
           oel.exchange_order_id AS oel_exchange_order_id,
           oel.placed_at,

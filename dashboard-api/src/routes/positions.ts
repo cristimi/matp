@@ -151,7 +151,11 @@ router.post('/:id/refresh', async (req: Request, res: Response) => {
 });
 
 // GET /positions/:id/orders — L3 lazy order timeline for a position
-// Returns entry order + all close orders ordered by time, with OEL fee when available.
+// Returns entry order + all close orders ordered by time.
+// Fee comes from orders.exchange_fee first: close orders get no order_execution_log row
+// (OEL is written on placement, which only happens for opens), so an OEL-only read left
+// every close showing "—" in the UI. OEL is the fallback for legacy opens that predate
+// orders.exchange_fee being populated.
 router.get('/:id/orders', async (req: Request, res: Response) => {
   try {
     const { rows } = await getPool().query(`
@@ -177,7 +181,7 @@ router.get('/:id/orders', async (req: Request, res: Response) => {
         o.status,
         o.actual_fill_price AS avg_fill,
         o.pnl AS realized,
-        oel.exchange_fee AS fee
+        COALESCE(o.exchange_fee, oel.exchange_fee) AS fee
       FROM strategy_positions sp, orders o
       LEFT JOIN order_execution_log oel
         ON oel.exchange_order_id = o.exchange_order_id
