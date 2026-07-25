@@ -799,8 +799,46 @@ async def _handle_full_external_close(
     # will fill it in once exchange history confirms it.
     synthetic_order_id: Optional[uuid.UUID] = None
     close_side = "sell" if side == "long" else "buy"
-    pnl_float = float(pnl_realized) if pnl_realized is not None and not pnl_unconfirmed else None
-    fee_float = float(history["fee"]) if history.get("fee") is not None else None
+
+    # Reduce the exchange's position-level figures to THIS close's own leg.
+    # history["pnl_realized"] is gross for the whole position and history["fee"] covers the
+    # legs named by fee_scope. The opening fill's fee is already booked on the opening order
+    # and sync_position_pnl subtracts it separately, so a 'round_trip' total must have it
+    # removed here or it is counted twice. Earlier partial closes likewise carry their own
+    # pnl/fee, so this synthetic order takes only the remainder.
+    async with pool.acquire() as conn:
+        prior = await conn.fetchrow(
+            """
+            SELECT COALESCE(oo.exchange_fee, 0)      AS open_fee,
+                   COALESCE(SUM(c.exchange_fee), 0)  AS prior_close_fee,
+                   COALESCE(SUM(c.pnl), 0)           AS prior_close_pnl
+            FROM strategy_positions sp
+            LEFT JOIN orders oo ON oo.id = sp.opening_order_id
+            LEFT JOIN orders c  ON c.closes_position_id = sp.id AND c.pnl IS NOT NULL
+            WHERE sp.id = $1
+            GROUP BY oo.exchange_fee
+            """,
+            pos_id,
+        )
+    open_fee_f        = float(prior["open_fee"])        if prior else 0.0
+    prior_close_fee_f = float(prior["prior_close_fee"]) if prior else 0.0
+    prior_close_pnl_f = float(prior["prior_close_pnl"]) if prior else 0.0
+
+    pnl_float = (
+        float(pnl_realized) - prior_close_pnl_f
+        if pnl_realized is not None and not pnl_unconfirmed else None
+    )
+
+    if history.get("fee") is None:
+        fee_float = None
+    else:
+        fee_total  = abs(float(history["fee"]))
+        close_legs = (
+            fee_total - open_fee_f
+            if (history.get("fee_scope") or "close_only") == "round_trip"
+            else fee_total
+        )
+        fee_float = max(close_legs - prior_close_fee_f, 0.0)
     try:
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
@@ -836,7 +874,7 @@ async def _handle_full_external_close(
         reason=close_reason,
         skip_exchange=True,
         fill_price=closing_price,
-        realized_pnl=pnl_realized if not pnl_unconfirmed else None,
+        realized_pnl=pnl_float if not pnl_unconfirmed else None,
         close_fee=fee_float if not pnl_unconfirmed else None,
     )
 
@@ -937,11 +975,16 @@ async def _recover_manual_close_pnl(pool) -> None:
 
         try:
             pnl_float = float(pnl_realized)
-            fee_float = float(history["fee"]) if history.get("fee") is not None else None
+            fee_float = abs(float(history["fee"])) if history.get("fee") is not None else None
             # strategy_positions.pnl_realized (and the strategy booking it feeds) is NET
             # of both legs' fees; the synthetic close order's own pnl column below stays
             # the raw, gross figure (matches exchange-reported closedPnl semantics).
-            net_pnl_float = pnl_float - (fee_float or 0.0) - open_fee
+            # A 'round_trip' fee already includes the opening fill, so open_fee must not be
+            # subtracted a second time — see get_closed_position_details' contract.
+            if (history.get("fee_scope") or "close_only") == "round_trip":
+                net_pnl_float = pnl_float - (fee_float or 0.0)
+            else:
+                net_pnl_float = pnl_float - (fee_float or 0.0) - open_fee
             async with pool.acquire() as conn:
                 updated_row = await conn.fetchrow(
                     """

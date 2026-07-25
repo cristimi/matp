@@ -807,11 +807,15 @@ class HyperliquidAdapter(ExchangeAdapter):
                 int(latest.get("time", 0)) / 1000, tz=tz.utc
             ) if latest.get("time") else None
 
+            # closedPnl is per-fill gross pnl and `fee` is summed over CLOSING fills only,
+            # so the opening fill's fee is not included here — 'close_only'. Fees are
+            # already positive in this API; abs() only guards the DB sign convention.
             return {
                 "close_reason":  "Liquidated" if is_liquidation else "Closed on exchange",
                 "closing_price": Decimal(str(round(avg_px, 6))),
                 "pnl_realized":  pnl,
-                "fee":           fee,
+                "fee":           abs(fee),
+                "fee_scope":     "close_only",
                 "closed_at":     closed_at,
                 "raw":           close_fills,
             }

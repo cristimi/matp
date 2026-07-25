@@ -29,14 +29,26 @@ HISTORY_OK = {
 
 # ── Fakes ────────────────────────────────────────────────────────────
 class _FakeConn:
-    def __init__(self, rows):
+    def __init__(self, rows, prior=None):
         self._rows = rows
+        self._prior = prior or {
+            "open_fee": Decimal("0"), "prior_close_fee": Decimal("0"),
+            "prior_close_pnl": Decimal("0"),
+        }
         self.executed = []   # list of (normalized_sql, args)
+        self.inserted = []   # list of args for INSERT INTO orders
 
     async def fetch(self, query, *args):
         return self._rows
 
     async def fetchrow(self, query, *args):
+        q = " ".join(query.split())
+        # The reconciler's fee-normalisation lookup (open fee + already-booked close legs)
+        if "prior_close_fee" in q:
+            return self._prior
+        if "INSERT INTO orders" in q:
+            self.inserted.append(args)
+            return {"id": "synthetic-order-1"}
         return self._rows[0] if self._rows else None
 
     async def execute(self, query, *args):
@@ -51,8 +63,8 @@ class _Acq:
 
 
 class _FakePool:
-    def __init__(self, rows):
-        self.conn = _FakeConn(rows)
+    def __init__(self, rows, prior=None):
+        self.conn = _FakeConn(rows, prior)
     def acquire(self):
         return _Acq(self.conn)
 
@@ -78,11 +90,11 @@ def _did_increment(pool):
     return any("reconcile_miss_count = $1" in sql for sql, _ in pool.conn.executed)
 
 
-async def _run(rows, gap_ret, history=None):
+async def _run(rows, gap_ret, history=None, prior=None):
     """Run one reconcile pass with all external deps patched.
     gap_ret: a list/[]/None applied to every account, OR a dict {account_id: ret}.
     Returns (pool, gap_mock, gph_mock, close_mock)."""
-    pool = _FakePool(rows)
+    pool = _FakePool(rows, prior)
 
     if isinstance(gap_ret, dict):
         async def _se(acct_id): return gap_ret.get(acct_id)
@@ -199,3 +211,98 @@ async def test_unknown_account_isolated_from_healthy_account():
     assert any("posB" in str(a) for a in resets)
     assert not any("posA" in str(a) for a in resets)
     close.assert_not_awaited()
+
+
+# ── Fee normalisation on the synthetic close order ──────────────────────
+# Regression: the reconciler used to write the exchange's fee verbatim (Blofin reports it
+# negative, and as a ROUND-TRIP total). That put a negative fee on the close order and made
+# sync_position_pnl subtract the opening fill's fee twice.
+
+def _hist(fee, scope, pnl="1.00"):
+    h = dict(HISTORY_OK)
+    h["pnl_realized"] = Decimal(pnl)   # GROSS, per the adapter contract
+    h["fee"] = Decimal(fee)
+    if scope is not None:
+        h["fee_scope"] = scope
+    return h
+
+
+@pytest.mark.asyncio
+async def test_round_trip_fee_has_open_leg_removed():
+    """'round_trip' fee covers open+close, so the opening fill's fee comes off here —
+    sync_position_pnl subtracts it separately and would otherwise double-count it."""
+    pool, _, _, close = await _run(
+        [_row(reconcile_miss_count=RECONCILE_MISS_THRESHOLD - 1)],
+        gap_ret=[],
+        history=_hist("0.12", "round_trip"),
+        prior={"open_fee": Decimal("0.05"), "prior_close_fee": Decimal("0"),
+               "prior_close_pnl": Decimal("0")},
+    )
+    assert close.await_args.kwargs["close_fee"] == pytest.approx(0.07)   # 0.12 - 0.05
+
+
+@pytest.mark.asyncio
+async def test_close_only_fee_keeps_full_amount():
+    """'close_only' (Hyperliquid) already excludes the opening fill — pass it through."""
+    pool, _, _, close = await _run(
+        [_row(reconcile_miss_count=RECONCILE_MISS_THRESHOLD - 1)],
+        gap_ret=[],
+        history=_hist("0.07", "close_only"),
+        prior={"open_fee": Decimal("0.05"), "prior_close_fee": Decimal("0"),
+               "prior_close_pnl": Decimal("0")},
+    )
+    assert close.await_args.kwargs["close_fee"] == pytest.approx(0.07)
+
+
+@pytest.mark.asyncio
+async def test_negative_exchange_fee_is_stored_positive():
+    """Blofin reports fees negative; that sign must never reach the DB."""
+    pool, _, _, close = await _run(
+        [_row(reconcile_miss_count=RECONCILE_MISS_THRESHOLD - 1)],
+        gap_ret=[],
+        history=_hist("-0.12", "round_trip"),
+        prior={"open_fee": Decimal("0.05"), "prior_close_fee": Decimal("0"),
+               "prior_close_pnl": Decimal("0")},
+    )
+    assert close.await_args.kwargs["close_fee"] == pytest.approx(0.07)
+    assert close.await_args.kwargs["close_fee"] >= 0
+
+
+@pytest.mark.asyncio
+async def test_prior_partial_closes_are_deducted():
+    """Earlier partial closes carry their own pnl/fee; this order takes only the rest."""
+    pool, _, _, close = await _run(
+        [_row(reconcile_miss_count=RECONCILE_MISS_THRESHOLD - 1)],
+        gap_ret=[],
+        history=_hist("0.12", "round_trip", pnl="1.00"),
+        prior={"open_fee": Decimal("0.05"), "prior_close_fee": Decimal("0.02"),
+               "prior_close_pnl": Decimal("0.30")},
+    )
+    assert close.await_args.kwargs["close_fee"]    == pytest.approx(0.05)  # 0.12-0.05-0.02
+    assert close.await_args.kwargs["realized_pnl"] == pytest.approx(0.70)  # 1.00-0.30
+
+
+@pytest.mark.asyncio
+async def test_missing_fee_scope_defaults_to_close_only():
+    """An adapter that predates fee_scope must not have its fee silently reduced."""
+    pool, _, _, close = await _run(
+        [_row(reconcile_miss_count=RECONCILE_MISS_THRESHOLD - 1)],
+        gap_ret=[],
+        history=_hist("0.07", None),
+        prior={"open_fee": Decimal("0.05"), "prior_close_fee": Decimal("0"),
+               "prior_close_pnl": Decimal("0")},
+    )
+    assert close.await_args.kwargs["close_fee"] == pytest.approx(0.07)
+
+
+@pytest.mark.asyncio
+async def test_close_fee_never_goes_negative():
+    """Guard against a bad open_fee making the derived close leg negative."""
+    pool, _, _, close = await _run(
+        [_row(reconcile_miss_count=RECONCILE_MISS_THRESHOLD - 1)],
+        gap_ret=[],
+        history=_hist("0.02", "round_trip"),
+        prior={"open_fee": Decimal("0.05"), "prior_close_fee": Decimal("0"),
+               "prior_close_pnl": Decimal("0")},
+    )
+    assert close.await_args.kwargs["close_fee"] == 0.0

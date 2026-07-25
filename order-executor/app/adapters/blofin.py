@@ -940,13 +940,21 @@ class BlofinAdapter(ExchangeAdapter):
             close_ts = int(entry.get("updateTime") or 0)
             from datetime import datetime, timezone as tz
             closed_at = datetime.fromtimestamp(close_ts / 1000, tz=tz.utc) if close_ts else None
+            # Blofin's realizedPnl is ALREADY NET of the position's whole round-trip fee,
+            # and `fee` is that round-trip total reported as a negative number. Verified
+            # against a live payload: realizedPnl -0.06078916, fee -0.12218916, and the
+            # price-derived gross (closeAvg-openAvg)*size = +0.0614 — i.e.
+            # gross + fee == realizedPnl, and |fee| equals the sum of the per-order fees
+            # we booked for that position (0.06107616 + 0.0033912 + 0.0577218).
+            # So subtract the (negative) fee to recover gross, and hand back |fee|.
             pnl = Decimal(str(entry.get("realizedPnl") or "0"))
             fee = Decimal(str(entry.get("fee") or "0"))
             return {
                 "close_reason":  "Liquidated" if is_liquidation else "Closed on exchange",
                 "closing_price": Decimal(str(entry.get("closeAveragePrice") or "0")),
-                "pnl_realized":  pnl + fee,
-                "fee":           fee,
+                "pnl_realized":  pnl - fee,
+                "fee":           abs(fee),
+                "fee_scope":     "round_trip",
                 "closed_at":     closed_at,
                 "raw":           entry,
             }

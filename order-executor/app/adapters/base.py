@@ -82,7 +82,17 @@ class ExchangeAdapter(ABC):
         Returns a dict with keys:
             close_reason:   str   — 'Liquidated' or 'Closed on exchange'
             closing_price:  Decimal
-            pnl_realized:   Decimal  (net of fees where available)
+            pnl_realized:   Decimal  — GROSS pnl, BEFORE fees. Callers subtract fees
+                            themselves, so an exchange that reports a net figure must add
+                            its fee back here.
+            fee:            Decimal — POSITIVE magnitude of fees paid. Never signed; some
+                            exchanges report fees as negative and that sign must not leak
+                            into the DB, where the convention is positive-means-paid.
+            fee_scope:      str   — which legs `fee` covers:
+                              'round_trip' — open + close legs (whole position)
+                              'close_only' — closing legs only
+                            Callers need this to avoid double-counting the opening fill's
+                            fee, which they already hold on the opening order.
             closed_at:      datetime (tz-aware UTC)
             raw:            dict     (full exchange response for audit)
         Returns None if no closed position history is found.
