@@ -25,6 +25,20 @@ _ACTION_COOLDOWN: dict[str, str | None] = {
     'hold':              None,
 }
 
+# All four entry actions share ONE cooldown window. The lookup used to filter on
+# the exact action, so `cooldown_entry_minutes` — which reads as "minutes between
+# entries" — was enforced as "minutes between entries of this exact action type",
+# giving four independent cooldowns. Measured: 13 real bypasses in 30 days;
+# bnb-ai-scalper-edbb re-entered 15 minutes after an entry (configured 120) purely
+# because it was the opposite direction, and eth-ai-34d2 re-entered at 59 minutes
+# against a 240-minute setting by switching a limit entry for a market entry.
+_ENTRY_ACTIONS = ('open_long', 'open_short', 'place_limit_long', 'place_limit_short')
+
+# partial_close deliberately stays OUT of that group even though it reuses the
+# entry *duration*: it reduces exposure, and refusing to de-risk because an entry
+# happened recently is the wrong failure direction. It keeps its own window.
+_COOLDOWN_GROUP: dict[str, tuple[str, ...]] = {a: _ENTRY_ACTIONS for a in _ENTRY_ACTIONS}
+
 
 def _reject(state: AgentState, reason: str) -> AgentState:
     return {**state, 'gate_passed': False, 'gate_rejection_reason': reason}
@@ -123,23 +137,30 @@ async def node_guard(state: AgentState) -> AgentState:
     cooldown_key = _ACTION_COOLDOWN.get(action)
     if cooldown_key:
         cooldown_minutes = int(sc.get(cooldown_key) or 240)
+        # Match every action sharing this cooldown window, not just this one.
+        cooldown_actions = list(_COOLDOWN_GROUP.get(action, (action,)))
         try:
             async with pool.acquire() as conn:
-                last = await conn.fetchval(
+                last = await conn.fetchrow(
                     """
-                    SELECT triggered_at FROM ai_signal_log
+                    SELECT triggered_at, proposed_action FROM ai_signal_log
                     WHERE strategy_id = $1
-                      AND proposed_action = $2
+                      AND proposed_action = ANY($2::text[])
                       AND gate_passed = TRUE
                       AND triggered_at >= $3
                     ORDER BY triggered_at DESC
                     LIMIT 1
                     """,
                     state['strategy_id'],
-                    action,
+                    cooldown_actions,
                     datetime.now(timezone.utc) - timedelta(minutes=cooldown_minutes),
                 )
             if last is not None:
+                logger.info(
+                    "node_guard reject %s: %s cooldown active — %s at %s is inside the %d-minute window",
+                    action, cooldown_key, last['proposed_action'], last['triggered_at'],
+                    cooldown_minutes,
+                )
                 return _reject(state, 'cooldown_active')
         except Exception as exc:
             logger.warning("Cooldown check failed: %s", exc)
