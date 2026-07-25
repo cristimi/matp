@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 import httpx
 
 from app.config import settings
+from app.cycle_lock import cycle_slot
 from app.database import resolve_exchange_id
 from app.scheduling import seconds_until_aligned_wake
 
@@ -112,17 +113,25 @@ class AdaptiveScheduler:
         return seconds_until_aligned_wake(label, datetime.now(timezone.utc), buffer_seconds)
 
     async def _trigger_cycle(self, trigger_reason: str):
-        """Builds initial state and runs the LangGraph graph."""
-        try:
-            state = await self._build_initial_state(trigger_reason)
-            self._last_trigger = datetime.now(timezone.utc)
-            logger.info(
-                "Triggering cycle strategy=%s reason=%s",
-                self.strategy_id, trigger_reason,
-            )
-            await self.graph.ainvoke(state)
-        except Exception as exc:
-            logger.error("Scheduler cycle failed for %s: %s", self.strategy_id, exc)
+        """Builds initial state and runs the LangGraph graph.
+
+        Guarded by the per-strategy cycle slot: the event watcher calls this on
+        its own task, so without it an event-driven trigger can start a second
+        cycle while a scheduled one is still in flight.
+        """
+        async with cycle_slot(self.strategy_id, trigger_reason) as acquired:
+            if not acquired:
+                return
+            try:
+                state = await self._build_initial_state(trigger_reason)
+                self._last_trigger = datetime.now(timezone.utc)
+                logger.info(
+                    "Triggering cycle strategy=%s reason=%s",
+                    self.strategy_id, trigger_reason,
+                )
+                await self.graph.ainvoke(state)
+            except Exception as exc:
+                logger.error("Scheduler cycle failed for %s: %s", self.strategy_id, exc)
 
     async def _build_initial_state(self, trigger_reason: str) -> dict:
         """Loads strategy + ai_strategy_config + ai_risk_config + position from DB."""

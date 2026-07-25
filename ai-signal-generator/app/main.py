@@ -130,6 +130,13 @@ async def verify_model_endpoint(body: dict):
     return await models_registry.verify_model(provider, model)
 
 
+@app.get("/internal/cycles/in-flight")
+async def cycles_in_flight():
+    """Strategies with a cycle currently running — diagnostics for the cycle lock."""
+    from app.cycle_lock import in_flight
+    return {"in_flight": sorted(in_flight())}
+
+
 @app.get("/internal/llm-health/status")
 async def llm_health_status():
     from app.llm_health_monitor import llm_health_monitor
@@ -271,6 +278,21 @@ class TriggerRequest(BaseModel):
 
 @app.post("/internal/trigger")
 async def internal_trigger(body: TriggerRequest):
+    from app.cycle_lock import cycle_slot
+
+    # Take the strategy's cycle slot for the whole handler: a manual trigger
+    # firing while a scheduled or event-driven cycle is in flight is exactly the
+    # race this guards (13 observed overlaps, several manual->manual).
+    async with cycle_slot(body.strategy_id, "manual_dashboard") as acquired:
+        if not acquired:
+            raise HTTPException(
+                status_code=409,
+                detail=f"a cycle is already running for {body.strategy_id} — try again shortly",
+            )
+        return await _run_manual_trigger(body)
+
+
+async def _run_manual_trigger(body: TriggerRequest):
     from app.graph.graph import build_graph
 
     pool        = get_pool()
