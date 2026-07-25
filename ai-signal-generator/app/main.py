@@ -118,6 +118,18 @@ async def health():
     return {"status": "ok", "service": "ai-signal-generator", "collector": collector.status()}
 
 
+@app.post("/internal/models/verify")
+async def verify_model_endpoint(body: dict):
+    """One live probe for one model — called at configuration time so an
+    unusable model is rejected when assigned, not after N dead cycles."""
+    from app import models_registry
+    provider = (body or {}).get("provider")
+    model = (body or {}).get("model")
+    if not provider or not model:
+        raise HTTPException(status_code=400, detail="provider and model are required")
+    return await models_registry.verify_model(provider, model)
+
+
 @app.get("/internal/llm-health/status")
 async def llm_health_status():
     from app.llm_health_monitor import llm_health_monitor

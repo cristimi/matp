@@ -363,12 +363,37 @@ async def _probe_zhipu(model_id: str) -> bool:
         return True
 
 
+async def _probe_openrouter(model_id: str) -> bool:
+    """Mirrors _probe_cerebras — openrouter is an OpenAI-compatible gateway.
+
+    NOT registered in _PROBE_FNS: see the note there. Reached only by
+    verify_model(), i.e. one call for one model when a human is assigning it.
+    """
+    try:
+        from langchain_openai import ChatOpenAI
+        llm = ChatOpenAI(model=model_id, temperature=0.1,
+                         api_key=_key('openrouter'),
+                         base_url=settings.openrouter_base_url, max_retries=0)
+        structured = llm.with_structured_output(_ProbeSchema, include_raw=True,
+                                                method="function_calling")
+        resp = await asyncio.wait_for(structured.ainvoke(_PROBE_PROMPT), timeout=_PROBE_TIMEOUT)
+        return resp.get("parsed") is not None
+    except Exception as exc:
+        logger.debug("OpenRouter probe %s failed: %s", model_id, exc)
+        return False
+
+
 # openrouter is deliberately absent: its catalog is 300+ models, and probing each
 # with a live generation call (daily!) would be slow and spend real money on the
 # paid ones. probe_all_models() skips providers without a probe fn, so openrouter
 # models always show as unverified (⚠) and never enter auto-derived fallback
 # chains (cached_ok_models stays empty) — usable as a primary or in a manual
 # llm_fallback_chain, which is the intended role.
+#
+# That role is exactly how `mistralai/mistral-medium-3-5` became a strategy's
+# primary and failed 402 on 33 of 33 cycles with nothing to catch it. verify_model()
+# below closes that: one on-demand probe when a model is *assigned*, which is a
+# different cost shape entirely from sweeping the catalog daily.
 _PROBE_FNS: dict[str, object] = {
     "google":    _probe_google,
     "openai":    _probe_openai,
@@ -377,6 +402,35 @@ _PROBE_FNS: dict[str, object] = {
     "cerebras":  _probe_cerebras,
     "zhipu":     _probe_zhipu,
 }
+
+# Every provider, including the ones excluded from the daily sweep.
+_VERIFY_FNS: dict[str, object] = {**_PROBE_FNS, "openrouter": _probe_openrouter}
+
+
+async def verify_model(provider: str, model_id: str) -> dict:
+    """Single live structured-output probe for one model, on demand.
+
+    Used at configuration time so a model that can never serve a call is caught
+    when it is assigned, not after N dead cycles. Result is written to the probe
+    cache like any other probe. Returns {ok, provider, model, reason}.
+    """
+    if provider not in _VERIFY_FNS:
+        return {"ok": False, "provider": provider, "model": model_id,
+                "reason": f"unknown provider (known: {', '.join(sorted(_VERIFY_FNS))})"}
+    if not is_chat_capable(model_id):
+        return {"ok": False, "provider": provider, "model": model_id,
+                "reason": "not a chat model (speech/image/embedding/classifier)"}
+    if not _key(provider):
+        return {"ok": False, "provider": provider, "model": model_id,
+                "reason": "no API key configured for this provider"}
+    try:
+        ok = await _VERIFY_FNS[provider](model_id)
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "provider": provider, "model": model_id,
+                "reason": f"probe raised: {exc}"}
+    _cache_set(provider, model_id, "ok" if ok else "fail")
+    return {"ok": ok, "provider": provider, "model": model_id,
+            "reason": "" if ok else "probe failed — model did not return a valid structured response"}
 
 
 # ── Public API ────────────────────────────────────────────────────────────────

@@ -485,6 +485,44 @@ router.put('/strategies/:id/config', async (req: Request, res: Response) => {
       // pre-check unavailable — the DB CHECK constraint still enforces it below
     }
   }
+  // A primary model that can never serve a call used to be accepted silently:
+  // mistralai/mistral-medium-3-5 was assigned here and returned 402 on 33 of 33
+  // cycles before anyone noticed. openrouter models are never swept by the daily
+  // probe (300+ catalog), so shape validation alone can't catch it — verify the
+  // one model being assigned with one live probe.
+  //
+  // Definitive failure blocks the save; an unreachable probe does not. Config
+  // management must not depend on LLM provider availability.
+  let llmWarning: string | undefined;
+  if (body.llm_provider !== undefined || body.llm_model !== undefined) {
+    const { rows: cur } = await getPool().query(
+      'SELECT llm_provider, llm_model FROM ai_strategy_config WHERE strategy_id = $1',
+      [strategyId]
+    );
+    const provider = body.llm_provider ?? cur[0]?.llm_provider;
+    const model    = body.llm_model    ?? cur[0]?.llm_model;
+    if (provider && model && (provider !== cur[0]?.llm_provider || model !== cur[0]?.llm_model)) {
+      try {
+        const r = await fetch(`${AI_URL}/internal/models/verify`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ provider, model }),
+          signal: AbortSignal.timeout(45_000),   // a live probe + homelab load
+        });
+        const verdict: any = await r.json();
+        if (r.ok && verdict?.ok === false) {
+          return res.status(400).json({
+            error: `${provider}/${model} is not usable: ${verdict.reason}`,
+            hint: 'Pick a model that passes verification, or fix the provider account first.',
+          });
+        }
+      } catch (err: any) {
+        llmWarning = `could not verify ${provider}/${model} (${err?.name ?? 'error'}) — saved unverified`;
+        console.warn(`[ai] model verify unavailable for ${strategyId}: ${err}`);
+      }
+    }
+  }
+
   if (body.llm_fallback_chain !== undefined && body.llm_fallback_chain !== null) {
     const chain = body.llm_fallback_chain;
     const ok = Array.isArray(chain) && chain.every((e: any) =>
@@ -543,7 +581,8 @@ router.put('/strategies/:id/config', async (req: Request, res: Response) => {
       [strategyId]
     );
     notifyConfigReload(strategyId);
-    res.json(formatConfig(rows[0]));
+    const payload = formatConfig(rows[0]);
+    res.json(llmWarning ? { ...payload, warning: llmWarning } : payload);
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
