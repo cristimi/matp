@@ -30,6 +30,16 @@ class Settings(BaseSettings):
     funding_monitor_exit_ann:   float = 0.20   # cooled when it drops back below 20%/yr
     funding_monitor_interval_s: int   = 3600
 
+    # LLM health monitor (app/llm_health_monitor.py) — an llm_failed cycle makes no
+    # decision at all and is otherwise invisible; alert when a strategy is losing a
+    # meaningful share of its cycles at the LLM step.
+    llm_health_enabled:    bool  = True
+    llm_health_window_h:   int   = 24
+    llm_health_enter_pct:  float = 0.20   # degraded at >=20% of cycles failing
+    llm_health_exit_pct:   float = 0.10   # recovered below 10%
+    llm_health_min_cycles: int   = 20     # below this the share is noise
+    llm_health_interval_s: int   = 900
+
     # cross-venue spread monitor + planner (app/spread_monitor.py,
     # docs/design/SPREAD_HARVEST.md; thresholds from edge-research phase 6)
     spread_monitor_enabled:    bool  = True

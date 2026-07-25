@@ -40,6 +40,10 @@ def compute_dedup_key(event: str, data: dict) -> str | None:
         pid = data.get("position_id")
         state = "executed" if event == "spread.executed" else "closed"
         return f"spread-pos:{pid}:{state}" if pid else None
+    if event in ("llm.degraded", "llm.recovered"):
+        sid = data.get("strategy_id")
+        state = "degraded" if event == "llm.degraded" else "recovered"
+        return f"llm-health:{sid}:{state}"
     # spread.leg_failure / spread.margin_warning: never dedup — every one matters
     return None
 
@@ -124,6 +128,38 @@ def render(event: str, data: dict) -> dict | None:
             "tag": f"service:{service}",
             "renotify": True,
             "data": {"service": service},
+        }
+
+    if event == "llm.degraded":
+        sid = data.get("strategy_id", "?")
+        pct = _fmt(data.get("failed_pct"), "{:.1f}")
+        cause = data.get("cause", "unknown")
+        model = data.get("model") or "?"
+        return {
+            "title": f"⚠️ LLM failing: {sid} {pct}% of cycles",
+            "body": (
+                f"{data.get('failed')} of {data.get('cycles')} cycles in the last "
+                f"{data.get('window_h')}h ended llm_failed — those produced no decision "
+                f"at all. Dominant cause: {cause} (model {model})."
+            ),
+            "tag": f"llm-health:{sid}",
+            "renotify": True,
+            "data": {"strategy_id": sid, "failed_pct": data.get("failed_pct"),
+                     "cause": cause, "model": model},
+        }
+
+    if event == "llm.recovered":
+        sid = data.get("strategy_id", "?")
+        pct = _fmt(data.get("failed_pct"), "{:.1f}")
+        return {
+            "title": f"✅ LLM recovered: {sid}",
+            "body": (
+                f"Failure rate back to {pct}% of cycles over the last "
+                f"{data.get('window_h')}h (below the {data.get('exit_pct')}% clear threshold)."
+            ),
+            "tag": f"llm-health:{sid}",
+            "renotify": False,
+            "data": {"strategy_id": sid, "failed_pct": data.get("failed_pct")},
         }
 
     if event == "funding.hot":

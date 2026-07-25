@@ -71,6 +71,9 @@ async def lifespan(app: FastAPI):
     from app.spread_monitor import spread_monitor
     spread_monitor_task = asyncio.create_task(spread_monitor.run(), name="spread_monitor")
 
+    from app.llm_health_monitor import llm_health_monitor
+    llm_health_task = asyncio.create_task(llm_health_monitor.run(), name="llm_health_monitor")
+
     app.state.schedulers           = schedulers
     app.state.watcher_tasks        = watcher_tasks
     app.state.graph                = graph
@@ -78,6 +81,7 @@ async def lifespan(app: FastAPI):
     app.state.collector_task       = collector_task
     app.state.funding_monitor_task = funding_monitor_task
     app.state.spread_monitor_task  = spread_monitor_task
+    app.state.llm_health_task      = llm_health_task
 
     yield
 
@@ -87,6 +91,8 @@ async def lifespan(app: FastAPI):
     funding_monitor_task.cancel()
     spread_monitor.stop()
     spread_monitor_task.cancel()
+    llm_health_monitor.stop()
+    llm_health_task.cancel()
     collector_task.cancel()
     await collector.stop()
     await stop_all_schedulers(schedulers)
@@ -110,6 +116,12 @@ app = FastAPI(
 async def health():
     from app.collector import collector
     return {"status": "ok", "service": "ai-signal-generator", "collector": collector.status()}
+
+
+@app.get("/internal/llm-health/status")
+async def llm_health_status():
+    from app.llm_health_monitor import llm_health_monitor
+    return llm_health_monitor.status()
 
 
 @app.get("/internal/funding-monitor/status")

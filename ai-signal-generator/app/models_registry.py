@@ -399,11 +399,52 @@ def cached_ok_models(provider: str) -> list[str]:
     return out
 
 
+# Provider model lists mix in models that cannot serve a chat completion at all:
+# speech-to-text (whisper), text-to-speech (orpheus, *-tts), image/video/music
+# generation, embeddings, rerankers, safety classifiers, robotics and computer-use.
+# The probe catches them, but the LLM chain's cold-cache path bypasses the probe
+# (llm_chain._build_chain) and spends one of only 3 fallback slots on each.
+#
+# Measured over 14 days: 468 attempts against groq's whisper/orpheus models, every
+# one a guaranteed 400. Chains containing one failed 85.6% of the time vs 49.6%
+# without. "An unverified attempt beats a dead cycle" holds for an unprobed *chat*
+# model; it is false for a speech model, which converts a recoverable cycle into a
+# dead one.
+#
+# Substring match on the model id, deliberately conservative — it must never drop a
+# viable chat model. Verified against every model in live use (gpt-oss-*, glm-4.5*,
+# llama-3.*, gemma-4-*, gemini-*-flash/pro, tencent/hy3*, mistral-*, claude-*).
+_NON_CHAT_PATTERNS = (
+    "whisper", "orpheus", "-tts", "tts-", "speech", "voice", "audio",
+    "embed", "rerank", "guard", "moderation",
+    "image", "imagen", "banana", "diffusion", "lyria", "veo", "sora", "video",
+    "robotics", "computer-use",
+)
+
+
+def is_chat_capable(model_id: str) -> bool:
+    """False for models that structurally cannot answer a chat completion."""
+    mid = model_id.lower()
+    return not any(p in mid for p in _NON_CHAT_PATTERNS)
+
+
+def _chat_only(models: list[dict], provider: str) -> list[dict]:
+    kept = [m for m in models if is_chat_capable(m["id"])]
+    dropped = len(models) - len(kept)
+    if dropped:
+        logger.debug("Filtered %d non-chat model(s) from %s's list", dropped, provider)
+    return kept
+
+
 async def raw_models(provider: str) -> list[dict]:
-    """Provider's raw model list (network call). Cold-cache fallback for the
-    LLM chain: an unverified attempt beats a dead cycle."""
+    """Provider's chat-capable model list (network call). Cold-cache fallback for
+    the LLM chain: an unverified *chat* attempt beats a dead cycle — but a model
+    that cannot do chat completions at all is worse than no attempt, because it
+    consumes a fallback slot and is guaranteed to fail."""
     raw_fn = _RAW_FNS.get(provider)
-    return await raw_fn() if raw_fn else []
+    if not raw_fn:
+        return []
+    return _chat_only(await raw_fn(), provider)
 
 
 
@@ -447,7 +488,9 @@ async def probe_all_models(provider: str | None = None, force: bool = False) -> 
         if not raw_fn or not probe_fn:
             continue
 
-        raw = await raw_fn()
+        # Same filter as raw_models: probing a whisper model burns a call against
+        # the provider's quota to learn what its id already tells us.
+        raw = _chat_only(await raw_fn(), p)
         passed = failed = skipped = 0
 
         for m in raw:
