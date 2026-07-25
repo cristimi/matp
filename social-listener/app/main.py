@@ -24,22 +24,23 @@ async def handle(msg, phase: str):
     if await db.already_shadow_evaluated(msg.id):
         return
 
-    base = to_record(msg)
-
     if await db.already_seen(msg.id):
-        # Already extracted — load from DB to avoid re-calling the LLM.
+        # Already extracted — load from DB to avoid re-calling the LLM (and
+        # re-downloading the image), before doing any Telegram work.
         rec = await db.load_signal(msg.id)
         if rec is None:
             return
     else:
-        ext = await extract(base["raw_text"], base["preview_text"])
+        base = await to_record(msg)
+        ext = await extract(base["raw_text"], base["preview_text"], base["image_bytes"])
         rec = {**base, **ext}
         if await db.insert_signal(rec):
             flag = "ACTIONABLE" if rec["is_actionable"] else "·"
             log.info(
-                "msg %s [%s] %s %s ref=%s conf=%.2f",
+                "msg %s [%s] %s %s ref=%s conf=%.2f img=%s",
                 msg.id, flag, rec["action_type"], rec["asset"] or "-",
                 rec["reference_price"], rec["confidence"],
+                "y" if rec["has_image"] else "n",
             )
 
     if rec["is_actionable"]:

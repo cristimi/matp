@@ -19,6 +19,17 @@ class Settings(BaseSettings):
     catchup_interval_seconds: int = 60
     catchup_limit: int = 200
 
+    # A just-posted message carries a WebPagePending preview: Telegram fills in
+    # the title/description/photo a beat later. Re-fetch rather than lose them.
+    webpage_resolve_attempts: int = 3
+    webpage_resolve_delay_seconds: float = 2.0
+
+    # Vision: the X reposts are annotated TradingView charts, and the position
+    # change is often written on the chart rather than in the text.
+    vision_enabled: bool = True
+    image_max_bytes: int = 4 * 1024 * 1024   # Anthropic caps a single image at 5MB
+    image_media_type: str = "image/jpeg"     # Telegram serves preview photos as JPEG
+
     # Extractor LLM (transcriber role). DO NOT point this at a Flash-Lite class model.
     extractor_provider: str = "anthropic"   # anthropic | google | openai | groq
     extractor_model: str = "claude-sonnet-4-6"

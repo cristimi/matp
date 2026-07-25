@@ -106,8 +106,8 @@ async def insert_signal(rec: dict) -> bool:
               (source, channel_msg_id, posted_at, raw_text, preview_text, x_url,
                is_actionable, action_type, asset, direction, reference_price,
                confidence, in_whitelist, model, extractor_version, raw_llm_json,
-               input_tokens, output_tokens, total_tokens)
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+               input_tokens, output_tokens, total_tokens, has_image, image_sha)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
             ON CONFLICT (source, channel_msg_id) DO NOTHING
             """,
             settings.source_tag, rec["channel_msg_id"], rec["posted_at"],
@@ -117,5 +117,6 @@ async def insert_signal(rec: dict) -> bool:
             rec["in_whitelist"], rec["model"], rec["extractor_version"],
             json.dumps(rec["raw_llm_json"]),
             rec.get("input_tokens"), rec.get("output_tokens"), rec.get("total_tokens"),
+            rec.get("has_image", False), rec.get("image_sha"),
         )
         return result.endswith("1")
