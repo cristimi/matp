@@ -144,6 +144,41 @@ async def node_guard(state: AgentState) -> AgentState:
         except Exception as exc:
             logger.warning("Cooldown check failed: %s", exc)
 
+    # ── 6. Discretionary-close floor (close_long / close_short) ──────────
+    # Most realized exits were the model scratching a position that had barely
+    # moved: BNB closed 17 of 25 trades by signal at an average -0.372% of
+    # notional, and one BTC position closed at exactly 0.000% for -$0.044 of
+    # pure fees. Take-profits sit 0.8-5.4% away and almost never get reached,
+    # because every cycle is another chance to talk itself out of the trade.
+    #
+    # A position sitting inside its own noise band has neither proven nor
+    # broken its thesis, so exiting there pays the round trip for no
+    # information. Require a real excursion from entry — in EITHER direction,
+    # since a +0.08% scratch is as much noise as a -0.08% one — or a
+    # confidence high enough to mean genuine structural invalidation.
+    #
+    # This gates only the LLM's discretionary exit. The exchange holds a
+    # guaranteed SL for every open position (order-listener "Guaranteed SL
+    # injection") alongside its TP, so a gated position still stops out on the
+    # exchange with no model involvement: downside protection is untouched.
+    if action in ('close_long', 'close_short'):
+        min_move = float(sc.get('min_close_move_pct') or 0.0)
+        override = float(sc.get('close_confidence_override') or 1.0)
+        entry    = state.get('position_entry_price')
+        current  = float((state.get('ohlcv_data') or {}).get('current_price') or 0)
+
+        # Missing entry or price → let the close through; refusing an exit on
+        # absent data is the more dangerous failure.
+        if min_move > 0 and entry and float(entry) > 0 and current > 0:
+            move_pct = abs(current - float(entry)) / float(entry) * 100.0
+            if move_pct < min_move and signal['confidence'] < override:
+                logger.info(
+                    "node_guard reject %s: excursion %.3f%% from entry %s is inside "
+                    "the %.2f%% floor and confidence %.3f < override %.3f",
+                    action, move_pct, entry, min_move, signal['confidence'], override,
+                )
+                return _reject(state, 'close_below_min_move')
+
     # ── adjust_stops: resolve new prices from signal ─────────────────────
     if action == 'adjust_stops':
         new_tp = signal.get('new_tp_price')

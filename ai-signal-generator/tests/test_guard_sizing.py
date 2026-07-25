@@ -204,3 +204,79 @@ def test_amend_unknown_order_skips_side_validation(monkeypatch):
     st = _amend_state(limit=100.0, sl=101.0, side='buy', order_id='other-id')
     out = _run_guard(st, monkeypatch)
     assert out['gate_passed'] is True
+
+
+# ── Discretionary-close floor (min_close_move_pct) ─────────────────────────
+
+def _close_state(entry, price, confidence=0.70, min_move=0.30, override=0.85,
+                 action='close_long', side='long'):
+    st = _state(
+        action,
+        sc_extra={'min_close_move_pct': min_move,
+                  'close_confidence_override': override},
+        position_open=True,
+        position_side=side,
+        price=price,
+    )
+    st['llm_signal']['confidence'] = confidence
+    st['position_entry_price'] = entry
+    st['position_size'] = 1.0
+    return st
+
+
+def test_close_inside_noise_band_rejected(monkeypatch):
+    # +0.10% from entry, ordinary confidence — the scratch the gate exists for.
+    out = _run_guard(_close_state(entry=100.0, price=100.10), monkeypatch)
+    assert out['gate_passed'] is False
+    assert out['gate_rejection_reason'] == 'close_below_min_move'
+
+
+def test_close_small_loss_also_rejected(monkeypatch):
+    # Symmetric: a -0.10% scratch is as much noise as a +0.10% one.
+    out = _run_guard(_close_state(entry=100.0, price=99.90), monkeypatch)
+    assert out['gate_passed'] is False
+    assert out['gate_rejection_reason'] == 'close_below_min_move'
+
+
+def test_close_beyond_floor_allowed(monkeypatch):
+    # 0.50% excursion clears the 0.30% floor.
+    out = _run_guard(_close_state(entry=100.0, price=100.50), monkeypatch)
+    assert out['gate_passed'] is True
+    assert out['resolved_size'] == 1.0
+
+
+def test_close_high_confidence_overrides_floor(monkeypatch):
+    # Structural invalidation: tiny excursion but confidence >= override.
+    out = _run_guard(_close_state(entry=100.0, price=100.05, confidence=0.90),
+                     monkeypatch)
+    assert out['gate_passed'] is True
+
+
+def test_close_short_uses_absolute_excursion(monkeypatch):
+    out = _run_guard(
+        _close_state(entry=100.0, price=100.05, action='close_short', side='short'),
+        monkeypatch,
+    )
+    assert out['gate_passed'] is False
+    assert out['gate_rejection_reason'] == 'close_below_min_move'
+
+
+def test_close_missing_entry_price_allowed(monkeypatch):
+    # Absent data must not strand a position: refusing an exit is worse.
+    st = _close_state(entry=100.0, price=100.05)
+    st['position_entry_price'] = None
+    out = _run_guard(st, monkeypatch)
+    assert out['gate_passed'] is True
+
+
+def test_close_gate_disabled_when_zero(monkeypatch):
+    out = _run_guard(_close_state(entry=100.0, price=100.01, min_move=0.0),
+                     monkeypatch)
+    assert out['gate_passed'] is True
+
+
+def test_partial_close_not_gated(monkeypatch):
+    # The floor targets full discretionary exits only.
+    st = _close_state(entry=100.0, price=100.05, action='partial_close')
+    out = _run_guard(st, monkeypatch)
+    assert out['gate_passed'] is True

@@ -21,6 +21,7 @@ const ALLOWED_CONFIG_FIELDS = [
   'llm_provider', 'llm_model',
   'llm_scout_provider', 'llm_scout_model', 'premium_force_interval', 'llm_fallback_chain',
   'sizing_mode', 'risk_per_trade',
+  'min_close_move_pct', 'close_confidence_override',
   'use_mtf_structure', 'use_orderbook', 'use_volume_profile', 'use_cvd',
   'use_momentum_divergence', 'use_volatility_regime', 'use_funding_history',
   'use_liquidations', 'use_limit_orders',
@@ -45,6 +46,8 @@ function formatConfig(row: any): any {
     volume_spike_threshold:  Number(row.volume_spike_threshold),
     funding_spike_threshold: Number(row.funding_spike_threshold),
     risk_per_trade:          row.risk_per_trade != null ? Number(row.risk_per_trade) : null,
+    min_close_move_pct:        Number(row.min_close_move_pct),
+    close_confidence_override: Number(row.close_confidence_override),
   };
 }
 
@@ -450,6 +453,20 @@ router.put('/strategies/:id/config', async (req: Request, res: Response) => {
     const v = Number(body.risk_per_trade);
     if (isNaN(v) || v <= 0 || v > 100000) {
       return res.status(400).json({ error: 'risk_per_trade must be a positive number (max 100000)' });
+    }
+  }
+  // Mirrors the DB CHECKs from migration 060 so the UI gets a readable error
+  // rather than a constraint violation.
+  if (body.min_close_move_pct !== undefined && body.min_close_move_pct !== null) {
+    const v = Number(body.min_close_move_pct);
+    if (isNaN(v) || v < 0 || v > 10) {
+      return res.status(400).json({ error: 'min_close_move_pct must be between 0 and 10 (0 disables the close gate)' });
+    }
+  }
+  if (body.close_confidence_override !== undefined && body.close_confidence_override !== null) {
+    const v = Number(body.close_confidence_override);
+    if (isNaN(v) || v <= 0 || v > 1) {
+      return res.status(400).json({ error: 'close_confidence_override must be between 0 (exclusive) and 1' });
     }
   }
   // The DB CHECK requires risk_per_trade when sizing_mode='risk' — fail fast
