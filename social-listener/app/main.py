@@ -33,6 +33,14 @@ async def handle(msg, phase: str):
     else:
         base = await to_record(msg)
         ext = await extract(base["raw_text"], base["preview_text"], base["image_bytes"])
+        if ext["failed"]:
+            # The LLM call never returned a verdict. Don't record anything: an
+            # inserted placeholder would make already_seen() true forever and the
+            # message would never be re-extracted once the provider recovers.
+            # Leaving it unrecorded also keeps max_channel_msg_id back, so the
+            # catchup loop picks it up again on the next pass.
+            log.error("msg %s: extraction unavailable, leaving unrecorded for retry", msg.id)
+            return
         rec = {**base, **ext}
         if await db.insert_signal(rec):
             flag = "ACTIONABLE" if rec["is_actionable"] else "·"

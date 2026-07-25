@@ -125,6 +125,7 @@ async def extract(raw_text: str, preview_text: str, image_bytes: bytes | None = 
         content.append(_image_block(image_bytes))
 
     llm_usage = None
+    call_failed = False   # True only for transient API failures, never parse failures
     try:
         resp: dict = await _get_llm().ainvoke(
             [SystemMessage(content=SYSTEM_PROMPT), HumanMessage(content=content)]
@@ -146,7 +147,13 @@ async def extract(raw_text: str, preview_text: str, image_bytes: bytes | None = 
                 reasoning=f"parse_error: {resp.get('parsing_error')}",
             )
     except Exception as e:  # noqa: BLE001
+        # The call never produced a verdict (no credit, rate limit, 5xx, network).
+        # Flagged so the caller can leave the message unrecorded and retry later —
+        # persisting this placeholder would mark the message permanently seen and
+        # silently bury a real signal. A parse_error above is NOT flagged: the model
+        # did answer, tokens were spent, and a retry would likely fail the same way.
         log.warning("extraction failed: %s", e)
+        call_failed = True
         result = SocialExtraction(
             is_actionable=False, action_type="NONE", confidence=0.0,
             reasoning=f"extraction_error: {e}",
@@ -156,6 +163,7 @@ async def extract(raw_text: str, preview_text: str, image_bytes: bytes | None = 
     # Force scaling events to non-actionable per the contract.
     is_actionable = result.is_actionable and result.action_type not in ("ADD", "TRIM")
     return {
+        "failed": call_failed,
         "is_actionable": is_actionable,
         "action_type": result.action_type,
         "asset": asset,

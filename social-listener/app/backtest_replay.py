@@ -3,7 +3,7 @@
 Read-only: reads social_signal_log (v1 extractions) or a JSON dump from
 backtest_extract (v2), and a 1m OHLCV file. Writes nothing to the live tables.
 
-    python -m app.backtest_replay <ohlcv.json> <days> [v2_extractions.json]
+    python -m app.backtest_replay <ohlcv.json> <days> [--v2 x.json] [--funding f.json] [--v2-only]
 
 Execution model (all assumptions explicit, all overridable below):
   * decision time  = the row's real ingested_at (measured p50 18.8s after posting)
@@ -15,6 +15,7 @@ Execution model (all assumptions explicit, all overridable below):
   * NO stop loss — the position runs until the next signal, so MAE (worst
     unrealised drawdown inside a leg) is reported alongside the result
 """
+import argparse
 import asyncio
 import bisect
 import json
@@ -86,15 +87,17 @@ async def load_v2(path: str, days: int) -> list[dict]:
             str(days),
         )
     lat = {r["channel_msg_id"]: r["ingested_at"] for r in rows}
-    out = []
+    out, assumed = [], 0
     for r in recs:
         posted = datetime.fromisoformat(r["posted_at"])
-        out.append({
-            **r,
-            "posted_at": posted,
-            "ingested_at": lat.get(r["channel_msg_id"], posted + timedelta(seconds=19)),
-        })
+        real = lat.get(r["channel_msg_id"])
+        if real is None:
+            # Predates social_signal_log — assume the measured live p50 (18.8s).
+            real = posted + timedelta(seconds=19)
+            assumed += 1
+        out.append({**r, "posted_at": posted, "ingested_at": real})
     out.sort(key=lambda r: r["posted_at"])
+    print(f"decision times: {len(out)-assumed} measured, {assumed} assumed (+19s, the live p50)")
     return out
 
 
@@ -215,31 +218,40 @@ def report(res: dict, px: Prices):
           f"({res['net']/NOTIONAL*100:+.2f}% on ${NOTIONAL:,.0f} notional)")
 
 
-async def main(ohlcv_path: str, days: int, v2_path: str | None, funding_path: str | None = None):
+async def main(args):
     await db.init_db()
-    if funding_path:
-        with open(funding_path) as f:
+    if args.funding:
+        with open(args.funding) as f:
             FUNDING.extend(json.load(f))
-    with open(ohlcv_path) as f:
+    with open(args.ohlcv) as f:
         bars = json.load(f)
     px = Prices(bars)
-    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=args.days)
     bars_in = [b for b in bars if b["timestamp"] >= cutoff.timestamp() * 1000]
     bh = (bars[-1]["close"] - bars_in[0]["close"]) / bars_in[0]["close"] * 100
-    print(f"window: {days}d   BTC {bars_in[0]['close']:.1f} -> {bars[-1]['close']:.1f} "
+    print(f"window: {args.days}d   BTC {bars_in[0]['close']:.1f} -> {bars[-1]['close']:.1f} "
           f"({bh:+.2f}% buy & hold)")
     print(f"costs: taker {TAKER_FEE*1e4:.0f}bps + slippage {SLIPPAGE*1e4:.0f}bps per fill, "
-          f"${NOTIONAL:,.0f} notional, funding {'modelled (' + str(len(FUNDING)) + ' pts)' if FUNDING else 'NOT modelled'}")
+          f"${NOTIONAL:,.0f} notional, funding "
+          f"{'modelled (' + str(len(FUNDING)) + ' pts)' if FUNDING else 'NOT modelled'}")
 
-    seed = await initial_states(days)
-    print(f"seeded state at window open: {seed or '{} (FLAT)'}")
+    seed = await initial_states(args.days)
+    print(f"seeded state at window open: {seed or '{} (FLAT — no recorded stance before window)'}")
 
-    report(replay(await load_v1(days), px, "v1 — stored text-only extractions", seed), px)
-    if v2_path:
-        report(replay(await load_v2(v2_path, days), px,
+    if not args.v2_only:
+        report(replay(await load_v1(args.days), px, "v1 — stored text-only extractions", seed), px)
+    if args.v2:
+        report(replay(await load_v2(args.v2, args.days), px,
                       "v2 — re-extracted WITH chart images", seed), px)
 
 
 if __name__ == "__main__":
-    asyncio.run(main(sys.argv[1], int(sys.argv[2]), sys.argv[3] if len(sys.argv) > 3 else None,
-                     sys.argv[4] if len(sys.argv) > 4 else None))
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("ohlcv", help="1m OHLCV json from historical_ohlcv")
+    ap.add_argument("days", type=int)
+    ap.add_argument("--v2", help="extractions json from backtest_extract")
+    ap.add_argument("--funding", help="funding rate history json")
+    ap.add_argument("--v2-only", action="store_true",
+                    help="skip the v1 (stored extraction) run")
+    asyncio.run(main(ap.parse_args()))

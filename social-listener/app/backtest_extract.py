@@ -21,7 +21,7 @@ logging.basicConfig(level=logging.WARNING)
 log = logging.getLogger("backtest-extract")
 log.setLevel(logging.INFO)
 
-CONCURRENCY = 4
+CONCURRENCY = 8
 
 
 async def _one(sem, msg, idx, total):
@@ -56,7 +56,7 @@ async def main(days: int, out_path: str):
     cutoff = time.time() - days * 86400
 
     msgs = []
-    async for m in client.iter_messages(settings.tg_channel, limit=1000):
+    async for m in client.iter_messages(settings.tg_channel, limit=5000):
         if m.date.timestamp() < cutoff:
             break
         msgs.append(m)
