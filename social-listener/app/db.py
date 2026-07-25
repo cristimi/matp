@@ -97,6 +97,33 @@ async def insert_shadow_order(rec: dict) -> None:
         )
 
 
+async def load_extraction_cache(version: str, days: int) -> dict[int, dict]:
+    """Cached backtest extractions for one extractor version, keyed by message id."""
+    async with pool().acquire() as c:
+        rows = await c.fetch(
+            """SELECT channel_msg_id, payload FROM public.social_extraction_cache
+               WHERE source=$1 AND extractor_version=$2
+                 AND posted_at >= now() - ($3 || ' days')::interval""",
+            settings.source_tag, version, str(days),
+        )
+    return {r["channel_msg_id"]: json.loads(r["payload"]) for r in rows}
+
+
+async def cache_extraction(rec: dict) -> None:
+    """Store one SUCCESSFUL extraction. Failures must never be cached — they have
+    to be retried, which is the whole point of the cache surviving an outage."""
+    async with pool().acquire() as c:
+        await c.execute(
+            """INSERT INTO public.social_extraction_cache
+                 (source, channel_msg_id, extractor_version, model, posted_at, payload)
+               VALUES ($1,$2,$3,$4,$5,$6)
+               ON CONFLICT (source, channel_msg_id, extractor_version)
+               DO UPDATE SET payload=$6, model=$4, cached_at=now()""",
+            settings.source_tag, rec["channel_msg_id"], rec["extractor_version"],
+            rec.get("model"), rec["posted_at"], json.dumps(rec, default=str),
+        )
+
+
 async def insert_signal(rec: dict) -> bool:
     """Insert one parsed record. Returns True if a NEW row was written, False if duplicate."""
     async with pool().acquire() as c:

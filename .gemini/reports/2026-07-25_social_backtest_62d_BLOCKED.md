@@ -122,9 +122,19 @@ docker compose exec -T social-listener python -m app.backtest_replay \
     /tmp/ohlcv_62d.json 62 --v2 /tmp/v2_62d.json --funding /tmp/funding_62d.json --v2-only
 ```
 
-Budget ~2.3M tokens (~$7 at Sonnet 4.6 rates) for the extraction. `backtest_extract.py` is
-resumable only by re-running the whole window — worth adding a skip-if-present cache before the
-next attempt if cost matters.
+Budget ~2.3M tokens (~$7 at Sonnet 4.6 rates) for a cold extraction.
+
+**Update — the run is now resumable** (migration 063, `public.social_extraction_cache`):
+successful extractions are cached per `(message, extractor_version)` and checkpointed as they
+complete, so a second attempt only pays for what is still missing. Failures are deliberately
+never cached. A consecutive-failure circuit breaker (20) now aborts a run against a dead
+provider instead of burning through the rest of the window — the first attempt made 1085
+pointless calls after the balance went.
+
+The cache is in Postgres rather than a file because container `/tmp` does not survive a
+`--force-recreate` redeploy: that is exactly how this attempt's 85 successful extractions, the
+90 720 OHLCV bars and the funding history were lost. Those three need re-fetching (free, ~2 min);
+the extractions would have been reused had the cache existed at the time.
 
 **Also worth deciding:** social-listener has no LLM fallback. `config.py` already supports
 google/openai/groq and `config_secrets` loads keys for all of them, but `extractor_provider` is
