@@ -66,7 +66,16 @@ class Settings(BaseSettings):
     ingestion_exchange: str = "blofin"
 
     # Phase 2a — state machine / gates / staleness
-    execution_mode: str = "shadow"          # shadow | live  (live is a LATER prompt)
+    # Live execution. In "live" the listener POSTs order-listener's webhook — the
+    # same contract TradingView and the AI engine use — so sizing, the guaranteed
+    # stop loss and every exchange call stay owned by order-listener/executor.
+    # Only the "live" phase emits: "backfill" acts unconditionally by design and
+    # would fire trades on old posts at every restart.
+    execution_mode: str = "shadow"          # shadow | live
+    execution_strategy_id: str = ""         # strategies.id holding the capital
+    execution_quote_asset: str = "USDT"
+    listener_url: str = "http://order-listener:8001"
+    emit_timeout_seconds: float = 15.0      # homelab load makes a 5s timeout too tight
     confidence_floor: float = 0.5
     staleness_pct: float = 0.01             # skip priced entry if mark already moved >1% the signal's way
     entry_on_missing_price: str = "market"  # priceless signal -> enter at market

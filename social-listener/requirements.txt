@@ -9,3 +9,4 @@ langchain-openai
 langchain-google-genai
 langchain-groq
 python-dotenv
+httpx

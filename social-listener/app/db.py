@@ -93,8 +93,26 @@ async def insert_shadow_order(rec: dict) -> None:
             settings.source_tag, rec["channel_msg_id"], rec["posted_at"], rec["phase"], rec["asset"],
             rec["action_type"], rec["from_state"], rec["to_state"], rec["intended_signal"],
             rec["reference_price"], rec["mark_price"], rec["confidence"], rec["decision"],
-            rec["reason"], "shadow",
+            rec["reason"], rec.get("mode", "shadow"),
         )
+
+
+async def load_execution_strategy(strategy_id: str) -> dict | None:
+    """The strategy row that owns this listener's capital, or None if absent.
+
+    Sizing and the webhook secret are read from it rather than duplicated into
+    this service's config — strategies.margin_per_trade / default_leverage stay
+    the single place capital rules are edited (Settings page included).
+    """
+    async with pool().acquire() as c:
+        row = await c.fetchrow(
+            """SELECT id, name, symbol, enabled, is_deleted, account_id, webhook_secret,
+                      capital_allocation, margin_per_trade, default_leverage,
+                      max_leverage, margin_mode
+               FROM public.strategies WHERE id = $1""",
+            strategy_id,
+        )
+    return dict(row) if row else None
 
 
 async def load_extraction_cache(version: str, days: int) -> dict[int, dict]:

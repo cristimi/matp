@@ -3,7 +3,7 @@ import logging
 
 from telethon import events
 
-from app import db, marketdata
+from app import db, emitter, marketdata
 from app.config import settings
 from app.extractor import extract
 from app.statemachine import evaluate
@@ -15,8 +15,9 @@ logging.basicConfig(
 )
 log = logging.getLogger("social-listener")
 
-if settings.execution_mode != "shadow":
-    log.warning("execution_mode=%s — live emission is not built yet; running as shadow", settings.execution_mode)
+# Resolved once at startup by _load_execution_strategy(); None keeps the service
+# in shadow no matter what execution_mode says.
+_STRATEGY: dict | None = None
 
 
 async def handle(msg, phase: str):
@@ -67,6 +68,25 @@ async def handle(msg, phase: str):
 
         d = evaluate(rec, phase, cur, mark, implied_ref)
 
+        # Emit BEFORE recording, and only on the live path — "backfill" acts
+        # unconditionally by design, so emitting there would re-fire every old
+        # post on each restart. Fail-closed: a failed emission leaves the state
+        # unchanged, so social_position_state never claims a position the
+        # exchange does not hold. The cost of that choice is a missed trade,
+        # which is the safe direction to be wrong in.
+        mode = "shadow"
+        if d["advance"] and asset and phase == "live" and _STRATEGY is not None:
+            ok, detail = await emitter.emit(d["intended_signal"], asset, mark, _STRATEGY)
+            if ok:
+                mode = "live"
+                log.info("LIVE msg %s %s -> %s", rec["channel_msg_id"],
+                         d["intended_signal"], detail)
+            else:
+                d = {**d, "advance": False, "decision": "skipped",
+                     "reason": "emit_failed", "to_state": cur}
+                log.error("EMIT FAILED msg %s %s: %s — state left at %s",
+                          rec["channel_msg_id"], d["intended_signal"], detail, cur)
+
         await db.insert_shadow_order({
             "channel_msg_id": rec["channel_msg_id"],
             "posted_at":       rec["posted_at"],
@@ -81,15 +101,16 @@ async def handle(msg, phase: str):
             "confidence":      rec["confidence"],
             "decision":        d["decision"],
             "reason":          d["reason"],
+            "mode":            mode,
         })
 
         if d["advance"] and asset:
             await db.set_state(asset, d["to_state"], rec["channel_msg_id"])
 
         log.info(
-            "BRAIN msg %s %s->%s %s [%s/%s]",
+            "BRAIN msg %s %s->%s %s [%s/%s] mode=%s",
             rec["channel_msg_id"], cur, d["to_state"],
-            d["intended_signal"], d["decision"], d["reason"],
+            d["intended_signal"], d["decision"], d["reason"], mode,
         )
 
 
@@ -124,11 +145,62 @@ async def _catchup_loop(client, channel):
             log.exception("catchup loop error")
 
 
+async def _load_execution_strategy() -> dict | None:
+    """Validate live wiring at startup. Any problem degrades to shadow, loudly.
+
+    Refusing to trade on a half-configured strategy is the whole point: a wrong
+    account_id or a stale leverage here spends real money.
+    """
+    if settings.execution_mode != "live":
+        log.info("execution_mode=shadow — decisions recorded, no orders sent")
+        return None
+
+    if not settings.execution_strategy_id:
+        log.error("execution_mode=live but execution_strategy_id is unset — staying in shadow")
+        return None
+
+    s = await db.load_execution_strategy(settings.execution_strategy_id)
+    if s is None:
+        log.error("execution_mode=live but strategy %s does not exist — staying in shadow",
+                  settings.execution_strategy_id)
+        return None
+
+    problems = []
+    if s["is_deleted"]:
+        problems.append("strategy is deleted")
+    if not s["enabled"]:
+        problems.append("strategy is disabled")
+    if not s["account_id"]:
+        problems.append("strategy has no account_id")
+    if not s["webhook_secret"]:
+        problems.append("strategy has no webhook_secret")
+    if float(s["margin_per_trade"] or 0) <= 0:
+        problems.append("margin_per_trade is not positive")
+    if int(s["default_leverage"] or 0) > int(s["max_leverage"] or 0):
+        problems.append(f"default_leverage {s['default_leverage']} exceeds "
+                        f"max_leverage {s['max_leverage']}")
+    if problems:
+        log.error("execution_mode=live rejected for %s (%s) — staying in shadow",
+                  s["id"], "; ".join(problems))
+        return None
+
+    log.warning(
+        "LIVE execution armed: strategy=%s (%s) account=%s allocation=%s "
+        "margin/trade=%s leverage=%sx %s",
+        s["id"], s["name"], s["account_id"], s["capital_allocation"],
+        s["margin_per_trade"], s["default_leverage"], s["margin_mode"],
+    )
+    return s
+
+
 async def main():
+    global _STRATEGY
     await db.init_db()
 
     from app.config_secrets import apply_llm_key_overrides
     await apply_llm_key_overrides(db.pool(), settings)
+
+    _STRATEGY = await _load_execution_strategy()
 
     client = build_client()
     await client.start()  # StringSession is pre-authorized -> non-interactive
