@@ -6,9 +6,15 @@ CONFIG_SECRET_KEY and stored one row per key in llm_keys (a provider can hold se
 keys). This is a separate secret from order-executor's MASTER_KEY — these are not
 exchange credentials.
 
-This service does not rotate keys: it takes each provider's highest-priority enabled
-key at startup and overrides the env-var default. Takes effect on next restart.
-(Rotation across multiple keys lives in ai-signal-generator's key_pool.)
+Every enabled key is loaded, in priority order, into settings.provider_keys. The
+extractor walks that list and moves to the next key on a transient failure, so a
+dead high-priority key no longer takes the service down — that is exactly what
+happened on 2026-07-26, when gemini's priority-0 key was out of credit while its
+priority-1 key was fine and never got tried.
+
+The highest-priority key is still mirrored into the legacy <provider>_api_key
+setting so anything reading that attribute keeps working. Loaded at startup;
+takes effect on next restart.
 """
 
 import base64
@@ -44,17 +50,25 @@ def _decrypt(value_b64: str) -> str:
 async def apply_llm_key_overrides(pool: asyncpg.Pool, settings) -> None:
     rows = await pool.fetch(
         """
-        SELECT DISTINCT ON (provider) provider, encrypted_key
+        SELECT provider, label, encrypted_key
         FROM llm_keys
         WHERE enabled AND provider = ANY($1)
         ORDER BY provider, priority, id
         """,
         list(_PROVIDER_SETTINGS_ATTR.keys()),
     )
+
+    keys: dict[str, list[str]] = {}
     for row in rows:
-        attr = _PROVIDER_SETTINGS_ATTR[row["provider"]]
+        provider = row["provider"]
         try:
-            setattr(settings, attr, _decrypt(row["encrypted_key"]))
-            log.info("config: applied DB key for %s", attr)
+            keys.setdefault(provider, []).append(_decrypt(row["encrypted_key"]))
         except Exception:
-            log.exception("config: failed to decrypt key for %s — keeping env value", attr)
+            log.exception("config: failed to decrypt %s key %r — skipping",
+                          provider, row["label"])
+
+    settings.provider_keys = keys
+    for provider, values in keys.items():
+        # Legacy single-key attribute keeps pointing at the highest-priority key.
+        setattr(settings, _PROVIDER_SETTINGS_ATTR[provider], values[0])
+        log.info("config: loaded %d key(s) for %s", len(values), provider)

@@ -60,52 +60,96 @@ class SocialExtraction(BaseModel):
     reasoning: Optional[str] = None
 
 
-def _build_llm():
-    p = settings.extractor_provider.lower()
+# Provider slug in llm_keys / settings for each extractor_provider value.
+_KEY_SLUG = {"anthropic": "anthropic", "google": "gemini",
+             "openai": "openai", "groq": "groq"}
+
+# Default model per provider, used when a fallback entry names no model.
+_DEFAULT_MODEL = {"anthropic": "claude-sonnet-4-6", "google": "gemini-3.6-flash",
+                  "openai": "gpt-4o", "groq": "llama-3.3-70b-versatile"}
+
+
+def _build_llm(provider: str, model: str, api_key: str):
+    p = provider.lower()
     if p == "anthropic":
         from langchain_anthropic import ChatAnthropic
-        return ChatAnthropic(model=settings.extractor_model,
-                             temperature=settings.extractor_temperature,
-                             api_key=settings.anthropic_api_key)
+        return ChatAnthropic(model=model, temperature=settings.extractor_temperature,
+                             api_key=api_key)
     if p == "google":
         from langchain_google_genai import ChatGoogleGenerativeAI
-        return ChatGoogleGenerativeAI(model=settings.extractor_model,
-                                      temperature=settings.extractor_temperature,
-                                      google_api_key=settings.gemini_api_key)
+        return ChatGoogleGenerativeAI(model=model, temperature=settings.extractor_temperature,
+                                      google_api_key=api_key)
     if p == "openai":
         from langchain_openai import ChatOpenAI
-        return ChatOpenAI(model=settings.extractor_model,
-                          temperature=settings.extractor_temperature,
-                          api_key=settings.openai_api_key)
+        return ChatOpenAI(model=model, temperature=settings.extractor_temperature,
+                          api_key=api_key)
     if p == "groq":
         from langchain_groq import ChatGroq
-        return ChatGroq(model=settings.extractor_model,
-                        temperature=settings.extractor_temperature,
-                        api_key=settings.groq_api_key)
-    raise ValueError(f"unknown extractor_provider: {p}")
+        return ChatGroq(model=model, temperature=settings.extractor_temperature,
+                        api_key=api_key)
+    raise ValueError(f"unknown extractor provider: {p}")
 
 
-_llm = None
+def _keys_for(provider: str) -> list[str]:
+    """Every usable key for a provider, priority order, DB keys before the env var."""
+    slug = _KEY_SLUG.get(provider.lower(), provider.lower())
+    keys = list(settings.provider_keys.get(slug) or [])
+    env = getattr(settings, f"{slug}_api_key", "") or ""
+    if env and env not in keys:
+        keys.append(env)
+    return keys
 
 
-def _get_llm():
-    global _llm
-    if _llm is None:
-        # include_raw: the plain structured wrapper returns only the parsed
-        # Pydantic object and discards usage_metadata — raw is needed to
-        # account actual token spend (input/output incl. thinking).
-        _llm = _build_llm().with_structured_output(SocialExtraction, include_raw=True)
-    return _llm
+def _attempts() -> list[tuple[str, str, str]]:
+    """(provider, model, api_key) to try in order: primary first, then the chain.
+
+    Each provider contributes one attempt per key it holds, so a dead
+    highest-priority key falls through to its sibling before the next provider.
+    """
+    chain: list[tuple[str, str]] = [
+        (settings.extractor_provider.lower(), settings.extractor_model)
+    ]
+    for entry in settings.extractor_fallbacks.split(","):
+        entry = entry.strip()
+        if not entry:
+            continue
+        provider, _, model = entry.partition(":")
+        provider = provider.lower()
+        chain.append((provider, model or _DEFAULT_MODEL.get(provider, "")))
+
+    out, seen = [], set()
+    for provider, model in chain:
+        if not model or (provider, model) in seen:
+            continue
+        seen.add((provider, model))
+        for key in _keys_for(provider):
+            out.append((provider, model, key))
+    return out
+
+
+_llm_cache: dict[tuple[str, str, str], object] = {}
+
+
+def _get_llm(provider: str, model: str, api_key: str):
+    # include_raw: the plain structured wrapper returns only the parsed
+    # Pydantic object and discards usage_metadata — raw is needed to
+    # account actual token spend (input/output incl. thinking).
+    cached = _llm_cache.get((provider, model, api_key))
+    if cached is None:
+        cached = _build_llm(provider, model, api_key).with_structured_output(
+            SocialExtraction, include_raw=True)
+        _llm_cache[(provider, model, api_key)] = cached
+    return cached
 
 
 _WHITELIST = {s.strip().upper() for s in settings.asset_whitelist.split(",") if s.strip()}
 
 
-def _image_block(image_bytes: bytes) -> dict:
-    """A base64 image content block in the shape the configured provider expects."""
+def _image_block(image_bytes: bytes, provider: str) -> dict:
+    """A base64 image content block in the shape the given provider expects."""
     b64 = base64.standard_b64encode(image_bytes).decode("ascii")
     media_type = settings.image_media_type
-    if settings.extractor_provider.lower() == "anthropic":
+    if provider.lower() == "anthropic":
         return {
             "type": "image",
             "source": {"type": "base64", "media_type": media_type, "data": b64},
@@ -120,18 +164,35 @@ async def extract(raw_text: str, preview_text: str, image_bytes: bytes | None = 
         f"LINKED POST PREVIEW:\n{preview_text or '(none)'}\n\n"
         f"IMAGE: {'attached below' if image_bytes else '(none)'}"
     )
-    content: list[dict] = [{"type": "text", "text": combined}]
-    if image_bytes:
-        content.append(_image_block(image_bytes))
-
     llm_usage = None
     call_failed = False   # True only for transient API failures, never parse failures
-    try:
-        resp: dict = await _get_llm().ainvoke(
-            [SystemMessage(content=SYSTEM_PROMPT), HumanMessage(content=content)]
-        )
+    result: Optional[SocialExtraction] = None
+    attempts = _attempts()
+    used_provider, used_model = settings.extractor_provider, settings.extractor_model
+    last_error: Exception | None = None
+
+    for i, (provider, model, api_key) in enumerate(attempts):
+        content: list[dict] = [{"type": "text", "text": combined}]
+        if image_bytes:
+            content.append(_image_block(image_bytes, provider))
+        try:
+            resp: dict = await _get_llm(provider, model, api_key).ainvoke(
+                [SystemMessage(content=SYSTEM_PROMPT), HumanMessage(content=content)]
+            )
+        except Exception as e:  # noqa: BLE001
+            # The call never produced a verdict (no credit, rate limit, 5xx, network).
+            # Try the next key, then the next provider, before giving up.
+            last_error = e
+            log.warning("extraction failed on %s:%s (attempt %d/%d): %s",
+                        provider, model, i + 1, len(attempts), e)
+            continue
+
+        used_provider, used_model = provider, model
+        if i > 0:
+            log.warning("extraction fell back to %s:%s after %d failed attempt(s)",
+                        provider, model, i)
         raw = resp.get("raw")
-        result: Optional[SocialExtraction] = resp.get("parsed")
+        result = resp.get("parsed")
         usage = getattr(raw, "usage_metadata", None) or {}
         if usage:
             llm_usage = {
@@ -141,22 +202,24 @@ async def extract(raw_text: str, preview_text: str, image_bytes: bytes | None = 
             }
         if result is None:
             # Tokens were spent even though structured parsing failed — keep the usage.
+            # Deliberately NOT a fallback trigger: the model did answer.
             log.warning("extraction parse failed: %s", resp.get("parsing_error"))
             result = SocialExtraction(
                 is_actionable=False, action_type="NONE", confidence=0.0,
                 reasoning=f"parse_error: {resp.get('parsing_error')}",
             )
-    except Exception as e:  # noqa: BLE001
-        # The call never produced a verdict (no credit, rate limit, 5xx, network).
-        # Flagged so the caller can leave the message unrecorded and retry later —
-        # persisting this placeholder would mark the message permanently seen and
-        # silently bury a real signal. A parse_error above is NOT flagged: the model
-        # did answer, tokens were spent, and a retry would likely fail the same way.
-        log.warning("extraction failed: %s", e)
+        break
+
+    if result is None:
+        # Every provider and key failed. Flagged so the caller leaves the message
+        # unrecorded and retries later — persisting this placeholder would mark the
+        # message permanently seen and silently bury a real signal.
         call_failed = True
+        log.error("extraction unavailable: all %d attempt(s) failed, last: %s",
+                  len(attempts), last_error)
         result = SocialExtraction(
             is_actionable=False, action_type="NONE", confidence=0.0,
-            reasoning=f"extraction_error: {e}",
+            reasoning=f"extraction_error: {last_error}",
         )
 
     asset = (result.asset or "").upper() or None
@@ -171,7 +234,7 @@ async def extract(raw_text: str, preview_text: str, image_bytes: bytes | None = 
         "reference_price": result.reference_price,
         "confidence": result.confidence,
         "in_whitelist": (asset in _WHITELIST) if asset else False,
-        "model": f"{settings.extractor_provider}:{settings.extractor_model}",
+        "model": f"{used_provider}:{used_model}",
         "extractor_version": EXTRACTOR_VERSION,
         "raw_llm_json": result.model_dump(),
         "input_tokens":  llm_usage.get("input_tokens")  if llm_usage else None,

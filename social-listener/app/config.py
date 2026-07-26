@@ -1,3 +1,4 @@
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -35,10 +36,27 @@ class Settings(BaseSettings):
     extractor_model: str = "claude-sonnet-4-6"
     extractor_temperature: float = 0.0
 
+    # Fallback chain, tried in order after the primary when a call fails to produce
+    # a verdict at all (no credit, rate limit, 5xx, network). Entries are
+    # "provider:model"; a bare "provider" reuses that provider's own default model.
+    # A parse failure does NOT fall through — the model answered, so the next
+    # provider would likely answer the same way.
+    #
+    # This exists because a single provider is a single point of failure: the
+    # listener went fully down on 2026-07-25 and again on 2026-07-26 when the
+    # Anthropic balance ran out, with usable keys sitting unused in llm_keys.
+    extractor_fallbacks: str = "google:gemini-3.6-flash"
+
     anthropic_api_key: str = ""
     openai_api_key: str = ""
     gemini_api_key: str = ""
     groq_api_key: str = ""
+
+    # All enabled keys per provider slug, priority order, filled at startup from
+    # llm_keys by config_secrets. A provider can hold several keys and the first
+    # is not necessarily alive — gemini's priority-0 key was out of credit while
+    # its priority-1 key worked. Empty means "fall back to the env var above".
+    provider_keys: dict[str, list[str]] = Field(default_factory=dict)
 
     source_tag: str = "telegram:AstronomerZero"
     asset_whitelist: str = "BTC,ETH"
