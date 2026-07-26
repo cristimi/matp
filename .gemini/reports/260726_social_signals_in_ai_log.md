@@ -171,12 +171,37 @@ ui tsc exit: 0
 $ ./scripts/redeploy.sh dashboard-api
 matp-dashboard-api-1   dashboard-api   Up 3 seconds (health: starting)
 ✓ dashboard-api redeployed.
+
+$ ./scripts/redeploy.sh dashboard-ui
+matp-dashboard-ui-1   dashboard-ui   Up 3 seconds
+   live dashboard-ui asset: index-DgP7U8YR.js
+✓ dashboard-ui redeployed.
 ```
 
-**Pending at the time of this commit:** the `dashboard-ui` image build was still running
-(builds are taking 20-30 minutes at the current host load, ~35). The endpoint it calls is
-deployed and verified above, and the page type-checks clean. The served-bundle check is added
-in the follow-up commit below once the build lands.
+Served bundle:
+
+```
+$ docker compose exec -T dashboard-ui grep -rl 'No social messages ingested yet' /usr/share/nginx/html
+/usr/share/nginx/html/assets/index-DgP7U8YR.js       # the Social tab's empty state
+
+$ docker compose exec -T dashboard-ui grep -rl 'social-signals' /usr/share/nginx/html
+/usr/share/nginx/html/assets/index-DgP7U8YR.js       # the endpoint it calls
+
+$ docker compose exec -T dashboard-ui grep -rl 'Why the model read it that way' /usr/share/nginx/html
+/usr/share/nginx/html/assets/index-DgP7U8YR.js       # the expanded reasoning block
+
+$ curl -s http://localhost/ | grep -oE 'index-[A-Za-z0-9_-]+\.js'
+index-DgP7U8YR.js
+```
+
+End to end through nginx, the path the browser actually takes:
+
+```
+$ curl -s "http://localhost/api/dashboard/ai/social-signals?limit=2"
+total: 264
+  347 NONE BTC conf 0.15 | image True
+  346 NONE BTC conf 0.85 | image False
+```
 
 ---
 
