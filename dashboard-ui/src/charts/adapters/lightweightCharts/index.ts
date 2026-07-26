@@ -67,7 +67,7 @@ class LightweightChartHandle implements ChartHandle {
         vertLines: { color: COLORS.grid },
         horzLines: { color: COLORS.grid },
       },
-      rightPriceScale: { borderColor: COLORS.border },
+      rightPriceScale: { borderColor: COLORS.border, autoScale: true },
       timeScale: {
         borderColor:     COLORS.border,
         timeVisible:     true,
@@ -75,9 +75,17 @@ class LightweightChartHandle implements ChartHandle {
         rightOffset:     4,
       },
       // Touch-first: one-finger drag pans, pinch zooms, no scroll hijacking of
-      // the page while the finger is on the chart.
+      // the page while the finger is on the chart. vertTouchDrag stays false so a
+      // finger dragged down the candles scrolls the page — which is also why the
+      // price axis cannot be dragged on a phone, and the caller gets zoomPrice()
+      // buttons instead. With a mouse, dragging the price axis still works.
       handleScroll: { mouseWheel: false, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: false },
-      handleScale:  { mouseWheel: false, pinch: true, axisPressedMouseMove: true },
+      handleScale:  {
+        mouseWheel: false,
+        pinch:      true,
+        axisPressedMouseMove: { time: true, price: true },
+        axisDoubleClickReset: { time: true, price: true },
+      },
       crosshair:    { mode: CrosshairMode.Magnet },
       localization: { locale: 'en-GB' },
     });
@@ -179,12 +187,40 @@ class LightweightChartHandle implements ChartHandle {
     }
 
     this.chart.timeScale().fitContent();
+    // New candles mean a new price range — a manual vertical zoom from the
+    // previous timeframe would leave the series off screen.
+    this.chart.priceScale('right').setAutoScale(true);
   }
 
   update(options: ChartMountOptions): void {
     if (this.destroyed) return;
     this.chart.applyOptions({ height: options.height });
     this.applyData(options);
+  }
+
+  zoomPrice(factor: number): void {
+    if (this.destroyed) return;
+    const scale = this.chart.priceScale('right');
+
+    // getVisibleRange() is null while auto-scaling, so the first zoom has to pin
+    // the range the chart is already showing before it can narrow it.
+    let range = scale.getVisibleRange();
+    if (!range) {
+      scale.setAutoScale(false);
+      range = scale.getVisibleRange();
+    }
+    if (!range) return;
+
+    const middle = (range.from + range.to) / 2;
+    const half   = ((range.to - range.from) / 2) * factor;
+    if (!Number.isFinite(half) || half <= 0) return;
+
+    scale.setVisibleRange({ from: middle - half, to: middle + half });
+  }
+
+  resetPriceZoom(): void {
+    if (this.destroyed) return;
+    this.chart.priceScale('right').setAutoScale(true);
   }
 
   resize(): void {

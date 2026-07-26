@@ -1,6 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { getPool } from '../db';
-import { buildSignalChart, clampLimit } from '../chartData';
+import { buildSignalChart, clampLimit, normalizeTimeframe } from '../chartData';
 
 const router = Router();
 const AI_URL = process.env.AI_SIGNAL_GENERATOR_URL || 'http://ai-signal-generator:8005';
@@ -772,7 +772,9 @@ router.get('/social-signals', async (req: Request, res: Response) => {
 // its trigger time, with the overlay from the order it produced, if any.
 router.get('/signals/:id/candles', async (req: Request, res: Response) => {
   try {
-    const payload = await buildSignalChart(req.params.id, clampLimit(req.query.limit));
+    const payload = await buildSignalChart(
+      req.params.id, clampLimit(req.query.limit), normalizeTimeframe(req.query.tf),
+    );
     if (!payload) {
       return res.status(404).json({ error: `Signal not found: ${req.params.id}` });
     }

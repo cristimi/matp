@@ -1,6 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { getPool } from '../db';
-import { buildOrderChart, clampLimit } from '../chartData';
+import { buildOrderChart, clampLimit, normalizeTimeframe } from '../chartData';
 
 const router = Router();
 
@@ -60,7 +60,9 @@ router.get('/', async (req: Request, res: Response) => {
 // Declared ahead of /:id so the two-segment path is matched first.
 router.get('/:id/candles', async (req: Request, res: Response) => {
   try {
-    const payload = await buildOrderChart(req.params.id, clampLimit(req.query.limit));
+    const payload = await buildOrderChart(
+      req.params.id, clampLimit(req.query.limit), normalizeTimeframe(req.query.tf),
+    );
     if (!payload) {
       return res.status(404).json({ error: `Order not found: ${req.params.id}` });
     }

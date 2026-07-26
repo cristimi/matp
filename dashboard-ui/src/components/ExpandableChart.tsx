@@ -22,6 +22,92 @@ import { priceDecimals } from '../utils/precision';
 
 const CHART_HEIGHT = 280;
 
+/** How much one press of the vertical zoom buttons narrows or widens the axis. */
+const ZOOM_STEP = 0.75;
+
+function TimeframeTabs({
+  options,
+  active,
+  busy,
+  onPick,
+}: {
+  options: string[];
+  active:  string | null;
+  busy:    boolean;
+  onPick:  (tf: string) => void;
+}) {
+  return (
+    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
+      {options.map(tf => {
+        const on = tf === active;
+        return (
+          <button
+            key={tf}
+            type="button"
+            onClick={() => !on && onPick(tf)}
+            disabled={busy && !on}
+            aria-pressed={on}
+            style={{
+              minWidth:      '34px',
+              minHeight:     '26px',
+              padding:       '0 8px',
+              borderRadius:  '5px',
+              cursor:        on ? 'default' : 'pointer',
+              fontFamily:    'JetBrains Mono, monospace',
+              fontSize:      '11px',
+              fontWeight:    700,
+              color:         on ? 'var(--bg2)' : 'var(--muted)',
+              background:    on ? 'var(--blue)' : 'transparent',
+              border:        `1px solid ${on ? 'var(--blue)' : 'var(--border)'}`,
+              opacity:       busy && !on ? 0.5 : 1,
+            }}
+          >
+            {tf}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+/** Round side button for the vertical zoom rail. */
+function ZoomButton({
+  label,
+  title,
+  onClick,
+}: {
+  label: string;
+  title: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={title}
+      aria-label={title}
+      style={{
+        width:          '26px',
+        height:         '26px',
+        borderRadius:   '5px',
+        display:        'flex',
+        alignItems:     'center',
+        justifyContent: 'center',
+        cursor:         'pointer',
+        fontSize:       '13px',
+        fontWeight:     700,
+        lineHeight:     1,
+        color:          'var(--muted)',
+        background:     'var(--bg3)',
+        border:         '1px solid var(--border)',
+        padding:        0,
+      }}
+    >
+      {label}
+    </button>
+  );
+}
+
 function Stat({ label, value, color }: { label: string; value: string; color?: string }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', minWidth: 0 }}>
@@ -61,23 +147,34 @@ function Message({ text }: { text: string }) {
 export function ChartPanel({ path }: { path: string }) {
   const [payload, setPayload] = useState<ChartPayload | null>(null);
   const [error,   setError]   = useState<string | null>(null);
+  // null = whatever the API defaults to (two rungs below the strategy's own).
+  const [timeframe, setTimeframe] = useState<string | null>(null);
+  const [busy,      setBusy]      = useState(false);
 
   const containerRef = useRef<HTMLDivElement | null>(null);
   const handleRef    = useRef<ChartHandle | null>(null);
 
-  // Fetch once per expand. `cancelled` stops a late response from setting state
-  // on a panel the user already collapsed.
+  const url = timeframe
+    ? `${path}${path.includes('?') ? '&' : '?'}tf=${timeframe}`
+    : path;
+
+  // Fetch once per expand, and again whenever the timeframe is switched. The old
+  // payload is deliberately kept while the new one is in flight, so the chart
+  // stays on screen instead of being torn down and remounted on every switch.
+  // `cancelled` stops a late response from setting state on a panel the user
+  // already collapsed, or an out-of-order one from overwriting a newer switch.
   useEffect(() => {
     let cancelled = false;
-    setPayload(null);
+    setBusy(true);
     setError(null);
 
-    api.get<ChartPayload>(path)
+    api.get<ChartPayload>(url)
       .then(data => { if (!cancelled) setPayload(data); })
-      .catch(err => { if (!cancelled) setError(err.message || 'Failed to load chart'); });
+      .catch(err => { if (!cancelled) setError(err.message || 'Failed to load chart'); })
+      .finally(() => { if (!cancelled) setBusy(false); });
 
     return () => { cancelled = true; };
-  }, [path]);
+  }, [url]);
 
   // The payload's symbol is authoritative — the caller may not have one to hand
   // (an AI log row carries only a strategy id).
@@ -136,39 +233,69 @@ export function ChartPanel({ path }: { path: string }) {
   const rr  = models?.riskReward;
   const geo = models?.geometry;
 
+  // Only rungs with candles behind them are offered; the one in use is always
+  // included, in case it came from a fallback outside the ladder.
+  const rungs = payload.available_timeframes?.length
+    ? payload.available_timeframes
+    : (payload.timeframe ? [payload.timeframe] : []);
+  const options = payload.timeframe && !rungs.includes(payload.timeframe)
+    ? [...rungs, payload.timeframe]
+    : rungs;
+
+  const details = [
+    rr?.riskPct   != null && { label: 'Risk',   value: `${rr.riskPct.toFixed(2)}%`,   color: 'var(--red)' },
+    rr?.rewardPct != null && { label: 'Reward', value: `${rr.rewardPct.toFixed(2)}%`, color: 'var(--green)' },
+    rr?.riskReward != null && { label: 'R:R',   value: rr.riskReward.toFixed(2) },
+  ].filter(Boolean) as Array<{ label: string; value: string; color?: string }>;
+
   return (
     <div style={{ borderTop: '1px solid var(--border)', background: 'var(--bg2)' }}>
-      {/* Context strip */}
+      {/* Context strip: the timeframe picker, plus what the AI saw */}
       <div style={{
-        display: 'flex', flexWrap: 'wrap', gap: '14px 18px',
-        padding: '10px 12px 8px 18px', alignItems: 'flex-start',
+        display: 'flex', flexWrap: 'wrap', gap: '10px 18px',
+        padding: '10px 12px 8px 18px', alignItems: 'center',
       }}>
-        <Stat label="Timeframe" value={payload.timeframe || '—'} />
-        {rr?.riskPct != null && (
-          <Stat label="Risk" value={`${rr.riskPct.toFixed(2)}%`} color="var(--red)" />
-        )}
-        {rr?.rewardPct != null && (
-          <Stat label="Reward" value={`${rr.rewardPct.toFixed(2)}%`} color="var(--green)" />
-        )}
-        {rr?.riskReward != null && (
-          <Stat label="R:R" value={`${rr.riskReward.toFixed(2)}`} />
-        )}
-        {rr?.progressPct != null && (
-          <Stat
-            label="To target"
-            value={`${rr.progressPct.toFixed(0)}%`}
-            color={rr.progressPct > 0 ? 'var(--green)' : 'var(--muted)'}
-          />
-        )}
-        {rr?.towardStopPct != null && rr.towardStopPct > 0 && (
-          <Stat label="To stop" value={`${rr.towardStopPct.toFixed(0)}%`} color="var(--red)" />
-        )}
+        <TimeframeTabs
+          options={options}
+          active={payload.timeframe}
+          busy={busy}
+          onPick={setTimeframe}
+        />
         {geo && (
           <Stat label="AI range" value={`${geo.shape.replace(/_/g, ' ')} · ${geo.fitQuality}`} />
         )}
       </div>
 
-      <div ref={containerRef} style={{ width: '100%', height: `${CHART_HEIGHT}px` }} />
+      {/* Chart, with the vertical zoom rail down its right-hand side */}
+      <div style={{ display: 'flex', alignItems: 'stretch' }}>
+        <div ref={containerRef} style={{ flex: 1, minWidth: 0, height: `${CHART_HEIGHT}px` }} />
+        <div style={{
+          width: '34px', flexShrink: 0,
+          display: 'flex', flexDirection: 'column',
+          alignItems: 'center', justifyContent: 'center', gap: '6px',
+          borderLeft: '1px solid var(--border)',
+        }}>
+          <ZoomButton label="+" title="Stretch the price axis"
+                      onClick={() => handleRef.current?.zoomPrice(ZOOM_STEP)} />
+          <ZoomButton label="−" title="Squash the price axis"
+                      onClick={() => handleRef.current?.zoomPrice(1 / ZOOM_STEP)} />
+          <ZoomButton label="⤢" title="Fit the price axis to the candles"
+                      onClick={() => handleRef.current?.resetPriceZoom()} />
+        </div>
+      </div>
+
+      {/* Position details, under the chart */}
+      {details.length > 0 && (
+        <div style={{
+          display: 'flex', flexWrap: 'wrap', gap: '14px 18px',
+          padding: '8px 12px 4px 18px', alignItems: 'flex-start',
+          borderTop: '1px solid var(--border)',
+        }}>
+          {details.map(d => (
+            <Stat key={d.label} label={d.label} value={d.value} color={d.color} />
+          ))}
+        </div>
+      )}
 
       {(payload.note || !rr) && (
         <div style={{

@@ -22,6 +22,17 @@ const INGESTION_EXCHANGE = process.env.INGESTION_EXCHANGE || 'blofin';
 // Tried in order when the strategy's own interval has no stream ingested.
 const TIMEFRAME_FALLBACKS = ['1h', '4h', '15m', '1m'];
 
+/**
+ * The ladder the chart's timeframe picker offers, finest first. Only these are
+ * accepted from `?tf=` — an arbitrary string would let a caller probe for
+ * streams that the picker never shows.
+ */
+export const CHART_TIMEFRAMES = ['1m', '5m', '15m', '30m', '1h', '4h', '1d'];
+
+// A chart opens two rungs below the strategy's own interval, so the entry is
+// seen in more detail than the strategy trades on: a 1h strategy charts 15m.
+const DEFAULT_STEPS_DOWN = 2;
+
 const DEFAULT_LIMIT = 300;
 const MAX_LIMIT     = 2000;   // market-ingestion caps each stream at STREAM_MAXLEN = 2000
 
@@ -52,6 +63,8 @@ export interface ChartPayload {
   exchange:            string;
   timeframe:           string | null;   // null when nothing is ingested for this symbol
   timeframe_requested: string | null;
+  /** Ladder rungs that actually have a stream — what the picker may offer. */
+  available_timeframes: string[];
   bar_seconds:         number | null;
   candles:             Candle[];
   geometry:            Record<string, any> | null;
@@ -80,6 +93,40 @@ const toNum = (v: any): number | null =>
 
 const dedupe = (values: Array<string | null>): string[] =>
   values.filter((v, i, arr): v is string => !!v && arr.indexOf(v) === i);
+
+/** `?tf=` guard: anything not on the picker's ladder is ignored, not honoured. */
+export function normalizeTimeframe(raw: any): string | null {
+  const tf = String(raw ?? '').trim();
+  return CHART_TIMEFRAMES.includes(tf) ? tf : null;
+}
+
+/**
+ * Where the chart opens when the caller names no timeframe: two rungs below the
+ * strategy's interval. Intervals off the ladder (3m, 2h) snap down to the rung
+ * at or below them first, so a 2h strategy counts from 1h and opens on 15m.
+ */
+function defaultTimeframe(strategyInterval: string | null): string | null {
+  if (!strategyInterval) return null;
+  const seconds = TIMEFRAME_SECONDS[strategyInterval];
+  if (seconds == null) return strategyInterval;
+
+  let rung = -1;
+  CHART_TIMEFRAMES.forEach((tf, i) => {
+    if (TIMEFRAME_SECONDS[tf] <= seconds) rung = i;
+  });
+  if (rung < 0) return strategyInterval;
+
+  return CHART_TIMEFRAMES[Math.max(0, rung - DEFAULT_STEPS_DOWN)];
+}
+
+/** Which ladder rungs are ingested for this symbol — the picker's option list. */
+async function availableTimeframes(exchange: string, symbol: string): Promise<string[]> {
+  const redis = getRedis();
+  const found = await Promise.all(
+    CHART_TIMEFRAMES.map(tf => redis.exists(streamKey(exchange, symbol, tf))),
+  );
+  return CHART_TIMEFRAMES.filter((_, i) => found[i]);
+}
 
 /**
  * First (exchange, timeframe) pair that actually has a stream.
@@ -237,6 +284,7 @@ async function assemble(
     exchange:            stream?.exchange ?? accountVenue ?? INGESTION_EXCHANGE,
     timeframe:           stream?.timeframe ?? null,
     timeframe_requested: preferredTimeframe,
+    available_timeframes: stream ? await availableTimeframes(stream.exchange, symbol) : [],
     bar_seconds:         stream ? (TIMEFRAME_SECONDS[stream.timeframe] ?? null) : null,
     candles,
     geometry:            geo?.data ?? null,
@@ -244,14 +292,21 @@ async function assemble(
     overlay: { ...overlay, current_price: last ? last.close : null },
   };
 
+  const notes: string[] = [];
   if (!stream) {
-    payload.note =
+    notes.push(
       `No candle stream ingested for ${symbol}. ` +
-      `Add "${symbol}:${preferredTimeframe || '1h'}" to INGESTION_SUBSCRIPTIONS.`;
-  } else if (accountVenue && accountVenue !== stream.exchange) {
-    payload.note =
-      `Candles from ${stream.exchange} — ${accountVenue} is not ingested.`;
+      `Add "${symbol}:${preferredTimeframe || '1h'}" to INGESTION_SUBSCRIPTIONS.`,
+    );
+  } else {
+    if (accountVenue && accountVenue !== stream.exchange) {
+      notes.push(`Candles from ${stream.exchange} — ${accountVenue} is not ingested.`);
+    }
+    if (preferredTimeframe && preferredTimeframe !== stream.timeframe) {
+      notes.push(`${preferredTimeframe} is not ingested — showing ${stream.timeframe}.`);
+    }
   }
+  if (notes.length) payload.note = notes.join(' ');
 
   return payload;
 }
@@ -265,6 +320,7 @@ async function assemble(
 export async function buildPositionChart(
   positionId: string,
   limit: number,
+  requestedTimeframe: string | null = null,
 ): Promise<ChartPayload | null> {
   const { rows } = await getPool().query(
     `SELECT sp.strategy_id,
@@ -298,7 +354,7 @@ export async function buildPositionChart(
   return assemble(
     r.symbol,
     r.account_exchange,
-    r.strategy_interval,
+    requestedTimeframe ?? defaultTimeframe(r.strategy_interval),
     r.strategy_id,
     limit,
     {
@@ -327,6 +383,7 @@ export async function buildPositionChart(
 export async function buildOrderChart(
   orderId: string,
   limit: number,
+  requestedTimeframe: string | null = null,
 ): Promise<ChartPayload | null> {
   const { rows } = await getPool().query(
     `SELECT o.strategy_id,
@@ -360,7 +417,7 @@ export async function buildOrderChart(
   return assemble(
     r.symbol,
     r.account_exchange,
-    r.strategy_interval,
+    requestedTimeframe ?? defaultTimeframe(r.strategy_interval),
     r.strategy_id,
     limit,
     {
@@ -394,6 +451,7 @@ const SIGNAL_LOOKAHEAD_BARS = 40;
 export async function buildSignalChart(
   signalId: string,
   limit: number,
+  requestedTimeframe: string | null = null,
 ): Promise<ChartPayload | null> {
   const { rows } = await getPool().query(
     `SELECT l.strategy_id,
@@ -427,7 +485,10 @@ export async function buildSignalChart(
   const r = rows[0];
 
   const triggeredAt = toMs(r.triggered_at);
-  const barSeconds  = TIMEFRAME_SECONDS[r.strategy_interval] ?? 3600;
+  // The lookahead is counted in bars of the timeframe on screen, so switching to
+  // a finer one zooms in on the decision rather than showing the same wide span.
+  const displayTf   = requestedTimeframe ?? defaultTimeframe(r.strategy_interval);
+  const barSeconds  = TIMEFRAME_SECONDS[displayTf ?? ''] ?? 3600;
   const endMs       = triggeredAt != null
     ? triggeredAt + SIGNAL_LOOKAHEAD_BARS * barSeconds * 1000
     : undefined;
@@ -438,7 +499,7 @@ export async function buildSignalChart(
   return assemble(
     r.symbol,
     r.account_exchange,
-    r.strategy_interval,
+    displayTf,
     r.strategy_id,
     limit,
     {

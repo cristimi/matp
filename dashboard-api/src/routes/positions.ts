@@ -1,6 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { getPool } from '../db';
-import { buildPositionChart, clampLimit } from '../chartData';
+import { buildPositionChart, clampLimit, normalizeTimeframe } from '../chartData';
 
 const router = Router();
 const EXECUTOR_URL = process.env.EXECUTOR_URL || 'http://order-executor:8004';
@@ -225,7 +225,9 @@ router.get('/:id/orders', async (req: Request, res: Response) => {
 // so the chart never renders candles before it knows where the box goes.
 router.get('/:id/candles', async (req: Request, res: Response) => {
   try {
-    const payload = await buildPositionChart(req.params.id, clampLimit(req.query.limit));
+    const payload = await buildPositionChart(
+      req.params.id, clampLimit(req.query.limit), normalizeTimeframe(req.query.tf),
+    );
     if (!payload) {
       return res.status(404).json({ error: `Position not found: ${req.params.id}` });
     }

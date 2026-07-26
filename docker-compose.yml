@@ -229,13 +229,23 @@ services:
       REDIS_URL: redis://redis:6379
       INGESTION_EXCHANGE: blofin
       INGESTION_MODE: live
-      # The :1h streams feed the position/order chart overlay. One per symbol that
-      # has an enabled strategy — a position can open on any of them, and without a
-      # stream its chart has nothing to draw (ai-signal-generator fetches candles
-      # per-cycle and discards them, so it leaves nothing behind for the UI).
+      # These streams feed the position/order chart overlay. Every symbol that has
+      # an enabled strategy gets the full ladder the chart's timeframe picker
+      # offers (1m 5m 15m 30m 1h 4h 1d) — a chart opens two rungs below the
+      # strategy's interval and the user can switch to any rung, so a missing one
+      # is a dead button. Without a stream a chart has nothing to draw
+      # (ai-signal-generator fetches candles per-cycle and discards them, so it
+      # leaves nothing behind for the UI).
+      # One ccxt.pro instance multiplexes all of these over a single WS connection.
       # HYPE-USDT and SUI-USDT are deliberately absent: both strategies are
       # disabled, so no new position can open there. Add them if that changes.
-      INGESTION_SUBSCRIPTIONS: BTC-USDT:1h,BTC-USDT:4h,BTC-USDT:1m,ETH-USDT:1h,SOL-USDT:1h,BNB-USDT:1h,TAO-USDT:1h,XRP-USDT:1h
+      INGESTION_SUBSCRIPTIONS: >-
+        BTC-USDT:1m,BTC-USDT:5m,BTC-USDT:15m,BTC-USDT:30m,BTC-USDT:1h,BTC-USDT:4h,BTC-USDT:1d,
+        ETH-USDT:1m,ETH-USDT:5m,ETH-USDT:15m,ETH-USDT:30m,ETH-USDT:1h,ETH-USDT:4h,ETH-USDT:1d,
+        SOL-USDT:1m,SOL-USDT:5m,SOL-USDT:15m,SOL-USDT:30m,SOL-USDT:1h,SOL-USDT:4h,SOL-USDT:1d,
+        BNB-USDT:1m,BNB-USDT:5m,BNB-USDT:15m,BNB-USDT:30m,BNB-USDT:1h,BNB-USDT:4h,BNB-USDT:1d,
+        TAO-USDT:1m,TAO-USDT:5m,TAO-USDT:15m,TAO-USDT:30m,TAO-USDT:1h,TAO-USDT:4h,TAO-USDT:1d,
+        XRP-USDT:1m,XRP-USDT:5m,XRP-USDT:15m,XRP-USDT:30m,XRP-USDT:1h,XRP-USDT:4h,XRP-USDT:1d
       INGESTION_WARMUP_CANDLES: "500"
     depends_on:
       redis:
