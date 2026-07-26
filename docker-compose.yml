@@ -125,6 +125,8 @@ services:
       LISTENER_URL: http://order-listener:8001
       EXECUTOR_URL: http://order-executor:8004
       AI_SIGNAL_GENERATOR_URL: http://ai-signal-generator:8005
+      # Namespace of the Redis candle streams the chart endpoints read.
+      INGESTION_EXCHANGE: blofin
       PUBLIC_HOST: ${PUBLIC_HOST:-}
       CONFIG_SECRET_KEY: ${CONFIG_SECRET_KEY}
     depends_on:
@@ -227,7 +229,10 @@ services:
       REDIS_URL: redis://redis:6379
       INGESTION_EXCHANGE: blofin
       INGESTION_MODE: live
-      INGESTION_SUBSCRIPTIONS: BTC-USDT:1h,BTC-USDT:4h,BTC-USDT:1m
+      # ETH-USDT:1h feeds the position/order chart overlay — eth-ai-34d2 is the
+      # geometric_range strategy, and its candles were previously fetched per-cycle
+      # by ai-signal-generator and discarded, leaving nothing for the UI to plot.
+      INGESTION_SUBSCRIPTIONS: BTC-USDT:1h,BTC-USDT:4h,BTC-USDT:1m,ETH-USDT:1h
       INGESTION_WARMUP_CANDLES: "500"
     depends_on:
       redis:
