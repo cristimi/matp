@@ -348,7 +348,7 @@ function PositionCard({
       <DataGrid rows={[topRow, botRow]} />
 
       {/* Action band or closed band */}
-      <ExpandableChart path={`/positions/${position.id}/candles`} symbol={symbol} />
+      <ExpandableChart path={`/positions/${position.id}/candles`} />
 
       {isClosed ? (
         <div style={{

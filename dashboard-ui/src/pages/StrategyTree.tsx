@@ -1020,27 +1020,33 @@ function PositionCard({
             <div style={{ color: 'var(--muted)', fontSize: 12, padding: '4px 0' }}>No orders</div>
           )}
 
-          {/* Candle chart with the AI range and the risk-reward box. Collapsed by
-              default, and only reachable at this deepest level, so opening a
-              strategy never costs a candle fetch. */}
-          <ExpandableChart path={`/positions/${p.id}/candles`} symbol={symbol} variant="inline" />
+          {isOpen && closeError && (
+            <div style={{ color: 'var(--red)', fontSize: 11, padding: '4px 0' }}>{closeError}</div>
+          )}
 
-          {isOpen && (
-            <>
-              {closeError && (
-                <div style={{ color: 'var(--red)', fontSize: 11, padding: '4px 0' }}>{closeError}</div>
-              )}
+          {/* Chart icon, then the close action on the same row. Collapsed by
+              default and only reachable at this deepest level, so opening a
+              strategy never costs a candle fetch. */}
+          <ExpandableChart
+            path={`/positions/${p.id}/candles`}
+            variant="icon"
+            actions={isOpen ? (
               <button
                 type="button"
                 disabled={closeInFlight}
                 aria-label="Close position"
-                style={{ ...closePosBtn, cursor: closeInFlight ? 'default' : 'pointer', opacity: closeInFlight ? 0.6 : 1 }}
+                style={{
+                  ...closePosBtn,
+                  marginTop: 0, flex: 1, width: 'auto',   // sits beside the icon, not under it
+                  cursor: closeInFlight ? 'default' : 'pointer',
+                  opacity: closeInFlight ? 0.6 : 1,
+                }}
                 onClick={handleClosePosition}
               >
                 {closeInFlight ? 'Closing…' : 'Close position'}
               </button>
-            </>
-          )}
+            ) : undefined}
+          />
         </div>
       )}
     </div>
@@ -1093,6 +1099,10 @@ function PendingOrderCard({ order: o, livePnl }: { order: PendingOrder; livePnl:
         <div style={{ fontFamily: MONO, fontSize: 10, color: 'var(--dim)' }}>
           Modified {formatRelative(o.updated_at)}
         </div>
+
+        {/* Candles, AI range and the stop→target box for the resting order.
+            Unfilled, so there is no inner progress box — only the outer span. */}
+        <ExpandableChart path={`/orders/${o.id}/candles`} variant="icon" />
       </div>
     </div>
   );

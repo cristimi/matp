@@ -236,7 +236,7 @@ function OrderCard({
         ))}
       </div>
 
-      <ExpandableChart path={`/orders/${order.id}/candles`} symbol={order.symbol} />
+      <ExpandableChart path={`/orders/${order.id}/candles`} />
 
       {/* Footer */}
       {uiStatus === 'route-fail' ? (

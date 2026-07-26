@@ -112,19 +112,29 @@ async function pickStream(
  * Closed candles oldest-first, with the forming candle appended when it is newer
  * than the last closed bar. XREVRANGE gives newest-first, so the slice is taken
  * from the recent end and then reversed.
+ *
+ * `endMs` windows the series on a moment in the past (an AI signal's trigger
+ * time) instead of "now". Filtering is done on the candles' own open-time rather
+ * than on the Redis entry ID, because the entry ID is the time the bar was
+ * *written* — roughly the bar's close, one full bar later.
  */
 async function readCandles(
   exchange: string,
   symbol: string,
   timeframe: string,
   limit: number,
+  endMs?: number,
 ): Promise<Candle[]> {
-  const redis   = getRedis();
+  const redis = getRedis();
+
+  // Windowed reads over-fetch, then slice, since the cut is on a field rather
+  // than on the stream key.
+  const count   = endMs != null ? Math.min(limit * 6, MAX_LIMIT) : limit;
   const entries = await redis.xRevRange(
-    streamKey(exchange, symbol, timeframe), '+', '-', { COUNT: limit },
+    streamKey(exchange, symbol, timeframe), '+', '-', { COUNT: count },
   );
 
-  const candles: Candle[] = entries.map((e: any) => ({
+  let candles: Candle[] = entries.map((e: any) => ({
     time:   Number(e.message.t),
     open:   Number(e.message.o),
     high:   Number(e.message.h),
@@ -132,6 +142,14 @@ async function readCandles(
     close:  Number(e.message.c),
     volume: Number(e.message.v),
   })).reverse();
+
+  if (endMs != null) {
+    const windowed = candles.filter(c => c.time <= endMs);
+    // An empty window means the moment predates what the stream still retains —
+    // fall back to the recent bars rather than returning nothing.
+    if (windowed.length) return windowed.slice(-limit);
+    return candles.slice(-limit);
+  }
 
   const rawForming = await redis.get(formingKey(exchange, symbol, timeframe));
   if (rawForming) {
@@ -179,6 +197,17 @@ export function clampLimit(raw: any): number {
   return Math.min(n, MAX_LIMIT);
 }
 
+interface AssembleOptions {
+  /**
+   * Use this geometry instead of the strategy's newest. Set for AI-log charts,
+   * where the point is the range that signal actually saw.
+   */
+  geometry?:   Record<string, any> | null;
+  geometryAt?: number | null;
+  /** Window the candles on a past moment rather than on "now". */
+  endMs?:      number;
+}
+
 /** Shared tail: resolve the stream, read candles, attach geometry and overlay. */
 async function assemble(
   symbol: string,
@@ -187,6 +216,7 @@ async function assemble(
   strategyId: string,
   limit: number,
   overlay: Omit<ChartOverlay, 'current_price'>,
+  opts: AssembleOptions = {},
 ): Promise<ChartPayload> {
   const accountVenue = accountExchange ? accountExchange.toLowerCase() : null;
   const stream = await pickStream(
@@ -194,10 +224,12 @@ async function assemble(
   );
 
   const candles = stream
-    ? await readCandles(stream.exchange, symbol, stream.timeframe, limit)
+    ? await readCandles(stream.exchange, symbol, stream.timeframe, limit, opts.endMs)
     : [];
 
-  const geo  = await latestGeometry(strategyId);
+  const geo = opts.geometry !== undefined
+    ? (opts.geometry ? { data: opts.geometry, at: opts.geometryAt ?? null } : null)
+    : await latestGeometry(strategyId);
   const last = candles[candles.length - 1];
 
   const payload: ChartPayload = {
@@ -342,5 +374,86 @@ export async function buildOrderChart(
       closed_at:    null,
       close_price:  null,
     },
+  );
+}
+
+/**
+ * AI-log chart. Two things differ from the position/order charts:
+ *
+ *  - The geometry is **that row's own**, not the strategy's newest — the point of
+ *    the chart is to show the range the model was looking at when it decided.
+ *  - The candle window ends a little after the trigger, so the chart shows the
+ *    market as it stood at decision time plus what happened next, rather than
+ *    only the most recent bars.
+ *
+ * The overlay comes from the order the signal produced, when it produced one; a
+ * hold or a gate rejection has no order, so the chart is candles + range only.
+ */
+const SIGNAL_LOOKAHEAD_BARS = 40;
+
+export async function buildSignalChart(
+  signalId: string,
+  limit: number,
+): Promise<ChartPayload | null> {
+  const { rows } = await getPool().query(
+    `SELECT l.strategy_id,
+            l.triggered_at,
+            l.geometry_data,
+            l.order_id,
+            s.symbol,
+            s.interval    AS strategy_interval,
+            ea.exchange   AS account_exchange,
+            o.side,
+            o.status,
+            o.price,
+            o.actual_fill_price,
+            o.tp_price,
+            o.sl_price,
+            o.received_at,
+            o.updated_at,
+            oel.placed_at AS oel_placed_at,
+            oel.filled_at AS oel_filled_at
+       FROM ai_signal_log l
+       JOIN strategies s ON s.id = l.strategy_id
+       LEFT JOIN exchange_accounts ea ON ea.id = s.account_id
+       LEFT JOIN orders o             ON o.id  = l.order_id
+       LEFT JOIN order_execution_log oel
+              ON oel.exchange_order_id = o.exchange_order_id
+             AND o.exchange_order_id IS NOT NULL
+      WHERE l.id = $1`,
+    [signalId],
+  );
+  if (!rows.length) return null;
+  const r = rows[0];
+
+  const triggeredAt = toMs(r.triggered_at);
+  const barSeconds  = TIMEFRAME_SECONDS[r.strategy_interval] ?? 3600;
+  const endMs       = triggeredAt != null
+    ? triggeredAt + SIGNAL_LOOKAHEAD_BARS * barSeconds * 1000
+    : undefined;
+
+  const hasOrder  = r.order_id != null;
+  const isFilled  = String(r.status || '').toLowerCase() === 'filled';
+
+  return assemble(
+    r.symbol,
+    r.account_exchange,
+    r.strategy_interval,
+    r.strategy_id,
+    limit,
+    {
+      side:         hasOrder ? r.side   : null,
+      status:       hasOrder ? r.status : null,
+      placed_at:    hasOrder ? (toMs(r.oel_placed_at) ?? toMs(r.received_at)) : null,
+      filled_at:    hasOrder
+        ? (toMs(r.oel_filled_at) ?? (isFilled ? toMs(r.updated_at) : null))
+        : null,
+      entry_price:  hasOrder ? (toNum(r.actual_fill_price) ?? toNum(r.price)) : null,
+      stop_price:   hasOrder ? toNum(r.sl_price) : null,
+      target_price: hasOrder ? toNum(r.tp_price) : null,
+      closed_at:    null,
+      close_price:  null,
+    },
+    { geometry: r.geometry_data ?? null, geometryAt: triggeredAt, endMs },
   );
 }

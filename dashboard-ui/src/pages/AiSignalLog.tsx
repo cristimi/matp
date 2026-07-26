@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { TopBar } from '../components/shared/TopBar';
 import { formatRelative } from '../utils/datetime';
+import { ExpandableChart } from '../components/ExpandableChart';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -353,6 +354,11 @@ function AiSignalCard({ row }: { row: AiSignalRow }) {
               </div>
             </div>
           )}
+
+          {/* Chart for this cycle: the range this signal saw (its own geometry
+              snapshot, not the newest), over the candles around its trigger, with
+              the box from whatever order it produced. */}
+          <ExpandableChart path={`/ai/signals/${row.id}/candles`} variant="inline" />
         </div>
       )}
     </div>

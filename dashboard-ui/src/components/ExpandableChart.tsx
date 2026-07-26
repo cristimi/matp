@@ -8,7 +8,7 @@
  * Engine independence: this file imports `chartAdapter` and the pure helpers from
  * ../charts, never a charting library. See src/charts/index.ts.
  */
-import { useState, useEffect, useRef, useMemo } from 'react';
+import { useState, useEffect, useRef, useMemo, type ReactNode } from 'react';
 
 import {
   chartAdapter,
@@ -52,7 +52,7 @@ function Message({ text }: { text: string }) {
   );
 }
 
-function ChartPanel({ path, symbol }: { path: string; symbol: string }) {
+function ChartPanel({ path }: { path: string }) {
   const [payload, setPayload] = useState<ChartPayload | null>(null);
   const [error,   setError]   = useState<string | null>(null);
 
@@ -73,7 +73,12 @@ function ChartPanel({ path, symbol }: { path: string; symbol: string }) {
     return () => { cancelled = true; };
   }, [path]);
 
-  const decimals = useMemo(() => priceDecimals(symbol), [symbol]);
+  // The payload's symbol is authoritative — the caller may not have one to hand
+  // (an AI log row carries only a strategy id).
+  const decimals = useMemo(
+    () => priceDecimals(payload?.symbol ?? ''),
+    [payload?.symbol],
+  );
 
   const models = useMemo(() => {
     if (!payload) return null;
@@ -172,22 +177,77 @@ function ChartPanel({ path, symbol }: { path: string; symbol: string }) {
   );
 }
 
+/** Two candlesticks, drawn in currentColor so the button owns the colour. */
+function CandlesGlyph() {
+  return (
+    <svg width="17" height="17" viewBox="0 0 16 16" aria-hidden="true"
+         style={{ display: 'block' }}>
+      <g stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
+        <path d="M4 2.2v11.6" />
+        <path d="M12 2.2v11.6" />
+      </g>
+      <rect x="2"  y="4.5" width="4" height="5.5" rx="1" fill="currentColor" />
+      <rect x="10" y="7"   width="4" height="5"   rx="1" fill="currentColor" />
+    </svg>
+  );
+}
+
 /**
  * `variant` controls only the toggle's chrome:
  *   footer  full-bleed card footer, matching ActionBand (Positions, Orders)
- *   inline  sits inside an already-indented container (the Tree's orders track)
+ *   inline  full-width, bordered — sits inside an already-indented container
+ *   icon    a round icon button, for placing beside other action buttons
+ *
+ * `actions` is only read by the icon variant: it renders those nodes in the same
+ * row as the icon (e.g. the Tree's "Close position" button), while the chart
+ * panel itself still opens full-width underneath.
  */
 export function ExpandableChart({
   path,
-  symbol,
   variant = 'footer',
+  actions,
 }: {
   path: string;
-  symbol: string;
-  variant?: 'footer' | 'inline';
+  variant?: 'footer' | 'inline' | 'icon';
+  actions?: ReactNode;
 }) {
   const [open, setOpen] = useState(false);
   const inline = variant === 'inline';
+
+  if (variant === 'icon') {
+    return (
+      <>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 8 }}>
+          <button
+            type="button"
+            onClick={() => setOpen(o => !o)}
+            aria-expanded={open}
+            aria-label={open ? 'Hide chart' : 'Show chart'}
+            title={open ? 'Hide chart' : 'Show chart'}
+            style={{
+              flexShrink:      0,
+              width:           38,
+              height:          38,
+              borderRadius:    '50%',
+              display:         'flex',
+              alignItems:      'center',
+              justifyContent:  'center',
+              cursor:          'pointer',
+              // Filled while open, so it reads as a toggle rather than a link.
+              color:           open ? 'var(--bg3)' : 'var(--blue)',
+              background:      open ? 'var(--blue)' : 'var(--blue-a)',
+              border:          '1px solid var(--blue-b)',
+              padding:         0,
+            }}
+          >
+            <CandlesGlyph />
+          </button>
+          {actions}
+        </div>
+        {open && <ChartPanel path={path} />}
+      </>
+    );
+  }
 
   return (
     <>
@@ -214,7 +274,7 @@ export function ExpandableChart({
       >
         {open ? '▾ Hide chart' : '▸ Chart'}
       </button>
-      {open && <ChartPanel path={path} symbol={symbol} />}
+      {open && <ChartPanel path={path} />}
     </>
   );
 }

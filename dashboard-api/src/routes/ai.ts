@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { getPool } from '../db';
+import { buildSignalChart, clampLimit } from '../chartData';
 
 const router = Router();
 const AI_URL = process.env.AI_SIGNAL_GENERATOR_URL || 'http://ai-signal-generator:8005';
@@ -687,6 +688,22 @@ router.put('/strategies/:id/risk-config', async (req: Request, res: Response) =>
 });
 
 // ── GET /signals — global AI signal log across all strategies ─────────────────
+
+// GET /ai/signals/:id/candles — lazy chart payload for an AI log entry.
+// Shows the range that signal saw (its own geometry_data) over the candles around
+// its trigger time, with the overlay from the order it produced, if any.
+router.get('/signals/:id/candles', async (req: Request, res: Response) => {
+  try {
+    const payload = await buildSignalChart(req.params.id, clampLimit(req.query.limit));
+    if (!payload) {
+      return res.status(404).json({ error: `Signal not found: ${req.params.id}` });
+    }
+    res.json(payload);
+  } catch (err: any) {
+    console.error(`Error building chart for signal ${req.params.id}:`, err);
+    res.status(500).json({ error: err.message || 'Failed to build chart payload' });
+  }
+});
 
 router.get('/signals', async (req: Request, res: Response) => {
   const limit  = Math.min(Number(req.query.limit)  || 50, 200);
