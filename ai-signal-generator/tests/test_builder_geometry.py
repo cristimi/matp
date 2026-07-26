@@ -90,6 +90,31 @@ def test_named_shape_renders_title_not_unclassified():
     assert 'UNRELIABLE' not in rendered
 
 
+def test_chart_replay_fields_do_not_change_the_rendered_section():
+    # geometry.py now also returns upper_slope/lower_slope/anchor_ts/bar_seconds/
+    # first_swing_ts/swing_highs/swing_lows for the chart overlay. Those are for the
+    # UI only — they must not leak into the LLM prompt or shift any existing line.
+    base = {
+        'shape': 'descending_channel', 'fit_quality': 'moderate',
+        'upper_boundary': 1733.94, 'lower_boundary': 1687.64,
+        'upper_touches': 3, 'lower_touches': 4,
+        'convergence_pct_per_bar': 0.0007, 'pattern_age_bars': 38,
+        'position_in_range_pct': 100.0,
+    }
+    with_chart_fields = {
+        **base,
+        'upper_slope':    -0.4212,
+        'lower_slope':    -0.3987,
+        'anchor_ts':      1_753_000_000_000,
+        'bar_seconds':    3600,
+        'first_swing_ts': 1_753_086_400_000,
+        'swing_highs':    [[1_753_086_400_000, 1751.2], [1_753_216_000_000, 1740.8]],
+        'swing_lows':     [[1_753_090_000_000, 1702.5], [1_753_219_600_000, 1694.1]],
+    }
+
+    assert _render_geometry(_state(with_chart_fields)) == _render_geometry(_state(base))
+
+
 def test_use_geometry_off_is_omitted():
     gd = {'shape': 'no_pattern', 'fit_quality': 'strong'}
     assert _render_geometry(_state(gd, use_geometry=False)) == ''

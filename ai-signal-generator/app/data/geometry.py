@@ -102,6 +102,51 @@ def _count_touches(
     return count
 
 
+# ── Chart-replay helpers ──────────────────────────────────────────────────────
+# The trendline fit uses bar *index* as x, so a consumer holding only the result
+# dict cannot redraw the boundaries anywhere except the final bar. The three
+# helpers below export the missing index→time mapping (anchor bar, bar duration,
+# swing timestamps) so a chart can project either boundary across history.
+
+def _candle_ts(candles: list[dict], idx: int) -> Optional[int]:
+    """Open-time (epoch ms) of candles[idx], or None if the series is untimed."""
+    if idx < 0 or idx >= len(candles):
+        return None
+    ts = candles[idx].get('timestamp')
+    return int(ts) if ts is not None else None
+
+
+def _bar_seconds(candles: list[dict]) -> Optional[int]:
+    """
+    Bar duration in seconds, as the median gap between consecutive open-times.
+    Median rather than first-gap so a single missing bar can't distort it.
+    Returns None when the series carries no usable timestamps.
+    """
+    stamps = [c.get('timestamp') for c in candles]
+    diffs  = [
+        int(b) - int(a)
+        for a, b in zip(stamps, stamps[1:])
+        if a is not None and b is not None and int(b) > int(a)
+    ]
+    if not diffs:
+        return None
+    return int(round(float(np.median(diffs)) / 1000.0))
+
+
+def _swing_points(
+    swings: list[tuple[int, float]],
+    candles: list[dict],
+) -> list[list]:
+    """Swings as [open_time_ms, price] pairs; untimed swings are dropped."""
+    points: list[list] = []
+    for idx, price in swings:
+        ts = _candle_ts(candles, idx)
+        if ts is None:
+            continue
+        points.append([ts, round(float(price), 6)])
+    return points
+
+
 def detect_geometry(candles: list[dict], lookback: int = 120) -> dict:
     """
     Detect geometric price patterns from OHLCV candles.
@@ -109,6 +154,18 @@ def detect_geometry(candles: list[dict], lookback: int = 120) -> dict:
     Uses the most recent `lookback` candles. Returns a result dict with:
       shape, upper_boundary, lower_boundary, upper_touches, lower_touches,
       convergence_pct_per_bar, pattern_age_bars, position_in_range_pct, fit_quality.
+
+    Plus the chart-replay fields, which describe the fit in time rather than in
+    bar indices so a consumer can redraw the boundaries across history:
+      upper_slope, lower_slope   price change per bar of each fitted trendline
+      anchor_ts                  open-time (ms) of the bar used as x = 0 in the fit
+      bar_seconds                bar duration in seconds (median gap)
+      first_swing_ts             open-time (ms) of the oldest swing in the fit —
+                                 where a drawn trendline should start
+      swing_highs, swing_lows    every detected swing as [open_time_ms, price]
+
+    The three timestamp fields and bar_seconds are None when the candles carry no
+    'timestamp' key; the geometry itself is unaffected.
 
     Returns {} on insufficient data or unhandled error.
     Returns {'shape': 'no_pattern', ...} when swings are insufficient or lines diverge.
@@ -131,6 +188,9 @@ def detect_geometry(candles: list[dict], lookback: int = 120) -> dict:
         swing_highs, swing_lows = _find_swings(highs, lows)
 
         if len(swing_highs) < MIN_SWINGS or len(swing_lows) < MIN_SWINGS:
+            # No fit was attempted, so the slopes are 0 and there is no first
+            # swing to anchor a line to — but anchor_ts/bar_seconds still describe
+            # the window, which is what a chart needs to place the (empty) result.
             return {
                 'shape':                   'no_pattern',
                 'upper_boundary':          0.0,
@@ -141,6 +201,13 @@ def detect_geometry(candles: list[dict], lookback: int = 120) -> dict:
                 'pattern_age_bars':        0,
                 'position_in_range_pct':   50.0,
                 'fit_quality':             'weak',
+                'upper_slope':             0.0,
+                'lower_slope':             0.0,
+                'anchor_ts':               _candle_ts(candles, 0),
+                'bar_seconds':             _bar_seconds(candles),
+                'first_swing_ts':          None,
+                'swing_highs':             _swing_points(swing_highs, candles),
+                'swing_lows':              _swing_points(swing_lows, candles),
             }
 
         recent_highs = swing_highs[-MAX_SWINGS:]
@@ -234,6 +301,16 @@ def detect_geometry(candles: list[dict], lookback: int = 120) -> dict:
             'pattern_age_bars':        pattern_age_bars,
             'position_in_range_pct':   round(pos_in_range, 2),
             'fit_quality':             fit_quality,
+            # Boundary at bar i (i counted from the anchor bar, x=0 in the fit):
+            #   upper = upper_boundary + upper_slope * (i - last_idx)
+            # so a chart can draw the real sloped line, not two flat levels.
+            'upper_slope':             round(upper_slope, 8),
+            'lower_slope':             round(lower_slope, 8),
+            'anchor_ts':               _candle_ts(candles, 0),
+            'bar_seconds':             _bar_seconds(candles),
+            'first_swing_ts':          _candle_ts(candles, oldest_idx),
+            'swing_highs':             _swing_points(swing_highs, candles),
+            'swing_lows':              _swing_points(swing_lows, candles),
         }
 
     except Exception as exc:

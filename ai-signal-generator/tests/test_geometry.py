@@ -198,6 +198,112 @@ def test_empty_candles():
     assert detect_geometry([]) == {}
 
 
+# ── Chart-replay fields ────────────────────────────────────────────────────────
+# These describe the fit in time rather than in bar indices, so a chart can redraw
+# the boundaries across history instead of pinning them to the final bar.
+
+BAR_MS = 3_600_000  # _zigzag_candles stamps bars one hour apart
+
+
+def test_chart_replay_fields_present_and_sane():
+    candles = _zigzag_candles(80, lambda i: 110.0, lambda i: 90.0)
+    result  = detect_geometry(candles)
+
+    assert result.get('shape') == 'horizontal_channel', f"Got: {result}"
+
+    # bar_seconds must match the fixture's one-hour spacing
+    assert result['bar_seconds'] == BAR_MS // 1000
+
+    # anchor_ts is x = 0 of the fit — the first candle of the analysed window
+    assert result['anchor_ts'] == candles[0]['timestamp']
+
+    # first_swing_ts sits inside the window and at or after the anchor
+    assert isinstance(result['first_swing_ts'], int)
+    assert candles[0]['timestamp'] <= result['first_swing_ts'] <= candles[-1]['timestamp']
+
+    # A flat channel has near-zero slopes on both boundaries
+    assert abs(result['upper_slope']) < 0.01
+    assert abs(result['lower_slope']) < 0.01
+
+    # Swings come back as [open_time_ms, price] pairs aligned to the bar grid
+    for key, expected in (('swing_highs', 110.0), ('swing_lows', 90.0)):
+        points = result[key]
+        assert len(points) >= 2, f"{key}: {points}"
+        for ts, price in points:
+            assert ts % BAR_MS == 0
+            assert candles[0]['timestamp'] <= ts <= candles[-1]['timestamp']
+            assert abs(price - expected) < 2.0
+
+
+def test_slopes_match_the_synthetic_trendlines():
+    # Upper rises 0.15/bar, lower rises 0.30/bar (the rising-wedge fixture shape)
+    candles = _zigzag_candles(80, lambda i: 110 + 0.15 * i, lambda i: 90 + 0.30 * i)
+    result  = detect_geometry(candles)
+
+    assert abs(result['upper_slope'] - 0.15) < 0.02, f"upper_slope={result['upper_slope']}"
+    assert abs(result['lower_slope'] - 0.30) < 0.02, f"lower_slope={result['lower_slope']}"
+
+
+def test_slope_projects_boundary_back_to_the_first_swing():
+    # Projecting the boundary from the last bar back to first_swing_ts must land on
+    # the trendline value there — this is exactly what the chart does when drawing.
+    candles = _zigzag_candles(80, lambda i: 110 + 0.15 * i, lambda i: 90 + 0.15 * i)
+    result  = detect_geometry(candles)
+
+    bars_back = (result['first_swing_ts'] - candles[-1]['timestamp']) // BAR_MS
+    projected = result['upper_boundary'] + result['upper_slope'] * bars_back
+
+    first_swing_idx = (result['first_swing_ts'] - candles[0]['timestamp']) // BAR_MS
+    expected        = 110 + 0.15 * first_swing_idx
+
+    assert abs(projected - expected) < 2.0, f"projected={projected} expected={expected}"
+
+
+def test_anchor_ts_follows_the_lookback_slice():
+    # 200 bars with lookback=120 → the fit window starts at candle index 80, and
+    # anchor_ts must point there, not at the first candle handed in.
+    candles = _zigzag_candles(200, lambda i: 110.0, lambda i: 90.0)
+    result  = detect_geometry(candles, lookback=120)
+
+    assert result['anchor_ts'] == candles[-120]['timestamp']
+    assert result['bar_seconds'] == BAR_MS // 1000
+
+
+def test_insufficient_swings_still_carries_window_fields():
+    # Strictly rising highs and lows produce no fractal swings at all, so no fit is
+    # attempted — but the window description must still be present for the chart.
+    candles = [
+        {'timestamp': i * BAR_MS, 'open': 100.0 + i, 'high': 101.0 + i,
+         'low': 99.0 + i, 'close': 100.0 + i, 'volume': 100.0}
+        for i in range(20)
+    ]
+    result = detect_geometry(candles)
+
+    assert result['shape'] == 'no_pattern'
+    assert result['upper_slope'] == 0.0
+    assert result['lower_slope'] == 0.0
+    assert result['anchor_ts'] == 0
+    assert result['bar_seconds'] == BAR_MS // 1000
+    assert result['first_swing_ts'] is None
+    assert result['swing_highs'] == []
+    assert result['swing_lows'] == []
+
+
+def test_untimed_candles_leave_chart_fields_empty():
+    # Geometry itself must keep working when the caller supplies no timestamps.
+    candles = _zigzag_candles(80, lambda i: 110.0, lambda i: 90.0)
+    for c in candles:
+        del c['timestamp']
+    result = detect_geometry(candles)
+
+    assert result['shape'] == 'horizontal_channel'
+    assert result['anchor_ts'] is None
+    assert result['bar_seconds'] is None
+    assert result['first_swing_ts'] is None
+    assert result['swing_highs'] == []
+    assert result['swing_lows'] == []
+
+
 def test_output_keys_present():
     candles = _zigzag_candles(80, lambda i: 110.0, lambda i: 90.0)
     result  = detect_geometry(candles)
@@ -205,6 +311,9 @@ def test_output_keys_present():
         'shape', 'upper_boundary', 'lower_boundary',
         'upper_touches', 'lower_touches', 'convergence_pct_per_bar',
         'pattern_age_bars', 'position_in_range_pct', 'fit_quality',
+        # chart-replay fields
+        'upper_slope', 'lower_slope', 'anchor_ts', 'bar_seconds',
+        'first_swing_ts', 'swing_highs', 'swing_lows',
     }
     assert required.issubset(result.keys()), f"Missing keys: {required - result.keys()}"
 
