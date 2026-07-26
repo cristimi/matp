@@ -172,8 +172,22 @@ function ChartPanel({ path, symbol }: { path: string; symbol: string }) {
   );
 }
 
-export function ExpandableChart({ path, symbol }: { path: string; symbol: string }) {
+/**
+ * `variant` controls only the toggle's chrome:
+ *   footer  full-bleed card footer, matching ActionBand (Positions, Orders)
+ *   inline  sits inside an already-indented container (the Tree's orders track)
+ */
+export function ExpandableChart({
+  path,
+  symbol,
+  variant = 'footer',
+}: {
+  path: string;
+  symbol: string;
+  variant?: 'footer' | 'inline';
+}) {
   const [open, setOpen] = useState(false);
+  const inline = variant === 'inline';
 
   return (
     <>
@@ -183,11 +197,11 @@ export function ExpandableChart({ path, symbol }: { path: string; symbol: string
         style={{
           width:         '100%',
           minHeight:     '44px',          // finger-sized: this is reviewed on a phone
-          borderTop:     '1px solid var(--border)',
-          borderLeft:    'none',
-          borderRight:   'none',
-          borderBottom:  'none',
-          background:    'var(--bg2)',
+          ...(inline
+            ? { border: '1px solid var(--border)', borderRadius: '6px',
+                marginTop: '4px', background: 'transparent' }
+            : { border: 'none', borderTop: '1px solid var(--border)',
+                borderRadius: 0, background: 'var(--bg2)' }),
           color:         'var(--blue)',
           fontSize:      '11px',
           fontWeight:    700,

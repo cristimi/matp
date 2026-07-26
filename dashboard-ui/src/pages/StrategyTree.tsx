@@ -9,6 +9,7 @@ import {
 } from '../api';
 import type { StrategyTreeItem, TreePosition, TreeOrder, OrderDetail, PendingOrder } from '../api';
 import { useLivePnl, type PnlSnapshot } from '../hooks/useLivePnl';
+import { ExpandableChart } from '../components/ExpandableChart';
 
 const MONO = '"JetBrains Mono", monospace';
 const CLOSED_STEP = 3;
@@ -1018,6 +1019,12 @@ function PositionCard({
           {orders && orders.length === 0 && (
             <div style={{ color: 'var(--muted)', fontSize: 12, padding: '4px 0' }}>No orders</div>
           )}
+
+          {/* Candle chart with the AI range and the risk-reward box. Collapsed by
+              default, and only reachable at this deepest level, so opening a
+              strategy never costs a candle fetch. */}
+          <ExpandableChart path={`/positions/${p.id}/candles`} symbol={symbol} variant="inline" />
+
           {isOpen && (
             <>
               {closeError && (

@@ -229,10 +229,13 @@ services:
       REDIS_URL: redis://redis:6379
       INGESTION_EXCHANGE: blofin
       INGESTION_MODE: live
-      # ETH-USDT:1h feeds the position/order chart overlay — eth-ai-34d2 is the
-      # geometric_range strategy, and its candles were previously fetched per-cycle
-      # by ai-signal-generator and discarded, leaving nothing for the UI to plot.
-      INGESTION_SUBSCRIPTIONS: BTC-USDT:1h,BTC-USDT:4h,BTC-USDT:1m,ETH-USDT:1h
+      # The :1h streams feed the position/order chart overlay. One per symbol that
+      # has an enabled strategy — a position can open on any of them, and without a
+      # stream its chart has nothing to draw (ai-signal-generator fetches candles
+      # per-cycle and discards them, so it leaves nothing behind for the UI).
+      # HYPE-USDT and SUI-USDT are deliberately absent: both strategies are
+      # disabled, so no new position can open there. Add them if that changes.
+      INGESTION_SUBSCRIPTIONS: BTC-USDT:1h,BTC-USDT:4h,BTC-USDT:1m,ETH-USDT:1h,SOL-USDT:1h,BNB-USDT:1h,TAO-USDT:1h,XRP-USDT:1h
       INGESTION_WARMUP_CANDLES: "500"
     depends_on:
       redis:
