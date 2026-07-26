@@ -51,6 +51,7 @@ class LightweightChartHandle implements ChartHandle {
   private priceLines: IPriceLine[] = [];
   private markers:    ISeriesMarkersPluginApi<Time> | null = null;
   private primitive:  RiskRewardPrimitive | null = null;
+  private detachTouch: (() => void) | null = null;
   private destroyed = false;
 
   constructor(private readonly container: HTMLElement, options: ChartMountOptions) {
@@ -75,10 +76,9 @@ class LightweightChartHandle implements ChartHandle {
         rightOffset:     4,
       },
       // Touch-first: one-finger drag pans, pinch zooms, no scroll hijacking of
-      // the page while the finger is on the chart. vertTouchDrag stays false so a
-      // finger dragged down the candles scrolls the page — which is also why the
-      // price axis cannot be dragged on a phone, and the caller gets zoomPrice()
-      // buttons instead. With a mouse, dragging the price axis still works.
+      // the page while the finger is on the chart. vertTouchDrag is false at rest
+      // so a finger dragged down the candles scrolls the page; bindPriceAxisTouch
+      // flips it on for the length of a touch that starts on the price axis.
       handleScroll: { mouseWheel: false, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: false },
       handleScale:  {
         mouseWheel: false,
@@ -100,7 +100,44 @@ class LightweightChartHandle implements ChartHandle {
       priceFormat:   { type: 'price', precision: options.priceDecimals, minMove: 10 ** -options.priceDecimals },
     });
 
+    this.bindPriceAxisTouch();
     this.applyData(options);
+  }
+
+  /**
+   * Makes the price axis drag like the time axis on a touch screen.
+   *
+   * The engine decides "is this drag mine or is it the page scrolling?" from
+   * handleScroll: the time axis reads horzTouchDrag (on, so it zooms), the price
+   * axis reads vertTouchDrag. But vertTouchDrag is shared with the chart body, so
+   * turning it on for good would stop a finger swiped over the candles from
+   * scrolling the page. Instead it is on only while a finger is down on the axis
+   * itself. The listener is capture-phase, so the flag is already set by the time
+   * the engine reads it on the first move of that same touch.
+   */
+  private bindPriceAxisTouch(): void {
+    const setVertDrag = (on: boolean) =>
+      this.chart.applyOptions({ handleScroll: { vertTouchDrag: on } });
+
+    const onStart = (e: TouchEvent) => {
+      const touch = e.touches[0];
+      if (!touch) return;
+      const axisWidth = this.chart.priceScale('right').width();
+      const fromRight = this.container.getBoundingClientRect().right - touch.clientX;
+      setVertDrag(fromRight >= 0 && fromRight <= axisWidth);
+    };
+    const onEnd = () => setVertDrag(false);
+
+    const opts = { capture: true, passive: true } as const;
+    this.container.addEventListener('touchstart',  onStart, opts);
+    this.container.addEventListener('touchend',    onEnd,   opts);
+    this.container.addEventListener('touchcancel', onEnd,   opts);
+
+    this.detachTouch = () => {
+      this.container.removeEventListener('touchstart',  onStart, true);
+      this.container.removeEventListener('touchend',    onEnd,   true);
+      this.container.removeEventListener('touchcancel', onEnd,   true);
+    };
   }
 
   private clearOverlays(): void {
@@ -232,6 +269,8 @@ class LightweightChartHandle implements ChartHandle {
   destroy(): void {
     if (this.destroyed) return;
     this.destroyed = true;
+    this.detachTouch?.();
+    this.detachTouch = null;
     this.clearOverlays();
     this.chart.remove();
   }

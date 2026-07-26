@@ -23,9 +23,30 @@ Date: 2026-07-26
 | `dashboard-ui/src/charts/adapters/lightweightCharts/index.ts` | Implements the two new methods via `IPriceScaleApi.setVisibleRange`; price-axis drag and double-click-reset enabled explicitly; auto-scale restored whenever new candles arrive. |
 | `dashboard-ui/src/components/ExpandableChart.tsx` | `TimeframeTabs` (unlabelled) + `ZoomButton` rail; Risk/Reward/R:R moved to a details strip below the chart; "To target" / "To stop" removed; refetch on switch keeps the old chart on screen instead of remounting it. |
 
-`vertTouchDrag` stays `false` on purpose: turning it on would make the price axis
-finger-draggable but would also stop a finger dragged down the candles from
-scrolling the page. Hence the explicit `+ / − / ⤢` rail on the right-hand side.
+### Follow-up: making the price axis drag like the time axis
+
+First pass shipped only the `+ / − / ⤢` rail, because `handleScroll.vertTouchDrag`
+is shared between the price axis and the chart body — turning it on for good would
+have stopped a finger swiped over the candles from scrolling the page.
+
+Reading the engine confirmed the asymmetry is a library quirk, not a design choice:
+
+```js
+// time axis widget (line 10254)
+_internal_treatVertTouchDragAsPageScroll: () => true,
+_internal_treatHorzTouchDragAsPageScroll: () => !options.handleScroll.horzTouchDrag,
+
+// price axis widget (line 9075)
+_internal_treatVertTouchDragAsPageScroll: () => !options.handleScroll.vertTouchDrag,
+_internal_treatHorzTouchDragAsPageScroll: () => true,
+```
+
+With `horzTouchDrag: true` the time axis zooms on touch; with `vertTouchDrag: false`
+the price axis hands the drag to the page. `bindPriceAxisTouch()` now flips the flag
+on for the length of a touch that *starts* on the price axis and off again on
+touchend/touchcancel. The listeners are capture-phase, so the flag is already set
+when the engine evaluates it on the first move of that same touch. The button rail
+is kept as well. With a mouse both axes already dragged identically.
 
 ## Proof
 
@@ -95,6 +116,22 @@ $ curl -s http://localhost/ | grep -oE 'index-[A-Za-z0-9_-]+\.js'
 index-n4JYkDq6.js
 $ docker compose exec -T dashboard-ui grep -rl 'To target' /usr/share/nginx/html
 OK: 'To target' no longer in bundle
+```
+
+After the price-axis touch follow-up (bundle `index-mH8_tHZz.js`):
+
+```
+$ docker compose exec -T dashboard-ui grep -c 'vertTouchDrag' \
+    /usr/share/nginx/html/assets/index-mH8_tHZz.js
+1
+$ docker compose exec -T dashboard-ui grep -o 'touchcancel' \
+    /usr/share/nginx/html/assets/index-mH8_tHZz.js | head -1
+touchcancel
+$ curl -s http://localhost/ | grep -oE 'index-[A-Za-z0-9_-]+\.js'
+index-mH8_tHZz.js
+
+$ npx tsc --noEmit                 -> exit 0
+$ npx vitest run src/charts        -> 28 passed (28)
 ```
 
 ### Containers
