@@ -235,31 +235,6 @@ class LightweightChartHandle implements ChartHandle {
     this.applyData(options);
   }
 
-  zoomPrice(factor: number): void {
-    if (this.destroyed) return;
-    const scale = this.chart.priceScale('right');
-
-    // getVisibleRange() is null while auto-scaling, so the first zoom has to pin
-    // the range the chart is already showing before it can narrow it.
-    let range = scale.getVisibleRange();
-    if (!range) {
-      scale.setAutoScale(false);
-      range = scale.getVisibleRange();
-    }
-    if (!range) return;
-
-    const middle = (range.from + range.to) / 2;
-    const half   = ((range.to - range.from) / 2) * factor;
-    if (!Number.isFinite(half) || half <= 0) return;
-
-    scale.setVisibleRange({ from: middle - half, to: middle + half });
-  }
-
-  resetPriceZoom(): void {
-    if (this.destroyed) return;
-    this.chart.priceScale('right').setAutoScale(true);
-  }
-
   resize(): void {
     if (this.destroyed) return;
     const width = this.container.clientWidth;

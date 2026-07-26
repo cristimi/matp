@@ -22,9 +22,6 @@ import { priceDecimals } from '../utils/precision';
 
 const CHART_HEIGHT = 280;
 
-/** How much one press of the vertical zoom buttons narrows or widens the axis. */
-const ZOOM_STEP = 0.75;
-
 function TimeframeTabs({
   options,
   active,
@@ -67,44 +64,6 @@ function TimeframeTabs({
         );
       })}
     </div>
-  );
-}
-
-/** Round side button for the vertical zoom rail. */
-function ZoomButton({
-  label,
-  title,
-  onClick,
-}: {
-  label: string;
-  title: string;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      title={title}
-      aria-label={title}
-      style={{
-        width:          '26px',
-        height:         '26px',
-        borderRadius:   '5px',
-        display:        'flex',
-        alignItems:     'center',
-        justifyContent: 'center',
-        cursor:         'pointer',
-        fontSize:       '13px',
-        fontWeight:     700,
-        lineHeight:     1,
-        color:          'var(--muted)',
-        background:     'var(--bg3)',
-        border:         '1px solid var(--border)',
-        padding:        0,
-      }}
-    >
-      {label}
-    </button>
   );
 }
 
@@ -266,23 +225,9 @@ export function ChartPanel({ path }: { path: string }) {
         )}
       </div>
 
-      {/* Chart, with the vertical zoom rail down its right-hand side */}
-      <div style={{ display: 'flex', alignItems: 'stretch' }}>
-        <div ref={containerRef} style={{ flex: 1, minWidth: 0, height: `${CHART_HEIGHT}px` }} />
-        <div style={{
-          width: '34px', flexShrink: 0,
-          display: 'flex', flexDirection: 'column',
-          alignItems: 'center', justifyContent: 'center', gap: '6px',
-          borderLeft: '1px solid var(--border)',
-        }}>
-          <ZoomButton label="+" title="Stretch the price axis"
-                      onClick={() => handleRef.current?.zoomPrice(ZOOM_STEP)} />
-          <ZoomButton label="−" title="Squash the price axis"
-                      onClick={() => handleRef.current?.zoomPrice(1 / ZOOM_STEP)} />
-          <ZoomButton label="⤢" title="Fit the price axis to the candles"
-                      onClick={() => handleRef.current?.resetPriceZoom()} />
-        </div>
-      </div>
+      {/* Drag the price axis on the right to zoom vertically, the time axis
+          at the bottom to zoom horizontally. */}
+      <div ref={containerRef} style={{ width: '100%', height: `${CHART_HEIGHT}px` }} />
 
       {/* Position details, under the chart */}
       {details.length > 0 && (

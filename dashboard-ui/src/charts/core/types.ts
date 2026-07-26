@@ -141,14 +141,6 @@ export interface ChartHandle {
   update(options: ChartMountOptions): void;
   /** Re-measure after the container resizes. */
   resize(): void;
-  /**
-   * Stretch or squash the price axis about the middle of what is on screen.
-   * `factor < 1` zooms in (a narrower price span fills the same height),
-   * `factor > 1` zooms out. Price-space only — no pixels in the contract.
-   */
-  zoomPrice(factor: number): void;
-  /** Hand the price axis back to auto-scaling, undoing any manual zoom. */
-  resetPriceZoom(): void;
   /** Release every resource. Must be safe to call twice. */
   destroy(): void;
 }

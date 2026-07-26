@@ -45,8 +45,13 @@ With `horzTouchDrag: true` the time axis zooms on touch; with `vertTouchDrag: fa
 the price axis hands the drag to the page. `bindPriceAxisTouch()` now flips the flag
 on for the length of a touch that *starts* on the price axis and off again on
 touchend/touchcancel. The listeners are capture-phase, so the flag is already set
-when the engine evaluates it on the first move of that same touch. The button rail
-is kept as well. With a mouse both axes already dragged identically.
+when the engine evaluates it on the first move of that same touch. With a mouse
+both axes already dragged identically.
+
+The `+ / − / ⤢` rail was then removed at the user's request — dragging the axis
+covers it. `ChartHandle.zoomPrice()` / `.resetPriceZoom()` went with it, since the
+buttons were their only caller; auto-scale on new candles is applied directly in
+`applyData()`. The chart is back to full width.
 
 ## Proof
 
@@ -132,6 +137,25 @@ index-mH8_tHZz.js
 
 $ npx tsc --noEmit                 -> exit 0
 $ npx vitest run src/charts        -> 28 passed (28)
+```
+
+After removing the button rail (bundle `index-BPlXaOaI.js`):
+
+```
+$ docker compose exec -T dashboard-ui grep -rl 'Stretch the price axis' /usr/share/nginx/html
+OK: zoom buttons absent
+$ docker compose exec -T dashboard-ui grep -c 'vertTouchDrag' \
+    /usr/share/nginx/html/assets/index-BPlXaOaI.js
+1                                  # price-axis touch handler still shipped
+$ docker compose exec -T dashboard-ui grep -c 'available_timeframes' \
+    /usr/share/nginx/html/assets/index-BPlXaOaI.js
+1                                  # timeframe picker still shipped
+$ curl -s http://localhost/ | grep -oE 'index-[A-Za-z0-9_-]+\.js'
+index-BPlXaOaI.js
+
+$ grep -rn "zoomPrice\|resetPriceZoom\|ZoomButton" src/   -> no matches
+$ npx tsc --noEmit                                        -> exit 0
+$ npx vitest run src/charts                               -> 28 passed (28)
 ```
 
 ### Containers
