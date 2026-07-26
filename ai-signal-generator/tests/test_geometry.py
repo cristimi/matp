@@ -159,6 +159,52 @@ def test_no_pattern_diverging():
     assert result.get('shape') == 'no_pattern', f"Got: {result}"
 
 
+def test_slow_climb_is_not_horizontal():
+    """
+    Reproduces the ETH-USDT read of 2026-07-26 16:00 (signal 4757).
+
+    Both boundaries rose — upper +0.953/bar, lower +0.720/bar on a ~1889 midline
+    over a 42-bar pattern — yet the shape came back 'horizontal_channel', because
+    each slope was under 0.05% of price PER BAR. End-to-end that is a 2.1% climb
+    with the channel more than doubling in width, which is what the chart drew.
+    Judged over the whole pattern, it must not read as horizontal.
+    """
+    candles = _zigzag_candles(
+        80,
+        lambda i: 1897.6 + 0.95339202 * (i - 79),
+        lambda i: 1880.8 + 0.72031746 * (i - 79),
+    )
+    result = detect_geometry(candles)
+    assert result.get('shape') != 'horizontal_channel', f"Got: {result}"
+    assert result.get('upper_drift_pct', 0) > 1.0, f"Got: {result}"
+    assert result.get('lower_drift_pct', 0) > 1.0, f"Got: {result}"
+
+
+def test_shape_does_not_depend_on_the_last_close():
+    """
+    The same fitted boundaries must classify the same however the last bar closes.
+
+    Slopes used to be normalised against the live close, so an unchanged ETH fit
+    read 'no_pattern' at close 1897.73 and 'horizontal_channel' an hour later at
+    1913.76 — the divisor had moved across the flat threshold, nothing else.
+    """
+    def build(last_close_offset: float) -> dict:
+        candles = _zigzag_candles(
+            80,
+            lambda i: 1897.6 + 0.95339202 * (i - 79),
+            lambda i: 1880.8 + 0.72031746 * (i - 79),
+        )
+        # Nudge only the final close; every swing point stays exactly where it was,
+        # so the fit — and therefore the shape — must not move either.
+        last = candles[-1]
+        last['close'] = last['close'] + last_close_offset
+        last['high']  = max(last['high'], last['close'])
+        last['low']   = min(last['low'],  last['close'])
+        return detect_geometry(candles)
+
+    assert build(-16.0)['shape'] == build(+16.0)['shape']
+
+
 def test_broadening():
     # Upper boundary rising, lower boundary falling → classic broadening/megaphone
     # (opposite-sign slopes), mirrors the reproduced HYPE geometry case.

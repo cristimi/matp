@@ -5,9 +5,9 @@ Thresholds (adjust here if needed; documented per spec):
   SWING_WINDOW      = 3     bars each side for fractal swing detection
   MIN_SWINGS        = 2     minimum swing points to attempt a trendline fit
   MAX_SWINGS        = 4     most recent N swings used in the linear fit
-  FLAT_THR_PCT      = 0.05  |slope| < this % of price per bar → classified as flat
-  PARALLEL_THR_PCT  = 0.04  |upper_pct − lower_pct| < this → classified as parallel
-  CONV_THR_PCT      = 0.01  convergence rate > this % per bar → classified as converging
+  FLAT_DRIFT_PCT    = 1.0   boundary moves < this % ACROSS THE WHOLE PATTERN → flat
+  PARALLEL_DRIFT_PCT= 2.0   the two boundaries' total drifts differ by < this → parallel
+  CONV_DRIFT_PCT    = 0.5   channel narrows by more than this % overall → converging
   TOUCH_TOL_PCT     = 0.60  swing within this % of trendline counts as a touch
   STRONG_R2         = 0.70  both R² ≥ this → fit_quality = "strong"
   MODERATE_R2       = 0.50  both R² ≥ this (but < STRONG_R2) → fit_quality = "moderate"
@@ -21,10 +21,17 @@ descending_triangle, rising_wedge, falling_wedge, broadening, no_pattern.
   remain no_pattern; see the comment at the classification site.
 
 Rationale for thresholds:
-- FLAT / PARALLEL: 0.05% per bar means a $100 price moves $0.05 per bar on the boundary
-  before it's considered "trending". Tight but prevents mislabelling slow drifts as channels.
-- CONV_THR: 0.01% per bar is the minimum convergence rate that would produce a meaningful
-  apex within a reasonable number of bars (~1000 bars before completely closed).
+- FLAT / PARALLEL are judged over the WHOLE pattern, not per bar. A per-bar threshold
+  hides the total: 0.05% per bar reads as "flat", but across a 42-bar pattern it is a
+  2.1% climb that is plainly sloped on a chart — which is how an ETH fit whose two
+  boundaries both rose (upper faster, so the channel more than doubled in width) came
+  to be labelled a horizontal_channel. 1.0% end-to-end is the flat/trending line.
+- CONV_DRIFT: 0.5% overall narrowing is the least that produces a visible apex; below
+  that the two boundaries are effectively parallel over the window being judged.
+- Slopes are normalised against the fitted channel's own midline, NOT the last close.
+  Dividing by the live close made the label depend on where the last tick landed: the
+  same unchanged fit was no_pattern at close 1897.73 and horizontal_channel an hour
+  later at 1913.76, because price had moved the divisor across the threshold.
 - STRONG_R2 = 0.70: standard "good fit" threshold; weak R² is flagged but not blocked.
 - MODERATE_R2 = 0.50: middle tier — structure is real but noisier; the geometric_range
   template trades it only with stricter touch counts and a lower confidence cap.
@@ -37,16 +44,16 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-SWING_WINDOW     = 3
-MIN_SWINGS       = 2
-MAX_SWINGS       = 4
-FLAT_THR_PCT     = 0.05
-PARALLEL_THR_PCT = 0.04
-CONV_THR_PCT     = 0.01
-TOUCH_TOL_PCT    = 0.60
-STRONG_R2        = 0.70
-MODERATE_R2      = 0.50
-MIN_R2_PATTERN   = 0.30
+SWING_WINDOW       = 3
+MIN_SWINGS         = 2
+MAX_SWINGS         = 4
+FLAT_DRIFT_PCT     = 1.0
+PARALLEL_DRIFT_PCT = 2.0
+CONV_DRIFT_PCT     = 0.5
+TOUCH_TOL_PCT      = 0.60
+STRONG_R2          = 0.70
+MODERATE_R2        = 0.50
+MIN_R2_PATTERN     = 0.30
 
 
 def _find_swings(
@@ -225,42 +232,63 @@ def detect_geometry(candles: list[dict], lookback: int = 120) -> dict:
         upper_boundary = upper_slope * last_idx + upper_intercept
         lower_boundary = lower_slope * last_idx + lower_intercept
 
-        # Slopes normalised as % of current price per bar
-        upper_pct = upper_slope / current_price * 100.0
-        lower_pct = lower_slope / current_price * 100.0
+        # How many bars the fit actually spans. Classification is judged across
+        # this whole window, so it is needed before the shape is decided.
+        oldest_idx       = min(recent_highs[0][0], recent_lows[0][0])
+        pattern_age_bars = last_idx - oldest_idx
+
+        # Reference price for normalising the slopes: the fitted channel's own
+        # midline at the last bar, not the last close. See the module docstring —
+        # dividing by the live close let an unchanged fit change shape whenever
+        # price drifted across a threshold.
+        ref_price = (upper_boundary + lower_boundary) / 2.0
+        if ref_price <= 0:
+            ref_price = current_price
+
+        # Per-bar slopes, kept for the reported convergence_pct_per_bar field.
+        upper_pct = upper_slope / ref_price * 100.0
+        lower_pct = lower_slope / ref_price * 100.0
         # Positive conv_rate → lines converging; negative → diverging
         conv_rate = lower_pct - upper_pct
 
-        def _is_flat(pct: float) -> bool:
-            return abs(pct) < FLAT_THR_PCT
+        # What the eye actually sees: how far each boundary travels end-to-end.
+        # span is floored at 1 so a degenerate single-bar fit still classifies
+        # instead of collapsing every drift to zero and reading as horizontal.
+        span        = max(pattern_age_bars, 1)
+        upper_drift = upper_pct * span
+        lower_drift = lower_pct * span
+        conv_drift  = lower_drift - upper_drift
 
-        def _is_positive(pct: float) -> bool:
-            return pct > FLAT_THR_PCT
+        def _is_flat(drift: float) -> bool:
+            return abs(drift) < FLAT_DRIFT_PCT
 
-        def _is_negative(pct: float) -> bool:
-            return pct < -FLAT_THR_PCT
+        def _is_positive(drift: float) -> bool:
+            return drift > FLAT_DRIFT_PCT
 
-        is_converging = conv_rate > CONV_THR_PCT
-        is_parallel   = abs(conv_rate) < PARALLEL_THR_PCT
+        def _is_negative(drift: float) -> bool:
+            return drift < -FLAT_DRIFT_PCT
+
+        is_converging = conv_drift > CONV_DRIFT_PCT
+        is_parallel   = abs(conv_drift) < PARALLEL_DRIFT_PCT
 
         # Classify — reject if either trendline fit is essentially noise
         if min(upper_r2, lower_r2) < MIN_R2_PATTERN:
             shape = 'no_pattern'
-        elif _is_flat(upper_pct) and _is_flat(lower_pct):
+        elif _is_flat(upper_drift) and _is_flat(lower_drift):
             shape = 'horizontal_channel'
-        elif _is_positive(upper_pct) and _is_positive(lower_pct) and is_parallel:
+        elif _is_positive(upper_drift) and _is_positive(lower_drift) and is_parallel:
             shape = 'ascending_channel'
-        elif _is_negative(upper_pct) and _is_negative(lower_pct) and is_parallel:
+        elif _is_negative(upper_drift) and _is_negative(lower_drift) and is_parallel:
             shape = 'descending_channel'
-        elif _is_flat(upper_pct) and _is_positive(lower_pct):
+        elif _is_flat(upper_drift) and _is_positive(lower_drift):
             shape = 'ascending_triangle'
-        elif _is_negative(upper_pct) and _is_flat(lower_pct):
+        elif _is_negative(upper_drift) and _is_flat(lower_drift):
             shape = 'descending_triangle'
-        elif is_converging and _is_positive(upper_pct) and _is_positive(lower_pct):
+        elif is_converging and _is_positive(upper_drift) and _is_positive(lower_drift):
             shape = 'rising_wedge'
-        elif is_converging and _is_negative(upper_pct) and _is_negative(lower_pct):
+        elif is_converging and _is_negative(upper_drift) and _is_negative(lower_drift):
             shape = 'falling_wedge'
-        elif _is_positive(upper_pct) and _is_negative(lower_pct):
+        elif _is_positive(upper_drift) and _is_negative(lower_drift):
             # Broadening / megaphone: upper boundary rising, lower boundary falling.
             # Design decision: "broadening" is defined as strictly opposite-sign
             # slopes (the classic widening-megaphone shape), not merely a negative
@@ -281,9 +309,6 @@ def detect_geometry(candles: list[dict], lookback: int = 120) -> dict:
         upper_touches = _count_touches(swing_highs, upper_slope, upper_intercept, current_price)
         lower_touches = _count_touches(swing_lows,  lower_slope, lower_intercept, current_price)
 
-        oldest_idx       = min(recent_highs[0][0], recent_lows[0][0])
-        pattern_age_bars = last_idx - oldest_idx
-
         gap = upper_boundary - lower_boundary
         if gap > 0:
             pos_in_range = (current_price - lower_boundary) / gap * 100.0
@@ -298,6 +323,11 @@ def detect_geometry(candles: list[dict], lookback: int = 120) -> dict:
             'upper_touches':           upper_touches,
             'lower_touches':           lower_touches,
             'convergence_pct_per_bar': round(conv_rate, 4),
+            # End-to-end travel of each boundary, as % of the fitted midline. These
+            # are the numbers the shape was decided on — without them a label that
+            # disagrees with the drawn lines cannot be explained after the fact.
+            'upper_drift_pct':         round(upper_drift, 4),
+            'lower_drift_pct':         round(lower_drift, 4),
             'pattern_age_bars':        pattern_age_bars,
             'position_in_range_pct':   round(pos_in_range, 2),
             'fit_quality':             fit_quality,
