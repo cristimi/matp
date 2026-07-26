@@ -8,7 +8,7 @@
  * Engine independence: this file imports `chartAdapter` and the pure helpers from
  * ../charts, never a charting library. See src/charts/index.ts.
  */
-import { useState, useEffect, useRef, useMemo, type ReactNode } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 
 import {
   chartAdapter,
@@ -52,7 +52,13 @@ function Message({ text }: { text: string }) {
   );
 }
 
-function ChartPanel({ path }: { path: string }) {
+/**
+ * The chart itself. Exported so a caller that needs the toggle and the panel in
+ * different places — the Tree puts its button in the card header and the panel
+ * directly beneath it — can position each independently. Mount it only while
+ * open: mounting is what triggers the fetch and creates the chart.
+ */
+export function ChartPanel({ path }: { path: string }) {
   const [payload, setPayload] = useState<ChartPayload | null>(null);
   const [error,   setError]   = useState<string | null>(null);
 
@@ -193,61 +199,69 @@ function CandlesGlyph() {
 }
 
 /**
+ * Round toggle for the chart, sized to sit beside other icon buttons in a card
+ * header. The caller owns the open state and renders <ChartPanel> wherever the
+ * chart should appear — usually immediately below that header.
+ *
+ * `onClick` receives the event so the caller can stop it propagating to a
+ * clickable card behind it.
+ */
+export function ChartIconButton({
+  open,
+  onClick,
+  size = 30,
+}: {
+  open: boolean;
+  onClick: (e: React.MouseEvent) => void;
+  size?: number;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-expanded={open}
+      aria-label={open ? 'Hide chart' : 'Show chart'}
+      title={open ? 'Hide chart' : 'Show chart'}
+      style={{
+        flexShrink:     0,
+        width:          size,
+        height:         size,
+        borderRadius:   '50%',
+        display:        'flex',
+        alignItems:     'center',
+        justifyContent: 'center',
+        cursor:         'pointer',
+        // Filled while open, so it reads as a toggle rather than a link.
+        color:          open ? 'var(--bg2)' : 'var(--blue)',
+        background:     open ? 'var(--blue)' : 'var(--blue-a)',
+        border:         '1px solid var(--blue-b)',
+        padding:        0,
+      }}
+    >
+      <CandlesGlyph />
+    </button>
+  );
+}
+
+/**
+ * Self-contained toggle + panel, for cards that want a full-width control.
+ *
  * `variant` controls only the toggle's chrome:
  *   footer  full-bleed card footer, matching ActionBand (Positions, Orders)
  *   inline  full-width, bordered — sits inside an already-indented container
- *   icon    a round icon button, for placing beside other action buttons
  *
- * `actions` is only read by the icon variant: it renders those nodes in the same
- * row as the icon (e.g. the Tree's "Close position" button), while the chart
- * panel itself still opens full-width underneath.
+ * Where the button and the panel need to live apart, use ChartIconButton +
+ * ChartPanel directly instead.
  */
 export function ExpandableChart({
   path,
   variant = 'footer',
-  actions,
 }: {
   path: string;
-  variant?: 'footer' | 'inline' | 'icon';
-  actions?: ReactNode;
+  variant?: 'footer' | 'inline';
 }) {
   const [open, setOpen] = useState(false);
   const inline = variant === 'inline';
-
-  if (variant === 'icon') {
-    return (
-      <>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 8 }}>
-          <button
-            type="button"
-            onClick={() => setOpen(o => !o)}
-            aria-expanded={open}
-            aria-label={open ? 'Hide chart' : 'Show chart'}
-            title={open ? 'Hide chart' : 'Show chart'}
-            style={{
-              flexShrink:      0,
-              width:           38,
-              height:          38,
-              borderRadius:    '50%',
-              display:         'flex',
-              alignItems:      'center',
-              justifyContent:  'center',
-              cursor:          'pointer',
-              // Filled while open, so it reads as a toggle rather than a link.
-              color:           open ? 'var(--bg3)' : 'var(--blue)',
-              background:      open ? 'var(--blue)' : 'var(--blue-a)',
-              border:          '1px solid var(--blue-b)',
-              padding:         0,
-            }}
-          >
-            <CandlesGlyph />
-          </button>
-          {actions}
-        </div>
-        {open && <ChartPanel path={path} />}
-      </>
-    );
-  }
 
   return (
     <>

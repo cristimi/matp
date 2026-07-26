@@ -78,38 +78,49 @@ $ …/ai/signals?limit=1
 
 ---
 
-## 2. The round icon toggle
+## 2. The round icon toggle, in the card header
 
-`ExpandableChart` gained a third `variant`:
+The toggle sits in the Tree card's **header row, immediately before the `✕` close button**,
+and the chart opens **directly under that header** — not down inside the orders track.
 
-| variant | used by | look |
-|---|---|---|
-| `footer` (default) | Positions, Orders | full-bleed card footer, matching `ActionBand` |
-| `inline` | AI signal log | full-width, bordered, inside the expanded card |
-| `icon` | Tree positions, Tree pending orders | 38 px round button |
+Doing that meant the button and the panel had to live in different parts of the tree, so the
+component was split rather than given another variant:
 
-The icon is an inline two-candlestick SVG drawn in `currentColor`, so the button owns the
-colour: outlined blue when closed, filled blue when open, so it reads as a toggle rather than
-a link.
-
-**Layout problem and how it is solved.** The icon has to sit *in a row* with the Close
-position button, but the chart panel must still open full-width underneath — if the component
-were dropped into a flex row as-is, the panel would become a flex item beside the buttons.
-So the icon variant takes an `actions` prop and owns the row itself:
+| export | what it is |
+|---|---|
+| `ChartIconButton` | just the round button; the caller owns the open state |
+| `ChartPanel` | just the chart; mount it only while open — mounting is what fetches |
+| `ExpandableChart` | the self-contained toggle + panel, `footer` / `inline` variants |
 
 ```tsx
-<ExpandableChart
-  path={`/positions/${p.id}/candles`}
-  variant="icon"
-  actions={isOpen ? <button …>Close position</button> : undefined}
+// StrategyTree.tsx — header row, before the close control
+<ChartIconButton
+  open={chartOpen}
+  onClick={e => { e.stopPropagation(); setChartOpen(o => !o); }}
 />
+{isOpen && <button …aria-label="Close position">✕</button>}
+…
+// immediately after the header block
+{chartOpen && <ChartPanel path={`/positions/${p.id}/candles`} />}
 ```
 
-It renders `[icon] [actions]` in one flex row, then the panel below it. The close button is
-handed `flex: 1, width: 'auto'` to override its full-width block styling. A closed position
-passes no `actions`, so the icon simply sits alone.
+Three things this settles:
 
-Pending-order cards use the same variant with no `actions`.
+- **`stopPropagation` is required.** The whole header is a `role="button"` that cycles the
+  card through header → details → orders. Without it, opening the chart would also change
+  the card's state. The existing `✕` button does the same thing in `handleClosePosition`.
+- **Chart state is separate from the tap cycle** (`chartOpen`, not a fourth `PosState`), so
+  the chart can stay open while the card's details are collapsed, and a closed position gets
+  the toggle even though it has no close button.
+- The icon is a two-candlestick inline SVG in `currentColor`: outlined blue when closed,
+  filled blue when open, so it reads as a toggle rather than a link. 30 px, matching
+  `closeIcBtn` beside it; 26 px on pending-order cards, matching their smaller row.
+
+Pending-order cards use the same pair — icon last-but-one in the header row (ahead of the
+"Pending" chip), panel under the card body.
+
+The orders track went back to exactly what it was: a full-width "Close position" button, no
+chart.
 
 ### The `symbol` prop is gone
 
@@ -141,7 +152,7 @@ matp-dashboard-api-1   dashboard-api   Up 3 seconds (health: starting)
 
 $ ./scripts/redeploy.sh dashboard-ui
 matp-dashboard-ui-1   dashboard-ui   Up 3 seconds
-   live dashboard-ui asset: index-CFtsCQ-9.js
+   live dashboard-ui asset: index-DyZP1j89.js
 ✓ dashboard-ui redeployed.
 ```
 
@@ -149,16 +160,16 @@ Served bundle:
 
 ```
 $ docker compose exec -T dashboard-ui grep -rl 'Show chart' /usr/share/nginx/html
-/usr/share/nginx/html/assets/index-CFtsCQ-9.js        # the icon toggle's aria-label
+/usr/share/nginx/html/assets/index-DyZP1j89.js        # the icon toggle's aria-label
 
 $ docker compose exec -T dashboard-ui grep -rl '/ai/signals/' /usr/share/nginx/html
-/usr/share/nginx/html/assets/index-CFtsCQ-9.js        # the AI-log chart path
+/usr/share/nginx/html/assets/index-DyZP1j89.js        # the AI-log chart path
 
 $ docker compose exec -T dashboard-ui grep -rl 'lightweight-charts' /usr/share/nginx/html
-/usr/share/nginx/html/assets/index-CFtsCQ-9.js
+/usr/share/nginx/html/assets/index-DyZP1j89.js
 
 $ curl -s http://localhost/ | grep -oE 'index-[A-Za-z0-9_-]+\.js'
-index-CFtsCQ-9.js
+index-DyZP1j89.js
 ```
 
 The layer boundary still holds — only the adapter imports the engine:
@@ -169,15 +180,18 @@ dashboard-ui/src/charts/adapters/lightweightCharts/riskRewardPrimitive.ts
 dashboard-ui/src/charts/adapters/lightweightCharts/index.ts
 ```
 
-All four call sites:
+All call sites:
 
 ```
-$ grep -rn "ExpandableChart path\|<ExpandableChart" dashboard-ui/src/pages/
+$ grep -rn "ChartIconButton\|ChartPanel path\|ExpandableChart path" dashboard-ui/src/pages/
 Orders.tsx:239        <ExpandableChart path={`/orders/${order.id}/candles`} />
 Positions.tsx:351     <ExpandableChart path={`/positions/${position.id}/candles`} />
-StrategyTree.tsx:1030 <ExpandableChart … variant="icon" actions={…Close position…} />
-StrategyTree.tsx:1105 <ExpandableChart path={`/orders/${o.id}/candles`} variant="icon" />
 AiSignalLog.tsx:361   <ExpandableChart path={`/ai/signals/${row.id}/candles`} variant="inline" />
+StrategyTree.tsx:12   import { ChartIconButton, ChartPanel } from '../components/ExpandableChart';
+StrategyTree.tsx:926   <ChartIconButton                               # position header
+StrategyTree.tsx:962   {chartOpen && <ChartPanel path={`/positions/${p.id}/candles`} />}
+StrategyTree.tsx:1089  <ChartIconButton                               # pending-order header
+StrategyTree.tsx:1116  {chartOpen && <ChartPanel path={`/orders/${o.id}/candles`} />}
 ```
 
 ---
