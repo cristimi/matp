@@ -146,6 +146,35 @@ rather than re-calling the model.
 `/ai/social-signals` returns `merged_msg_ids`; the Social tab shows an "N msgs" chip on merged
 rows and lists the ids as `9778 + 9779` in the expanded detail.
 
+```
+$ curl -s http://localhost/ | grep -oE 'index-[A-Za-z0-9_-]+\.js'
+index-CxHdjGMm.js
+
+$ docker compose exec -T dashboard-ui grep -rl 'merged and judged once' /usr/share/nginx/html
+/usr/share/nginx/html/assets/index-CxHdjGMm.js       # the merge chip's tooltip
+
+$ docker compose exec -T dashboard-ui grep -rl 'No social messages ingested yet' /usr/share/nginx/html
+/usr/share/nginx/html/assets/index-CxHdjGMm.js       # the Social tab
+
+$ curl -s "http://localhost/api/dashboard/ai/social-signals?limit=2"
+total: 264
+  347 msg 9779 | merged_msg_ids None | NONE conf 0.15
+  346 msg 9778 | merged_msg_ids None | NONE conf 0.85
+```
+
+`merged_msg_ids` is `None` on both because these two rows predate the change — they are
+exactly the pair that motivated it. The chip appears from the next burst onward; a row written
+today would carry `[9778, 9779]` and render as one entry with a "2 msgs" chip.
+
+The listener is still running clean after the change:
+
+```
+$ docker compose ps social-listener
+Up 12 minutes
+… Backfill complete (50 messages, 19 post(s))
+… Listening for new messages...
+```
+
 ---
 
 ## Deliberately NOT done: correcting the position state
