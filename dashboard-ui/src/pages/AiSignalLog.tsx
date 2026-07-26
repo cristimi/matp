@@ -365,6 +365,230 @@ function AiSignalCard({ row }: { row: AiSignalRow }) {
   );
 }
 
+// ── Social signal card ────────────────────────────────────────────────────────
+
+interface SocialSignalRow {
+  id:                number;
+  source:            string;
+  channel_msg_id:    string | null;
+  posted_at:         string;
+  ingested_at:       string;
+  raw_text:          string | null;
+  preview_text:      string | null;
+  x_url:             string | null;
+  is_actionable:     boolean;
+  action_type:       string;
+  asset:             string | null;
+  direction:         string | null;
+  reference_price:   number | null;
+  confidence:        number | null;
+  in_whitelist:      boolean;
+  model:             string | null;
+  extractor_version: string | null;
+  has_image:         boolean;
+  input_tokens:      number | null;
+  output_tokens:     number | null;
+  total_tokens:      number | null;
+  reasoning:         string | null;
+  evidence:          string | null;
+  decision:          string | null;
+  decision_reason:   string | null;
+  decision_mode:     string | null;
+  from_state:        string | null;
+  to_state:          string | null;
+  intended_signal:   string | null;
+  mark_price:        number | null;
+}
+
+const SOCIAL_ACTION_STYLE: Record<string, { bg: string; color: string; border: string }> = {
+  OPEN:  { bg: 'rgba(34,197,94,.12)', color: '#22c55e',      border: 'rgba(34,197,94,.3)' },
+  FLIP:  { bg: 'var(--blue-a)',        color: 'var(--blue)',  border: 'var(--blue-b)' },
+  CLOSE: { bg: 'var(--red-a)',         color: 'var(--red)',   border: 'var(--red-b)' },
+  ADD:   { bg: 'rgba(34,197,94,.07)',  color: '#86efac',      border: 'rgba(34,197,94,.2)' },
+  TRIM:  { bg: 'rgba(239,68,68,.07)',  color: '#fca5a5',      border: 'rgba(239,68,68,.2)' },
+  NONE:  { bg: 'var(--bg3)',           color: 'var(--muted)', border: 'var(--border)' },
+};
+
+function Chip({ text, bg, color, border, title }: {
+  text: string; bg: string; color: string; border: string; title?: string;
+}) {
+  return (
+    <span title={title} style={{
+      fontFamily: 'JetBrains Mono, monospace', fontSize: '9.5px', fontWeight: 700,
+      textTransform: 'uppercase', letterSpacing: '.04em',
+      background: bg, color, border: `1px solid ${border}`,
+      borderRadius: 'var(--pill-r)', padding: '2px 6px', flexShrink: 0,
+      whiteSpace: 'nowrap',
+    }}>
+      {text}
+    </span>
+  );
+}
+
+function SocialSignalCard({ row }: { row: SocialSignalRow }) {
+  const [expanded, setExpanded] = useState(false);
+
+  const act = SOCIAL_ACTION_STYLE[row.action_type] ?? SOCIAL_ACTION_STYLE.NONE;
+  const handle = row.source.replace(/^telegram:/, '');
+  // preview_text is the X card (title + body); raw_text is the Telegram message,
+  // which for a link-only post is just the URL.
+  const body = (row.preview_text || row.raw_text || '').trim();
+
+  return (
+    <div style={{
+      background: 'var(--bg3)', border: '1px solid var(--border)',
+      borderRadius: 'var(--r)', marginBottom: '6px', overflow: 'hidden',
+    }}>
+      <div
+        onClick={() => setExpanded(e => !e)}
+        style={{
+          display: 'flex', flexDirection: 'column', gap: '5px',
+          padding: '9px 14px', cursor: 'pointer', userSelect: 'none',
+        }}
+      >
+        {/* Line 1: who + verdict + when */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <span style={{
+            fontFamily: 'JetBrains Mono, monospace', fontSize: '11px',
+            fontWeight: 600, color: 'var(--text)', flexShrink: 1, minWidth: 0,
+            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+          }}>
+            {handle}
+          </span>
+
+          <Chip text={row.action_type} {...act} />
+
+          {row.asset && (
+            <Chip text={row.direction ? `${row.asset} ${row.direction}` : row.asset}
+                  bg="var(--bg2)" color="var(--muted)" border="var(--border)" />
+          )}
+
+          <span style={{
+            marginLeft: 'auto', fontFamily: 'JetBrains Mono, monospace', fontSize: '10.5px',
+            color: 'var(--muted)', flexShrink: 0,
+          }}>
+            {formatRelative(row.posted_at)}
+          </span>
+
+          <span style={{
+            fontSize: '10px', color: 'var(--dim)', flexShrink: 0,
+            transform: expanded ? 'rotate(180deg)' : 'none', transition: 'transform .15s',
+          }}>
+            ▾
+          </span>
+        </div>
+
+        {/* Line 2: actionable / confidence / provenance */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+          {row.is_actionable
+            ? <Chip text="Actionable" bg="rgba(34,197,94,.12)" color="#22c55e" border="rgba(34,197,94,.3)" />
+            : <Chip text="Not actionable" bg="var(--bg2)" color="var(--dim)" border="var(--border)" />}
+
+          <ConfidenceBar value={row.confidence} />
+
+          {row.has_image && (
+            <Chip text="image" bg="var(--bg2)" color="var(--muted)" border="var(--border)"
+                  title="The extractor also saw the post's chart image" />
+          )}
+          {!row.in_whitelist && (
+            <Chip text="not whitelisted" bg="var(--yellow-a)" color="var(--yellow)" border="var(--yellow-b)"
+                  title="This asset is not in the strategy's whitelist, so it could not be traded" />
+          )}
+          {row.decision && (
+            <Chip
+              text={row.decision === 'acted' ? `acted · ${row.intended_signal || ''}`.trim() : `${row.decision} · ${row.decision_reason || ''}`.trim()}
+              bg={row.decision === 'acted' ? 'var(--blue-a)' : 'var(--bg2)'}
+              color={row.decision === 'acted' ? 'var(--blue)' : 'var(--dim)'}
+              border={row.decision === 'acted' ? 'var(--blue-b)' : 'var(--border)'}
+              title="What the strategy did with this message"
+            />
+          )}
+        </div>
+
+        {/* Line 3: the message itself, one line when collapsed */}
+        {body && (
+          <div style={{
+            fontSize: '11.5px', color: 'var(--muted)', lineHeight: 1.45,
+            ...(expanded ? {} : {
+              overflow: 'hidden', textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+            }),
+          }}>
+            {body}
+          </div>
+        )}
+      </div>
+
+      {expanded && (
+        <div style={{
+          borderTop: '1px solid var(--border)', padding: '10px 14px',
+          display: 'flex', flexDirection: 'column', gap: '12px',
+        }}>
+          {row.reasoning && (
+            <div>
+              <div style={{
+                fontSize: '10px', fontWeight: 600, textTransform: 'uppercase',
+                letterSpacing: '.1em', color: 'var(--dim)', marginBottom: '6px',
+              }}>
+                Why the model read it that way
+              </div>
+              <div style={{ fontSize: '12px', lineHeight: 1.55, color: 'var(--text)' }}>
+                {row.reasoning}
+              </div>
+            </div>
+          )}
+
+          <div style={{
+            display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '3px 12px',
+            fontFamily: 'JetBrains Mono, monospace', fontSize: '11px',
+          }}>
+            <span style={{ color: 'var(--dim)' }}>Posted</span>
+            <span style={{ color: 'var(--muted)' }}>{new Date(row.posted_at).toLocaleString()}</span>
+            <span style={{ color: 'var(--dim)' }}>Ingested</span>
+            <span style={{ color: 'var(--muted)' }}>{new Date(row.ingested_at).toLocaleString()}</span>
+            {row.reference_price != null && (<>
+              <span style={{ color: 'var(--dim)' }}>Reference</span>
+              <span style={{ color: 'var(--muted)' }}>{row.reference_price}</span>
+            </>)}
+            {row.mark_price != null && (<>
+              <span style={{ color: 'var(--dim)' }}>Mark at eval</span>
+              <span style={{ color: 'var(--muted)' }}>{row.mark_price}</span>
+            </>)}
+            {(row.from_state || row.to_state) && (<>
+              <span style={{ color: 'var(--dim)' }}>State</span>
+              <span style={{ color: 'var(--muted)' }}>{row.from_state} → {row.to_state}</span>
+            </>)}
+            {row.evidence && (<>
+              <span style={{ color: 'var(--dim)' }}>Evidence</span>
+              <span style={{ color: 'var(--muted)' }}>{row.evidence}</span>
+            </>)}
+            <span style={{ color: 'var(--dim)' }}>Extractor</span>
+            <span style={{ color: 'var(--muted)' }}>
+              {row.model || '—'}{row.extractor_version ? ` · ${row.extractor_version}` : ''}
+            </span>
+            {row.total_tokens != null && (<>
+              <span style={{ color: 'var(--dim)' }}>Tokens</span>
+              <span style={{ color: 'var(--muted)' }}>
+                {row.total_tokens} ({row.input_tokens ?? '—'} in / {row.output_tokens ?? '—'} out)
+              </span>
+            </>)}
+            <span style={{ color: 'var(--dim)' }}>Message</span>
+            <span style={{ color: 'var(--muted)' }}>{row.channel_msg_id ?? '—'}</span>
+          </div>
+
+          {row.x_url && (
+            <a href={row.x_url} target="_blank" rel="noreferrer"
+               onClick={e => e.stopPropagation()}
+               style={{ fontSize: '11.5px', color: 'var(--blue)', wordBreak: 'break-all' }}>
+              {row.x_url}
+            </a>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Filter select ─────────────────────────────────────────────────────────────
 
 const BAR_ITEM_HEIGHT = 28;
@@ -560,6 +784,10 @@ export default function AiSignalLog() {
   const [filterGate,       setFilterGate]       = useState('all');
   const [filterWebhook,    setFilterWebhook]    = useState('all');
   const [strategies,       setStrategies]       = useState<{ id: string; name: string }[]>([]);
+  // Which log to show. The social listener writes to its own table with a very
+  // different shape, so the two are separate views rather than one merged list.
+  const [tab,              setTab]              = useState<'ai' | 'social'>('ai');
+  const [socialRows,       setSocialRows]       = useState<SocialSignalRow[]>([]);
 
   useEffect(() => {
     fetch('/api/dashboard/strategies')
@@ -574,6 +802,15 @@ export default function AiSignalLog() {
         limit:  String(PAGE_SIZE),
         offset: String((pageNum - 1) * PAGE_SIZE),
       });
+
+      if (tab === 'social') {
+        const res  = await fetch(`/api/dashboard/ai/social-signals?${params}`);
+        const data = await res.json();
+        setTotal(data.total ?? 0);
+        setSocialRows(prev => append ? [...prev, ...data.signals] : data.signals);
+        return;
+      }
+
       if (filterStrategy !== 'all') params.set('strategy_id', filterStrategy);
       if (filterAction   !== 'all') params.set('action',      filterAction);
       if (filterGate     !== 'all') params.set('gate',         filterGate);
@@ -584,11 +821,11 @@ export default function AiSignalLog() {
       setTotal(data.total ?? 0);
       setRows(prev => append ? [...prev, ...data.signals] : data.signals);
     } catch {
-      if (!append) setRows([]);
+      if (!append) { setRows([]); setSocialRows([]); }
     } finally {
       setLoading(false);
     }
-  }, [filterStrategy, filterAction, filterGate, filterWebhook]);
+  }, [tab, filterStrategy, filterAction, filterGate, filterWebhook]);
 
   useEffect(() => {
     setLoading(true);
@@ -616,7 +853,7 @@ export default function AiSignalLog() {
     filterGate !== 'all' || filterWebhook !== 'all';
 
   if (loading) {
-    return <div style={{ padding: '24px', color: 'var(--dim)' }}>Loading AI signal log…</div>;
+    return <div style={{ padding: '24px', color: 'var(--dim)' }}>Loading signal log…</div>;
   }
 
   return (
@@ -635,12 +872,22 @@ export default function AiSignalLog() {
         }
       />
 
-      {/* ── Filters ── */}
+      {/* ── Source tabs + filters ── */}
       <div style={{
         display: 'flex', gap: '6px', padding: '10px 14px', alignItems: 'center',
         borderBottom: '1px solid var(--border)',
         flexWrap: 'wrap', flexShrink: 0,
       }}>
+        <span onClick={() => { setTab('ai'); setPage(1); }} style={barChip(tab === 'ai')}>
+          AI cycles
+        </span>
+        <span onClick={() => { setTab('social'); setPage(1); }} style={barChip(tab === 'social')}>
+          Social
+        </span>
+
+        {/* The AI filters key off ai_signal_log columns the social table has no
+            equivalent for, so they are hidden rather than silently ignored. */}
+        {tab === 'ai' && (
         <FilterDropdown label="Filters" active={anyFilter}>
           <FilterSelect value={filterStrategy} onChange={v => { setFilterStrategy(v); setPage(1); }} active={filterStrategy !== 'all'}>
             <option value="all">All Strategies</option>
@@ -665,8 +912,9 @@ export default function AiSignalLog() {
             <option value="false">Webhook: Not fired</option>
           </FilterSelect>
         </FilterDropdown>
+        )}
 
-        {anyFilter && (
+        {tab === 'ai' && anyFilter && (
           <span onClick={clearFilters} style={barChip(false, true)}>
             ✕ Clear
           </span>
@@ -674,14 +922,22 @@ export default function AiSignalLog() {
       </div>
 
       {/* ── Token usage rollup ── */}
-      <UsagePanel />
+      {tab === 'ai' && <UsagePanel />}
 
       {/* ── List ── */}
       <div style={{
         flex: 1, overflowY: 'auto', padding: '10px 14px 80px',
         scrollbarWidth: 'none',
       }}>
-        {rows.length === 0 ? (
+        {tab === 'social' ? (
+          socialRows.length === 0 ? (
+            <p style={{ color: 'var(--dim)', textAlign: 'center', padding: '40px 0' }}>
+              No social messages ingested yet.
+            </p>
+          ) : (
+            socialRows.map(row => <SocialSignalCard key={row.id} row={row} />)
+          )
+        ) : rows.length === 0 ? (
           <p style={{ color: 'var(--dim)', textAlign: 'center', padding: '40px 0' }}>
             No AI signal log entries found.
           </p>
@@ -689,7 +945,7 @@ export default function AiSignalLog() {
           rows.map(row => <AiSignalCard key={row.id} row={row} />)
         )}
 
-        {total > rows.length && (
+        {total > (tab === 'social' ? socialRows.length : rows.length) && (
           <div style={{ textAlign: 'center', padding: '16px 0 24px' }}>
             <button
               onClick={handleLoadMore}
@@ -700,8 +956,8 @@ export default function AiSignalLog() {
                 color: 'var(--blue)', cursor: 'pointer',
               }}
             >
-              Load {Math.min(PAGE_SIZE, total - rows.length)} more
-              &nbsp;({rows.length} / {total})
+              Load {Math.min(PAGE_SIZE, total - (tab === 'social' ? socialRows.length : rows.length))} more
+              &nbsp;({tab === 'social' ? socialRows.length : rows.length} / {total})
             </button>
           </div>
         )}

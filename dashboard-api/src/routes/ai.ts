@@ -689,6 +689,81 @@ router.put('/strategies/:id/risk-config', async (req: Request, res: Response) =>
 
 // ── GET /signals — global AI signal log across all strategies ─────────────────
 
+// ── GET /social-signals ───────────────────────────────────────────────────────
+// The social listener's extractions, for the same log page as the AI cycles.
+// Every ingested message lands here whether or not it was tradeable, so an empty
+// result means nothing was ingested — which is the point of showing it.
+//
+// The shadow-order join is a LATERAL rather than a plain join: an evaluated
+// message has at most one decision row, but joining on (source, channel_msg_id)
+// without the limit would multiply rows if that ever stops holding.
+router.get('/social-signals', async (req: Request, res: Response) => {
+  const limit  = Math.min(Number(req.query.limit)  || 50, 200);
+  const offset = Math.max(Number(req.query.offset) || 0,  0);
+  const source     = req.query.source     as string | undefined;
+  const actionable = req.query.actionable as string | undefined;
+
+  const conditions: string[] = [];
+  const params: any[] = [];
+
+  if (source) {
+    params.push(source);
+    conditions.push(`l.source = $${params.length}`);
+  }
+  if (actionable !== undefined) {
+    params.push(actionable === 'true');
+    conditions.push(`l.is_actionable = $${params.length}`);
+  }
+
+  const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+
+  try {
+    const [dataResult, countResult] = await Promise.all([
+      getPool().query(
+        `SELECT l.id, l.source, l.channel_msg_id, l.posted_at, l.ingested_at,
+                l.raw_text, l.preview_text, l.x_url,
+                l.is_actionable, l.action_type, l.asset, l.direction,
+                l.reference_price, l.confidence, l.in_whitelist,
+                l.model, l.extractor_version, l.has_image,
+                l.input_tokens, l.output_tokens, l.total_tokens,
+                l.raw_llm_json ->> 'reasoning' AS reasoning,
+                l.raw_llm_json ->> 'evidence'  AS evidence,
+                d.decision, d.reason AS decision_reason, d.mode AS decision_mode,
+                d.from_state, d.to_state, d.intended_signal, d.mark_price
+           FROM social_signal_log l
+           LEFT JOIN LATERAL (
+                SELECT s.decision, s.reason, s.mode, s.from_state, s.to_state,
+                       s.intended_signal, s.mark_price
+                  FROM social_shadow_orders s
+                 WHERE s.source = l.source AND s.channel_msg_id = l.channel_msg_id
+                 ORDER BY s.id DESC
+                 LIMIT 1
+           ) d ON true
+           ${where}
+          ORDER BY l.posted_at DESC
+          LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+        [...params, limit, offset],
+      ),
+      getPool().query(`SELECT COUNT(*) FROM social_signal_log l ${where}`, params),
+    ]);
+
+    res.json({
+      signals: dataResult.rows.map(r => ({
+        ...r,
+        channel_msg_id:  r.channel_msg_id  != null ? String(r.channel_msg_id)  : null,
+        confidence:      r.confidence      != null ? Number(r.confidence)      : null,
+        reference_price: r.reference_price != null ? Number(r.reference_price) : null,
+        mark_price:      r.mark_price      != null ? Number(r.mark_price)      : null,
+      })),
+      total:  Number(countResult.rows[0].count),
+      limit,
+      offset,
+    });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // GET /ai/signals/:id/candles — lazy chart payload for an AI log entry.
 // Shows the range that signal saw (its own geometry_data) over the candles around
 // its trigger time, with the overlay from the order it produced, if any.
