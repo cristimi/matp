@@ -1,8 +1,22 @@
 # Position/order risk-reward chart overlay
 
 **Date:** 2026-07-26
-**Branch:** `feat/position-chart-overlay` (fast-forward merged into `main`, branch deleted)
+**Branch:** `feat/position-chart-overlay` — fast-forward merged into `main`, deleted locally
+and on `origin`.
 **Implements:** `.gemini/reports/2026-07-26_range_chart_visualization_options.md`
+
+### Landing
+
+The merge was a true fast-forward (`git merge --ff-only`, `Updating 2f32f4b..71f5d00`), so
+there is no merge commit; `main` now points at the report commit. The five commits, in order:
+
+| Commit | Phase |
+|---|---|
+| `49badc1` | 0 — geometry.py slope + time anchors |
+| `14f498a` | 1 — ETH-USDT:1h ingestion |
+| `a50755b` | 2 — dashboard-api chart endpoints |
+| `b53778a` | 3 — dashboard-ui core + adapter + embed |
+| `71f5d00` | this report; **`main` HEAD after the merge** |
 
 A per-row expandable candle chart on the Positions and Orders pages, showing the AI-detected
 range boundaries plus a static TradingView-style risk/reward overlay. Built as two layers
