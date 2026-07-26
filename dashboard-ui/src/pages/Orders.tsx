@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { HeaderPill } from '../components/shared/HeaderPill';
 import { TopBar }     from '../components/shared/TopBar';
 import { FilterBar }  from '../components/shared/FilterBar';
+import { ExpandableChart } from '../components/ExpandableChart';
 import { formatPrice, formatSize } from '../utils/precision';
 import { formatRelative } from '../utils/datetime';
 
@@ -234,6 +235,8 @@ function OrderCard({
           </div>
         ))}
       </div>
+
+      <ExpandableChart path={`/orders/${order.id}/candles`} symbol={order.symbol} />
 
       {/* Footer */}
       {uiStatus === 'route-fail' ? (

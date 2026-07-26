@@ -72,6 +72,18 @@ export function formatPrice(
   return num.toFixed(getRule(symbol).price_dp);
 }
 
+/**
+ * Decimal places for a symbol's price, for consumers that need the count rather
+ * than a formatted string (e.g. a chart's price-axis format). Same source of
+ * truth as formatPrice.
+ */
+export function priceDecimals(symbol: string, spec?: PriceSpec | null): number {
+  if (spec?.price_mode === 'tick' && spec.price_tick != null) {
+    return countDecimals(spec.price_tick);
+  }
+  return getRule(symbol).price_dp;
+}
+
 export function formatSize(
   symbol: string,
   value: number | string | null | undefined,

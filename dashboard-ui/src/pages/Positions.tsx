@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { HeaderPill }    from '../components/shared/HeaderPill';
 import { DataGrid }      from '../components/shared/DataGrid';
 import { ActionBand }    from '../components/shared/ActionBand';
+import { ExpandableChart } from '../components/ExpandableChart';
 import { SectionHeader } from '../components/shared/SectionHeader';
 import { TopBar }        from '../components/shared/TopBar';
 import { FilterBar }     from '../components/shared/FilterBar';
@@ -347,6 +348,8 @@ function PositionCard({
       <DataGrid rows={[topRow, botRow]} />
 
       {/* Action band or closed band */}
+      <ExpandableChart path={`/positions/${position.id}/candles`} symbol={symbol} />
+
       {isClosed ? (
         <div style={{
           background:'var(--gray-a)', borderTop:'1px solid var(--border)',
