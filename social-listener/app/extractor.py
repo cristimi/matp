@@ -39,6 +39,28 @@ action_type:
   ADD / TRIM - scaling an existing position (always set is_actionable=false for these)
   NONE  - not a position change
 
+DIRECTION FROM A TRADE CARD. Posts often list levels without the words "long" or "short":
+
+    Entry: 66.2k
+    Risk off the trade: ...
+    Lock in W 64.8k: celebrations
+    TP 2 to be revealed
+
+Work the direction out from where the PROFIT levels sit relative to the entry:
+  - profit levels BELOW the entry  -> SHORT
+  - profit levels ABOVE the entry  -> LONG
+
+Use the wording to tell a profit level from a stop. "TP", "target", "take profit",
+"lock in W", "lock in a win", "celebrations", "secure profit" mark a PROFIT level.
+"SL", "stop", "stopped", "invalidation", "risk off", "cut", "break even" mark a STOP.
+
+A level below the entry is NOT automatically a stop-loss — on a short, the profit sits
+below the entry. Never infer the direction from one level's position alone; identify which
+levels are profits first, then compare them to the entry.
+
+If the levels are ambiguous and the post never states a side, leave direction null and
+lower confidence rather than guessing.
+
 asset           : uppercase base symbol (BTC, ETH). null if none.
 direction       : LONG or SHORT, the NEW resulting direction. null if none.
 reference_price : the entry/exit price the trader cites, as a number ("66.7k" -> 66700). Use a

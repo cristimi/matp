@@ -35,7 +35,13 @@ class Settings(BaseSettings):
     # The cost is latency: every signal waits this long before being evaluated,
     # because a burst is only known to be complete once the window has passed
     # with no new message. Keep it well under max_signal_age_seconds.
-    merge_window_seconds: float = 15.0
+    #
+    # 60s, not 15s: on 2026-07-23 the trade card (msg 9756, "Entry 66.2k / Lock in
+    # W 64.8k") and the message naming the side ("$btc shorts", msg 9749) were 34
+    # seconds apart. At 15s they stayed separate and the card was judged with no
+    # idea which way the trade went. The context that disambiguates a post is
+    # routinely half a minute away from it.
+    merge_window_seconds: float = 60.0
     merge_max_messages: int = 6
 
     # Vision: the X reposts are annotated TradingView charts, and the position
