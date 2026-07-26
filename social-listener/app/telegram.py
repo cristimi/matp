@@ -130,4 +130,45 @@ async def to_record(msg) -> dict:
         "image_bytes": image,
         "has_image": image is not None,
         "image_sha": hashlib.sha256(image).hexdigest() if image else None,
+        "merged_msg_ids": [msg.id],
+    }
+
+
+def merge_records(records: list[dict]) -> dict:
+    """
+    Fold a burst of Telegram messages into the single post they represent.
+
+    The author often splits one thought across messages seconds apart — a
+    comment, then the X link whose preview carries the full article and chart.
+    Judging each separately costs an extra LLM call and produces two verdicts
+    for one intent, so they are concatenated and extracted once.
+
+    Keyed on the **highest** message id: max_channel_msg_id then advances past
+    every part, so the catchup loop will not re-fetch the earlier ones. posted_at
+    is the **earliest**, because that is when the human actually posted, and the
+    staleness gate is measured against it.
+    """
+    if len(records) == 1:
+        return records[0]
+
+    ordered = sorted(records, key=lambda r: r["channel_msg_id"])
+    last    = ordered[-1]
+
+    texts = [r["raw_text"].strip() for r in ordered if (r["raw_text"] or "").strip()]
+    # The preview is the fullest rendering of the linked post; take the first one
+    # that resolved rather than concatenating near-identical copies.
+    preview = next((r["preview_text"] for r in ordered if (r["preview_text"] or "").strip()), "")
+    x_url   = next((r["x_url"] for r in ordered if r["x_url"]), None)
+    imaged  = next((r for r in ordered if r["image_bytes"]), None)
+
+    return {
+        "channel_msg_id": last["channel_msg_id"],
+        "posted_at":      ordered[0]["posted_at"],
+        "raw_text":       "\n\n".join(texts),
+        "preview_text":   preview,
+        "x_url":          x_url,
+        "image_bytes":    imaged["image_bytes"] if imaged else None,
+        "has_image":      imaged is not None,
+        "image_sha":      imaged["image_sha"] if imaged else None,
+        "merged_msg_ids": [r["channel_msg_id"] for r in ordered],
     }

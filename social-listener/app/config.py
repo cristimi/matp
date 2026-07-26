@@ -25,6 +25,19 @@ class Settings(BaseSettings):
     webpage_resolve_attempts: int = 3
     webpage_resolve_delay_seconds: float = 2.0
 
+    # One human post routinely arrives as several Telegram messages seconds
+    # apart — a short comment, then the X link whose preview repeats it in full.
+    # Extracting each separately spends a second LLM call and yields two verdicts
+    # for one intent (observed 2026-07-26: msgs 9778/9779, one second apart, both
+    # scored — 0.85 on the text, 0.15 on the same content with the chart image).
+    # Messages arriving within this window are merged and judged once.
+    #
+    # The cost is latency: every signal waits this long before being evaluated,
+    # because a burst is only known to be complete once the window has passed
+    # with no new message. Keep it well under max_signal_age_seconds.
+    merge_window_seconds: float = 15.0
+    merge_max_messages: int = 6
+
     # Vision: the X reposts are annotated TradingView charts, and the position
     # change is often written on the chart rather than in the text.
     vision_enabled: bool = True

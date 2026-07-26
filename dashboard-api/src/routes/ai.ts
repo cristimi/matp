@@ -724,7 +724,7 @@ router.get('/social-signals', async (req: Request, res: Response) => {
                 l.raw_text, l.preview_text, l.x_url,
                 l.is_actionable, l.action_type, l.asset, l.direction,
                 l.reference_price, l.confidence, l.in_whitelist,
-                l.model, l.extractor_version, l.has_image,
+                l.model, l.extractor_version, l.has_image, l.merged_msg_ids,
                 l.input_tokens, l.output_tokens, l.total_tokens,
                 l.raw_llm_json ->> 'reasoning' AS reasoning,
                 l.raw_llm_json ->> 'evidence'  AS evidence,
@@ -751,6 +751,9 @@ router.get('/social-signals', async (req: Request, res: Response) => {
       signals: dataResult.rows.map(r => ({
         ...r,
         channel_msg_id:  r.channel_msg_id  != null ? String(r.channel_msg_id)  : null,
+        // bigint[] comes back as strings; NULL means the row predates merging,
+        // which reads as "just this one message".
+        merged_msg_ids:  Array.isArray(r.merged_msg_ids) ? r.merged_msg_ids.map(String) : null,
         confidence:      r.confidence      != null ? Number(r.confidence)      : null,
         reference_price: r.reference_price != null ? Number(r.reference_price) : null,
         mark_price:      r.mark_price      != null ? Number(r.mark_price)      : null,

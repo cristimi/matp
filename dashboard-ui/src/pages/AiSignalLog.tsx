@@ -386,6 +386,7 @@ interface SocialSignalRow {
   model:             string | null;
   extractor_version: string | null;
   has_image:         boolean;
+  merged_msg_ids:    string[] | null;
   input_tokens:      number | null;
   output_tokens:     number | null;
   total_tokens:      number | null;
@@ -490,6 +491,11 @@ function SocialSignalCard({ row }: { row: SocialSignalRow }) {
             <Chip text="image" bg="var(--bg2)" color="var(--muted)" border="var(--border)"
                   title="The extractor also saw the post's chart image" />
           )}
+          {row.merged_msg_ids && row.merged_msg_ids.length > 1 && (
+            <Chip text={`${row.merged_msg_ids.length} msgs`}
+                  bg="var(--blue-a)" color="var(--blue)" border="var(--blue-b)"
+                  title={`One post split across ${row.merged_msg_ids.length} Telegram messages (${row.merged_msg_ids.join(', ')}), merged and judged once`} />
+          )}
           {!row.in_whitelist && (
             <Chip text="not whitelisted" bg="var(--yellow-a)" color="var(--yellow)" border="var(--yellow-b)"
                   title="This asset is not in the strategy's whitelist, so it could not be traded" />
@@ -573,7 +579,11 @@ function SocialSignalCard({ row }: { row: SocialSignalRow }) {
               </span>
             </>)}
             <span style={{ color: 'var(--dim)' }}>Message</span>
-            <span style={{ color: 'var(--muted)' }}>{row.channel_msg_id ?? '—'}</span>
+            <span style={{ color: 'var(--muted)' }}>
+              {row.merged_msg_ids && row.merged_msg_ids.length > 1
+                ? row.merged_msg_ids.join(' + ')
+                : row.channel_msg_id ?? '—'}
+            </span>
           </div>
 
           {row.x_url && (

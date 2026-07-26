@@ -7,7 +7,7 @@ from app import db, emitter, marketdata
 from app.config import settings
 from app.extractor import extract
 from app.statemachine import evaluate
-from app.telegram import build_client, to_record
+from app.telegram import build_client, merge_records, to_record
 
 logging.basicConfig(
     level=logging.INFO,
@@ -20,19 +20,39 @@ log = logging.getLogger("social-listener")
 _STRATEGY: dict | None = None
 
 
-async def handle(msg, phase: str):
-    # Skip messages already fully evaluated by the brain (idempotent restarts).
-    if await db.already_shadow_evaluated(msg.id):
+async def handle(msgs, phase: str):
+    """
+    Judge one post. `msgs` is the burst of Telegram messages that make it up —
+    usually one, but the author often splits a single thought across two or three
+    seconds apart (a comment, then the X link whose preview repeats it in full).
+    They are merged before extraction so one post costs one LLM call and produces
+    one verdict, instead of one per message.
+
+    The merged record is keyed on the highest message id, so `already_seen` and
+    `max_channel_msg_id` both refer to the burst as a whole.
+    """
+    if not isinstance(msgs, (list, tuple)):
+        msgs = [msgs]
+    if not msgs:
         return
 
-    if await db.already_seen(msg.id):
+    key_id = max(m.id for m in msgs)
+
+    # Skip messages already fully evaluated by the brain (idempotent restarts).
+    if await db.already_shadow_evaluated(key_id):
+        return
+
+    if await db.already_seen(key_id):
         # Already extracted — load from DB to avoid re-calling the LLM (and
         # re-downloading the image), before doing any Telegram work.
-        rec = await db.load_signal(msg.id)
+        rec = await db.load_signal(key_id)
         if rec is None:
             return
     else:
-        base = await to_record(msg)
+        base = merge_records([await to_record(m) for m in msgs])
+        if len(msgs) > 1:
+            log.info("merged %d messages into one post: %s",
+                     len(msgs), base["merged_msg_ids"])
         ext = await extract(base["raw_text"], base["preview_text"], base["image_bytes"])
         if ext["failed"]:
             # The LLM call never returned a verdict. Don't record anything: an
@@ -40,14 +60,14 @@ async def handle(msg, phase: str):
             # message would never be re-extracted once the provider recovers.
             # Leaving it unrecorded also keeps max_channel_msg_id back, so the
             # catchup loop picks it up again on the next pass.
-            log.error("msg %s: extraction unavailable, leaving unrecorded for retry", msg.id)
+            log.error("msg %s: extraction unavailable, leaving unrecorded for retry", key_id)
             return
         rec = {**base, **ext}
         if await db.insert_signal(rec):
             flag = "ACTIONABLE" if rec["is_actionable"] else "·"
             log.info(
                 "msg %s [%s] %s %s ref=%s conf=%.2f img=%s",
-                msg.id, flag, rec["action_type"], rec["asset"] or "-",
+                key_id, flag, rec["action_type"], rec["asset"] or "-",
                 rec["reference_price"], rec["confidence"],
                 "y" if rec["has_image"] else "n",
             )
@@ -114,6 +134,69 @@ async def handle(msg, phase: str):
         )
 
 
+def group_bursts(msgs: list, window_seconds: float, max_size: int) -> list[list]:
+    """
+    Split an ordered run of messages into bursts that belong to the same post.
+
+    A new burst starts when the gap to the previous message exceeds the window,
+    or when the current burst is already at max_size — the cap stops a busy
+    stretch of unrelated posts from being welded into one giant prompt.
+    """
+    bursts: list[list] = []
+    for m in sorted(msgs, key=lambda x: x.id):
+        if (
+            bursts
+            and len(bursts[-1]) < max_size
+            and (m.date - bursts[-1][-1].date).total_seconds() <= window_seconds
+        ):
+            bursts[-1].append(m)
+        else:
+            bursts.append([m])
+    return bursts
+
+
+class _LiveBuffer:
+    """
+    Holds just-arrived messages until the burst looks finished.
+
+    A burst is only known to be complete once the window has elapsed with nothing
+    new, so every live signal is delayed by that long. That is the price of one
+    verdict per post; keep merge_window_seconds well under the state machine's
+    max_signal_age_seconds.
+    """
+
+    def __init__(self):
+        self._msgs: list = []
+        self._task: asyncio.Task | None = None
+
+    def add(self, msg) -> None:
+        self._msgs.append(msg)
+        if self._task and not self._task.done():
+            self._task.cancel()
+        # At the cap, flush at once rather than waiting for a quiet window.
+        if len(self._msgs) >= settings.merge_max_messages:
+            self._task = asyncio.create_task(self._flush(0))
+        else:
+            self._task = asyncio.create_task(self._flush(settings.merge_window_seconds))
+
+    async def _flush(self, delay: float) -> None:
+        try:
+            if delay:
+                await asyncio.sleep(delay)
+        except asyncio.CancelledError:
+            return   # a newer message arrived; it rescheduled the flush
+
+        batch, self._msgs = self._msgs, []
+        if not batch:
+            return
+        try:
+            for burst in group_bursts(batch, settings.merge_window_seconds,
+                                      settings.merge_max_messages):
+                await handle(burst, "live")
+        except Exception:  # noqa: BLE001
+            log.exception("live flush error")
+
+
 async def _catchup_loop(client, channel):
     """Periodically reconcile Telegram's message history against what's recorded.
 
@@ -138,9 +221,12 @@ async def _catchup_loop(client, channel):
                 gap.append(m)
 
             if gap:
-                log.warning("catchup: recovering %d missed message(s) after id %s", len(gap), last_id)
-                for m in gap:
-                    await handle(m, "live")
+                bursts = group_bursts(gap, settings.merge_window_seconds,
+                                      settings.merge_max_messages)
+                log.warning("catchup: recovering %d missed message(s) after id %s as %d post(s)",
+                            len(gap), last_id, len(bursts))
+                for burst in bursts:
+                    await handle(burst, "live")
         except Exception:  # noqa: BLE001
             log.exception("catchup loop error")
 
@@ -213,14 +299,19 @@ async def main():
     msgs = []
     async for m in client.iter_messages(channel, limit=settings.backfill_limit):
         msgs.append(m)
-    for m in reversed(msgs):  # oldest -> newest
-        await handle(m, "backfill")
-    log.info("Backfill complete (%d messages)", len(msgs))
+    bursts = group_bursts(msgs, settings.merge_window_seconds, settings.merge_max_messages)
+    for burst in bursts:  # oldest -> newest
+        await handle(burst, "backfill")
+    log.info("Backfill complete (%d messages, %d post(s))", len(msgs), len(bursts))
+
+    buffer = _LiveBuffer()
 
     @client.on(events.NewMessage(chats=channel))
     async def _live(event):
+        # Buffered rather than handled inline: the follow-up message that
+        # completes the post has not arrived yet.
         try:
-            await handle(event.message, "live")
+            buffer.add(event.message)
         except Exception:  # noqa: BLE001
             log.exception("live handler error")
 
