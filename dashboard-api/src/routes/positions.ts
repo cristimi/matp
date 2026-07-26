@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { getPool } from '../db';
+import { buildPositionChart, clampLimit } from '../chartData';
 
 const router = Router();
 const EXECUTOR_URL = process.env.EXECUTOR_URL || 'http://order-executor:8004';
@@ -216,6 +217,22 @@ router.get('/:id/orders', async (req: Request, res: Response) => {
   } catch (err) {
     console.error(`Error fetching orders for position ${req.params.id}:`, err);
     res.status(500).json({ error: 'Database error fetching position orders' });
+  }
+});
+
+// GET /positions/:id/candles — lazy chart payload for the expandable row.
+// Candles + newest geometry + the risk-reward overlay numbers in one response,
+// so the chart never renders candles before it knows where the box goes.
+router.get('/:id/candles', async (req: Request, res: Response) => {
+  try {
+    const payload = await buildPositionChart(req.params.id, clampLimit(req.query.limit));
+    if (!payload) {
+      return res.status(404).json({ error: `Position not found: ${req.params.id}` });
+    }
+    res.json(payload);
+  } catch (err: any) {
+    console.error(`Error building chart for position ${req.params.id}:`, err);
+    res.status(500).json({ error: err.message || 'Failed to build chart payload' });
   }
 });
 

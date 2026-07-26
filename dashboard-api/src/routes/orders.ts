@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { getPool } from '../db';
+import { buildOrderChart, clampLimit } from '../chartData';
 
 const router = Router();
 
@@ -53,6 +54,21 @@ router.get('/', async (req: Request, res: Response) => {
       pair: { label: row.symbol }
     })),
   });
+});
+
+// GET /orders/:id/candles — lazy chart payload for the expandable row.
+// Declared ahead of /:id so the two-segment path is matched first.
+router.get('/:id/candles', async (req: Request, res: Response) => {
+  try {
+    const payload = await buildOrderChart(req.params.id, clampLimit(req.query.limit));
+    if (!payload) {
+      return res.status(404).json({ error: `Order not found: ${req.params.id}` });
+    }
+    res.json(payload);
+  } catch (err: any) {
+    console.error(`Error building chart for order ${req.params.id}:`, err);
+    res.status(500).json({ error: err.message || 'Failed to build chart payload' });
+  }
 });
 
 router.get('/:id', async (req: Request, res: Response) => {
