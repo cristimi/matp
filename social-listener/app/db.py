@@ -54,7 +54,7 @@ async def load_signal(channel_msg_id: int) -> dict | None:
         row = await c.fetchrow(
             """SELECT channel_msg_id, posted_at, is_actionable, action_type,
                       asset, direction, reference_price, confidence,
-                      size_fraction, trigger_price
+                      size_fraction, trigger_price, stop_price, stop_to_breakeven
                FROM public.social_signal_log
                WHERE source=$1 AND channel_msg_id=$2""",
             settings.source_tag, channel_msg_id,
@@ -74,12 +74,34 @@ async def get_state(asset: str) -> str:
 
 
 async def set_state(asset: str, state: str, msg_id: int) -> None:
+    """Move the recorded stance. Clears stop_price: the stop we had tightened
+    belonged to the position we just left."""
     async with pool().acquire() as c:
         await c.execute(
             """INSERT INTO public.social_position_state (source, asset, state, last_msg_id, updated_at)
                VALUES ($1,$2,$3,$4, now())
-               ON CONFLICT (source, asset) DO UPDATE SET state=$3, last_msg_id=$4, updated_at=now()""",
+               ON CONFLICT (source, asset) DO UPDATE
+                 SET state=$3, last_msg_id=$4, stop_price=NULL, updated_at=now()""",
             settings.source_tag, asset, state, msg_id,
+        )
+
+
+async def get_stop(asset: str) -> float | None:
+    """The tightest stop this listener has set for the current stance, or None."""
+    async with pool().acquire() as c:
+        row = await c.fetchrow(
+            "SELECT stop_price FROM public.social_position_state WHERE source=$1 AND asset=$2",
+            settings.source_tag, asset,
+        )
+    return float(row["stop_price"]) if row and row["stop_price"] is not None else None
+
+
+async def set_stop(asset: str, stop_price: float) -> None:
+    async with pool().acquire() as c:
+        await c.execute(
+            """UPDATE public.social_position_state SET stop_price=$3, updated_at=now()
+               WHERE source=$1 AND asset=$2""",
+            settings.source_tag, asset, stop_price,
         )
 
 
@@ -89,14 +111,15 @@ async def insert_shadow_order(rec: dict) -> None:
             """INSERT INTO public.social_shadow_orders
                (source, channel_msg_id, posted_at, phase, asset, action_type, from_state, to_state,
                 intended_signal, reference_price, mark_price, confidence, decision, reason, mode,
-                size_fraction, close_size)
-               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+                size_fraction, close_size, stop_price, stop_reason)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
                ON CONFLICT (source, channel_msg_id) DO NOTHING""",
             settings.source_tag, rec["channel_msg_id"], rec["posted_at"], rec["phase"], rec["asset"],
             rec["action_type"], rec["from_state"], rec["to_state"], rec["intended_signal"],
             rec["reference_price"], rec["mark_price"], rec["confidence"], rec["decision"],
             rec["reason"], rec.get("mode", "shadow"),
             rec.get("size_fraction"), rec.get("close_size"),
+            rec.get("stop_price"), rec.get("stop_reason"),
         )
 
 
@@ -126,10 +149,12 @@ async def open_position(strategy_id: str, asset: str) -> dict | None:
     """
     async with pool().acquire() as c:
         row = await c.fetchrow(
-            """SELECT id, symbol, side, size, entry_price
-               FROM public.strategy_positions
-               WHERE strategy_id=$1 AND status='open' AND symbol LIKE $2
-               ORDER BY opened_at DESC LIMIT 1""",
+            """SELECT p.id, p.symbol, p.side, p.size, p.entry_price,
+                      o.tp_price, o.sl_price
+               FROM public.strategy_positions p
+               LEFT JOIN public.orders o ON o.id = p.opening_order_id
+               WHERE p.strategy_id=$1 AND p.status='open' AND p.symbol LIKE $2
+               ORDER BY p.opened_at DESC LIMIT 1""",
             strategy_id, f"{asset.upper()}%",
         )
     return dict(row) if row else None
@@ -248,9 +273,9 @@ async def insert_signal(rec: dict) -> bool:
                is_actionable, action_type, asset, direction, reference_price,
                confidence, in_whitelist, model, extractor_version, raw_llm_json,
                input_tokens, output_tokens, total_tokens, has_image, image_sha,
-               merged_msg_ids, size_fraction, trigger_price)
+               merged_msg_ids, size_fraction, trigger_price, stop_price, stop_to_breakeven)
             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,
-                    $22,$23,$24)
+                    $22,$23,$24,$25,$26)
             ON CONFLICT (source, channel_msg_id) DO NOTHING
             """,
             settings.source_tag, rec["channel_msg_id"], rec["posted_at"],
@@ -263,5 +288,6 @@ async def insert_signal(rec: dict) -> bool:
             rec.get("has_image", False), rec.get("image_sha"),
             rec.get("merged_msg_ids"),
             rec.get("size_fraction"), rec.get("trigger_price"),
+            rec.get("stop_price"), rec.get("stop_to_breakeven"),
         )
         return result.endswith("1")

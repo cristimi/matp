@@ -141,3 +141,50 @@ async def emit(signal: str, asset: str, mark: float, strategy: dict,
             log.info("emitted %s for %s size=%s -> %s", step, asset, size, resp.status_code)
 
     return True, "; ".join(done)
+
+
+async def adjust_stop(sl_price: float, strategy: dict,
+                      tp_price: float | None = None,
+                      dry_run: bool = False) -> tuple[bool, str]:
+    """Move the stop on the strategy's open position.
+
+    Uses order-listener's existing `/strategies/{id}/adjust-stops`, which resolves
+    the position and hands off to order-executor's modify-stops — so, as everywhere
+    else here, this service makes no exchange call and holds no credentials.
+
+    `tp_price` must be passed whenever the position has one. modify-stops cancels
+    every existing trigger and places only the legs it was asked for, so sending a
+    lone sl_price would silently delete a resting take-profit.
+
+    Returns (ok, detail). ok requires the SL leg to be CONFIRMED resting: the
+    endpoint's own contract is that `success` alone is not enough, because
+    cancel-then-place is not atomic and a position can be left unprotected.
+    """
+    url = f"{settings.listener_url}/strategies/{settings.execution_strategy_id}/adjust-stops"
+    token = strategy["webhook_secret"]
+    body: dict = {"sl_price": float(sl_price), "token": token}
+    if tp_price is not None:
+        body["tp_price"] = float(tp_price)
+    if dry_run:
+        body["dry_run"] = True
+
+    try:
+        async with httpx.AsyncClient(timeout=settings.emit_timeout_seconds) as client:
+            resp = await client.post(url, json=body, headers={"X-Webhook-Token": token})
+    except Exception as e:  # noqa: BLE001
+        return False, f"adjust-stops failed to send: {e}"
+
+    if resp.status_code >= 300:
+        return False, f"adjust-stops rejected {resp.status_code}: {resp.text[:300]}"
+
+    data = resp.json()
+    if data.get("simulated"):
+        return True, f"dry run: intended sl={data.get('intended_sl_price')}"
+    if not data.get("success") or data.get("sl_ok") is not True:
+        # sl_ok is the field that says whether the position is actually protected.
+        return False, (f"stop not confirmed resting (success={data.get('success')}, "
+                       f"sl_ok={data.get('sl_ok')}, tp_ok={data.get('tp_ok')}): "
+                       f"{data.get('error') or data.get('error_msg')}")
+
+    log.info("stop moved to %s (tp=%s) -> %s", sl_price, tp_price, resp.status_code)
+    return True, f"sl={sl_price} confirmed (tp_ok={data.get('tp_ok')})"

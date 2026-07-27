@@ -235,10 +235,38 @@ Both tables hold one row per post, so re-judging a post overwrites its row rathe
 adding a second. The original verdict is preserved in this report and in
 `social-listener-partial-tp-not-taken.md`.
 
-## Still not built (in the roadmap backlog)
+## Outcome: it fired on its own
 
-The other half of the same card, "Risk off the trade" (move the stop to break even), is
-still dropped. order-listener already exposes `POST /strategies/{id}/adjust-stops` with
-the same webhook token, so it needs no exchange work — see the Deferred Backlog entry,
-including the open question of whether a social post should ever be allowed to *widen*
-a stop rather than only tighten one.
+At 15:38 BTC reached the level and the watcher did the whole thing unattended:
+
+```
+social-listener-1 | 2026-07-27 15:38:10,024 INFO app.emitter emitted partial_close_short for BTC size=0.00155 -> 200
+social-listener-1 | 2026-07-27 15:38:10,071 INFO social-listener LIVE trim msg 9790 SHORT 50% (0.00155) at 64385.5 -> partial_close_short->afb473a8-7f77-4413-89d6-9b4b638f751c
+
+ channel_msg_id | side  | size_fraction | trigger_price | status |                        resolution                         |          resolved_at
+----------------+-------+---------------+---------------+--------+-----------------------------------------------------------+-------------------------------
+           9790 | SHORT |           0.5 |         64400 | fired  | partial_close_short->afb473a8-7f77-4413-89d6-9b4b638f751c | 2026-07-27 15:38:10.036664+00
+```
+
+The order filled:
+
+```
+id                | afb473a8-7f77-4413-89d6-9b4b638f751c
+side              | buy
+signal            | close_short
+size              | 0.00155
+status            | filled
+actual_fill_price | 64420
+pnl               | 1.44795
+exchange_fee      | 0.057978
+```
+
+Half the short banked at 64420 against an entry of 65385.3, net **+1.448 USDT**, with
+0.00155 BTC still running for TP2 — exactly the instruction the post gave and the
+listener could not act on that morning.
+
+## Still not built
+
+The other half of the same card, "Risk off the trade", is covered by the follow-up work
+in `.gemini/reports/social-listener-stop-management.md`. **ADD / scale-in** remains
+deliberately unbuilt — see the Deferred Backlog entry.

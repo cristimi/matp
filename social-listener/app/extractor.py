@@ -8,7 +8,8 @@ from pydantic import BaseModel, Field
 from app.config import settings
 
 log = logging.getLogger(__name__)
-EXTRACTOR_VERSION = "v3"  # v3: TRIM is actionable — size_fraction + trigger_price
+EXTRACTOR_VERSION = "v4"  # v4: stop management — stop_price + stop_to_breakeven, STOP
+                          # v3: TRIM is actionable — size_fraction + trigger_price
                           # v2: reads the attached chart image alongside the text
 
 SYSTEM_PROMPT = """You extract a crypto trader's STATED position changes from a social post.
@@ -38,6 +39,7 @@ action_type:
   FLIP  - closing one side and entering the opposite in the same post
   CLOSE - fully closing a position, leaving nothing on
   TRIM  - taking PART of an existing position off, leaving the rest running
+  STOP  - the post's ONLY position change is moving the stop
   ADD   - scaling INTO an existing position. Always set is_actionable=false for ADD.
   NONE  - not a position change
 
@@ -48,6 +50,22 @@ leaves the trade alive -> TRIM: "took half off", "trimmed", "partials", "banked 
 TRIM vs recap. A trim is actionable when the post states it as what happens to the trade
 NOW or at a named level. "TP1 hit, +3R, told you" describing something already done and
 already announced is a recap -> is_actionable=false, action_type=NONE.
+
+STOPS. A post can move its stop as well as trim, so the stop fields ride alongside
+action_type rather than competing with it — a card that both banks profit and de-risks is
+action_type=TRIM WITH the stop fields filled in. Use action_type=STOP only when moving the
+stop is the post's whole content.
+
+  stop_to_breakeven=true  for "risk off the trade", "risk off", "moved to BE", "stop to
+                          entry", "free trade now", "can't lose on this one", "de-risked" —
+                          the trader wants the stop at their entry and names no price.
+  stop_price=<number>     when a level is named: "SL 66.2k" -> 66200, "stop above 66k" ->
+                          66000, "invalidation 65.8k" -> 65800.
+
+Do NOT read a profit level as a stop. "TP", "target", "lock in W", "celebrations",
+"secure profit" are profit; "SL", "stop", "invalidation", "risk off", "cut", "break even"
+are stops. A post that only celebrates a stop that already triggered ("stopped out, oh
+well") is a recap -> NONE.
 
 MANAGEMENT CARDS. A card that repeats an entry the trader is ALREADY in and adds profit or
 stop handling is trade MANAGEMENT, not a new entry. Do not answer OPEN merely because the
@@ -92,6 +110,10 @@ size_fraction   : TRIM only — how much of the position comes off, 0..1. "half"
 trigger_price   : TRIM only — the price at which the part comes off, when the post names one
                   ("Lock in W 64.4k" -> 64400). null when the trim is presented as happening
                   now, at market. null for every other action_type.
+stop_price      : the stop level the post names, as a number. null if none.
+stop_to_breakeven : true when the post asks for the stop at entry without naming a price.
+                  false or null otherwise. Never set both this and stop_price unless the
+                  post really does both.
 confidence      : 0..1, how clearly the post states a concrete position change.
 evidence        : where the position change came from — "text", "image", "both", or "none".
 
@@ -100,12 +122,14 @@ Be conservative. When unsure, is_actionable=false."""
 
 class SocialExtraction(BaseModel):
     is_actionable: bool
-    action_type: Literal["OPEN", "FLIP", "CLOSE", "ADD", "TRIM", "NONE"]
+    action_type: Literal["OPEN", "FLIP", "CLOSE", "ADD", "TRIM", "STOP", "NONE"]
     asset: Optional[str] = None
     direction: Optional[Literal["LONG", "SHORT"]] = None
     reference_price: Optional[float] = None
     size_fraction: Optional[float] = Field(default=None, ge=0, le=1)
     trigger_price: Optional[float] = None
+    stop_price: Optional[float] = None
+    stop_to_breakeven: Optional[bool] = None
     confidence: float = Field(ge=0, le=1)
     evidence: Literal["text", "image", "both", "none"] = "none"
     reasoning: Optional[str] = None
@@ -281,6 +305,9 @@ async def extract(raw_text: str, preview_text: str, image_bytes: bytes | None = 
     # A fraction and a trigger only mean anything on a trim; drop them elsewhere so
     # a stray value can never reach the sizing path.
     is_trim = result.action_type == "TRIM"
+    # Stop fields ride alongside any action_type, but only matter while a position
+    # stays open — a full exit takes its stops with it.
+    keeps_position = result.action_type not in ("CLOSE", "FLIP")
     return {
         "failed": call_failed,
         "is_actionable": is_actionable,
@@ -290,6 +317,8 @@ async def extract(raw_text: str, preview_text: str, image_bytes: bytes | None = 
         "reference_price": result.reference_price,
         "size_fraction": result.size_fraction if is_trim else None,
         "trigger_price": result.trigger_price if is_trim else None,
+        "stop_price": result.stop_price if keeps_position else None,
+        "stop_to_breakeven": bool(result.stop_to_breakeven) if keeps_position else None,
         "confidence": result.confidence,
         "in_whitelist": (asset in _WHITELIST) if asset else False,
         "model": f"{used_provider}:{used_model}",

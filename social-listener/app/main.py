@@ -3,7 +3,7 @@ import logging
 
 from telethon import events
 
-from app import db, emitter, marketdata
+from app import db, emitter, marketdata, statemachine
 from app.config import settings
 from app.extractor import extract
 from app.statemachine import evaluate
@@ -44,6 +44,50 @@ async def fire_trim(asset: str, side: str, fraction: float,
     signal = "partial_close_long" if side == "LONG" else "partial_close_short"
     ok, detail = await emitter.emit(signal, asset, mark, _STRATEGY, close_size=close_size)
     return ok, detail, (close_size if ok else None)
+
+
+async def apply_stop(rec: dict, asset: str, cur_state: str,
+                     mark: float | None) -> tuple[float | None, str]:
+    """Move the stop if the post asks for one and the guards allow it.
+
+    Runs BEFORE the position half of a decision on purpose. order-listener re-applies
+    a position's TP/SL at their pre-close prices after a partial reduce, so a stop
+    moved after a trim would race that resize and could be silently reverted; moved
+    before it, the resize picks up the new stop and rescales it to the smaller size.
+
+    Returns (stop_price_sent, reason) — stop_price_sent is None whenever nothing
+    went out, and `reason` records why for the audit row.
+    """
+    if _STRATEGY is None:
+        # Still worth judging in shadow, so the recorded reason is the real one
+        # rather than a blanket "shadow".
+        want, reason = statemachine.evaluate_stop(rec, cur_state, None, mark, None)
+        return None, reason if reason != "no_entry_price" else "shadow_no_position"
+
+    pos = await db.open_position(settings.execution_strategy_id, asset)
+    entry = float(pos["entry_price"]) if pos and pos["entry_price"] is not None else None
+    last = await db.get_stop(asset)
+
+    want, reason = statemachine.evaluate_stop(rec, cur_state, entry, mark, last)
+    if want is None:
+        if reason not in ("no_stop_instruction",):
+            log.info("stop not moved for msg %s: %s (want from entry=%s mark=%s last=%s)",
+                     rec["channel_msg_id"], reason, entry, mark, last)
+        return None, reason
+
+    tp = float(pos["tp_price"]) if pos and pos["tp_price"] is not None else None
+    ok, detail = await emitter.adjust_stop(want, _STRATEGY, tp_price=tp)
+    if not ok:
+        # modify-stops is cancel-then-place, so a failure can leave the position
+        # unprotected. Loud, and never recorded as the stop we hold.
+        log.error("STOP MOVE FAILED msg %s -> %s: %s — position stops may be "
+                  "UNCONFIRMED, check the exchange", rec["channel_msg_id"], want, detail)
+        return None, "stop_send_failed"
+
+    await db.set_stop(asset, want)
+    log.info("STOP msg %s %s moved to %s (was %s, entry %s): %s",
+             rec["channel_msg_id"], cur_state, want, last, entry, detail)
+    return want, "ok"
 
 
 async def _sweep_pending_trims() -> None:
@@ -175,6 +219,14 @@ async def handle(msgs, phase: str):
         # unchanged, so social_position_state never claims a position the
         # exchange does not hold. The cost of that choice is a missed trade,
         # which is the safe direction to be wrong in.
+        # Stops first, and only while the post leaves us on the side we are already
+        # on — a CLOSE or FLIP takes its stops with it, and an OPEN has no position
+        # yet (order-listener injects its guaranteed SL at entry instead).
+        stop_price = None
+        stop_reason = "no_stop_instruction"
+        if asset and phase == "live" and d["to_state"] == cur and cur != "FLAT":
+            stop_price, stop_reason = await apply_stop(rec, asset, cur, mark)
+
         mode = "shadow"
         close_size = None
         if d["emit"] and asset and phase == "live" and _STRATEGY is not None:
@@ -214,6 +266,8 @@ async def handle(msgs, phase: str):
             "mode":            mode,
             "size_fraction":   d["size_fraction"],
             "close_size":      close_size,
+            "stop_price":      stop_price,
+            "stop_reason":     stop_reason,
         })
 
         # Park a trim whose level the market has not reached, so the watcher can
@@ -241,9 +295,10 @@ async def handle(msgs, phase: str):
                          n, asset, cur, d["to_state"])
 
         log.info(
-            "BRAIN msg %s %s->%s %s [%s/%s] mode=%s",
+            "BRAIN msg %s %s->%s %s [%s/%s] mode=%s stop=%s/%s",
             rec["channel_msg_id"], cur, d["to_state"],
             d["intended_signal"], d["decision"], d["reason"], mode,
+            stop_price, stop_reason,
         )
 
 

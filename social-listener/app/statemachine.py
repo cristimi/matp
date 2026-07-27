@@ -59,6 +59,69 @@ def _too_old(rec: dict, now: datetime | None) -> bool:
     return age > settings.max_signal_age_seconds
 
 
+def evaluate_stop(
+    rec: dict,
+    cur_state: str,
+    entry_price: float | None,
+    mark: float | None,
+    last_stop: float | None = None,
+    now: datetime | None = None,
+) -> tuple[float | None, str]:
+    """Where the stop should go for a post that manages an open position.
+
+    Returns (stop_price, reason). stop_price is None whenever nothing should be
+    sent, and `reason` always says why.
+
+    Three guards, and the first is the important one: a stop from a social post may
+    only ever be at break-even or better. It can tighten what order-listener's
+    guaranteed SL already put in place, never widen it. Widening is the only
+    direction that increases how much the trade can lose, and a misread post must
+    not be able to do that — the cost of the rule is that a trader legitimately
+    giving a wider stop is ignored, which loses nothing we had.
+    """
+    named = rec.get("stop_price")
+    to_be = bool(rec.get("stop_to_breakeven"))
+    if named is None and not to_be:
+        return None, "no_stop_instruction"
+
+    if cur_state == "FLAT":
+        return None, "no_position_for_stop"
+    if _too_old(rec, now):
+        return None, "signal_too_old"
+    if entry_price is None:
+        return None, "no_entry_price"
+
+    # An explicitly named level wins over "break even" — it is the more specific
+    # instruction. The guards below bound it either way.
+    try:
+        want = float(named) if named is not None else float(entry_price)
+    except (TypeError, ValueError):
+        return None, "no_stop_instruction"
+
+    entry = float(entry_price)
+    short = cur_state == "SHORT"
+
+    # Guard 1 — never worse than break-even. On a short the stop sits above entry
+    # while the trade is at risk, so tightening means coming DOWN to entry or below.
+    if (want > entry) if short else (want < entry):
+        return None, "stop_would_widen_risk"
+
+    # Guard 2 — a stop already on the wrong side of the mark is not a stop, it is a
+    # market exit wearing a stop's name. Refuse it and let the trade run to a real
+    # signal instead of closing on a mis-parsed number.
+    if mark is not None and ((want <= float(mark)) if short else (want >= float(mark))):
+        return None, "stop_already_crossed"
+
+    # Guard 3 — monotonic. Once we have tightened, a later post may only tighten
+    # further, so a stale or re-read card cannot walk protection back out.
+    if last_stop is not None:
+        prev = float(last_stop)
+        if (want > prev) if short else (want < prev):
+            return None, "stop_not_tighter"
+
+    return want, "ok"
+
+
 def _evaluate_trim(rec, phase, cur_state, mark, now, base, skip) -> dict:
     """A partial profit-take on the position we are already recorded as holding.
 
@@ -159,6 +222,11 @@ def evaluate(
 
     if rec.get("action_type") == "TRIM":
         return _evaluate_trim(rec, phase, cur_state, mark, now, base, skip)
+
+    # A stop-only post moves no position. It still reaches the caller's stop
+    # handling, which is keyed off the record, not off this decision.
+    if rec.get("action_type") == "STOP":
+        return skip("stop_only")
 
     tgt = _target_state(rec.get("action_type"), rec.get("direction"))
     if tgt is None:
