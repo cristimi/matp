@@ -1,10 +1,15 @@
 /**
- * Layer B — canvas renderer for the risk/reward boxes.
+ * Layer B — canvas renderer for the risk/reward zones.
  *
  * This file (and its siblings in this folder) are the only place in the app that
  * knows lightweight-charts exists. It consumes the plain price/time rectangles
  * produced by Layer A and turns them into pixels via priceToCoordinate() /
  * timeToCoordinate(); it computes no trading logic of its own.
+ *
+ * Shaped after TradingView's Long/Short Position tool: a green reward zone from
+ * entry to target, a red risk zone from entry to stop, a solid entry line
+ * between them, and the numbers on the right edge. When the order was amended
+ * the zones step — one rung per price it actually rested at.
  */
 import type {
   IChartApi,
@@ -21,26 +26,30 @@ import type {
 import type { RiskRewardModel } from '../../core';
 
 export interface RiskRewardColors {
-  outerStroke:  string;
-  outerFill:    string;
   profitFill:   string;
   profitStroke: string;
   lossFill:     string;
   lossStroke:   string;
   entryLine:    string;
+  progressFill: string;
+  label:        string;
+  labelText:    string;
 }
 
 export const DEFAULT_COLORS: RiskRewardColors = {
-  outerStroke:  'rgba(148, 163, 184, 0.85)',
-  outerFill:    'rgba(148, 163, 184, 0.10)',
-  profitFill:   'rgba(34, 197, 94, 0.22)',
-  profitStroke: 'rgba(34, 197, 94, 0.90)',
-  lossFill:     'rgba(239, 68, 68, 0.22)',
-  lossStroke:   'rgba(239, 68, 68, 0.90)',
+  profitFill:   'rgba(34, 197, 94, 0.16)',
+  profitStroke: 'rgba(34, 197, 94, 0.70)',
+  lossFill:     'rgba(239, 68, 68, 0.16)',
+  lossStroke:   'rgba(239, 68, 68, 0.70)',
   entryLine:    'rgba(226, 232, 240, 0.95)',
+  progressFill: 'rgba(226, 232, 240, 0.10)',
+  label:        'rgba(15, 23, 42, 0.88)',
+  labelText:    'rgba(241, 245, 249, 0.98)',
 };
 
 const toUtc = (ms: number) => Math.floor(ms / 1000) as UTCTimestamp;
+
+const FONT = '11px ui-sans-serif, system-ui, -apple-system, sans-serif';
 
 class RiskRewardRenderer implements IPrimitivePaneRenderer {
   constructor(
@@ -48,6 +57,7 @@ class RiskRewardRenderer implements IPrimitivePaneRenderer {
     private readonly series: ISeriesApi<SeriesType>,
     private readonly model: RiskRewardModel,
     private readonly colors: RiskRewardColors,
+    private readonly decimals: number,
   ) {}
 
   draw(target: any): void {
@@ -55,8 +65,8 @@ class RiskRewardRenderer implements IPrimitivePaneRenderer {
       const ts    = this.chart.timeScale();
       const width = mediaSize.width;
 
-      // Skip entirely when the box sits outside the scrolled window — otherwise
-      // the null-coordinate fallbacks below would stretch it across the pane.
+      // Skip entirely when the zones sit outside the scrolled window — otherwise
+      // the null-coordinate fallbacks below would stretch them across the pane.
       const visible = ts.getVisibleRange();
       if (visible) {
         const vFrom = Number(visible.from);
@@ -70,60 +80,134 @@ class RiskRewardRenderer implements IPrimitivePaneRenderer {
       };
       const yAt = (price: number): number | null => this.series.priceToCoordinate(price);
 
-      const drawBox = (
-        fromMs: number, toMs: number, low: number, high: number,
-        fill: string, stroke: string, dashed = false,
+      const zone = (
+        x1: number, x2: number, yA: number, yB: number,
+        fill: string, stroke: string,
       ) => {
-        const yHigh = yAt(high);
-        const yLow  = yAt(low);
-        if (yHigh === null || yLow === null) return;
-
-        const x1 = xAt(fromMs, 0);
-        const x2 = xAt(toMs, width);
-        const w  = Math.max(x2 - x1, 1);
-        const h  = Math.max(yLow - yHigh, 1);
-
+        const top = Math.min(yA, yB);
+        const h   = Math.max(Math.abs(yB - yA), 1);
+        const w   = Math.max(x2 - x1, 1);
         context.save();
         context.fillStyle = fill;
-        context.fillRect(x1, yHigh, w, h);
+        context.fillRect(x1, top, w, h);
         context.strokeStyle = stroke;
         context.lineWidth   = 1;
-        context.setLineDash(dashed ? [4, 3] : []);
-        context.strokeRect(x1 + 0.5, yHigh + 0.5, w - 1, h - 1);
+        context.beginPath();
+        context.rect(x1 + 0.5, top + 0.5, w - 1, h - 1);
+        context.stroke();
         context.restore();
       };
 
-      const { outer, inner } = this.model;
+      const { segments } = this.model;
 
-      drawBox(
-        outer.from, outer.to, outer.low, outer.high,
-        this.colors.outerFill, this.colors.outerStroke, true,
-      );
+      // ── The staircase ──────────────────────────────────────────────────────
+      for (const seg of segments) {
+        const x1 = xAt(seg.from, 0);
+        const x2 = xAt(seg.to, width);
+        const yEntry = yAt(seg.entry);
+        if (yEntry === null) continue;
 
-      if (inner) {
-        const win = this.model.inProfit;
-        drawBox(
-          inner.from, inner.to, inner.low, inner.high,
-          win ? this.colors.profitFill   : this.colors.lossFill,
-          win ? this.colors.profitStroke : this.colors.lossStroke,
-        );
-      }
+        if (seg.target != null) {
+          const yT = yAt(seg.target);
+          if (yT !== null) {
+            zone(x1, x2, yEntry, yT, this.colors.profitFill, this.colors.profitStroke);
+          }
+        }
+        if (seg.stop != null) {
+          const yS = yAt(seg.stop);
+          if (yS !== null) {
+            zone(x1, x2, yEntry, yS, this.colors.lossFill, this.colors.lossStroke);
+          }
+        }
 
-      // Dashed entry line, spanning the box width only.
-      const yEntry = yAt(this.model.entryPrice);
-      if (yEntry !== null) {
-        const x1 = xAt(outer.from, 0);
-        const x2 = xAt(outer.to, width);
+        // Entry line for this rung — solid, the spine of the position tool.
         context.save();
         context.strokeStyle = this.colors.entryLine;
-        context.lineWidth   = 1;
-        context.setLineDash([5, 4]);
+        context.lineWidth   = 1.5;
         context.beginPath();
         context.moveTo(x1, yEntry + 0.5);
-        context.lineTo(x2, yEntry + 0.5);
+        context.lineTo(Math.max(x2, x1 + 1), yEntry + 0.5);
         context.stroke();
         context.restore();
       }
+
+      // ── Risers: the vertical jump between consecutive rungs ────────────────
+      // Without these the staircase reads as disconnected floating lines.
+      if (segments.length > 1) {
+        context.save();
+        context.strokeStyle = this.colors.entryLine;
+        context.lineWidth   = 1;
+        context.setLineDash([2, 3]);
+        for (let i = 1; i < segments.length; i++) {
+          const yPrev = yAt(segments[i - 1].entry);
+          const yCur  = yAt(segments[i].entry);
+          if (yPrev === null || yCur === null) continue;
+          const x = xAt(segments[i].from, 0);
+          context.beginPath();
+          context.moveTo(x + 0.5, yPrev);
+          context.lineTo(x + 0.5, yCur);
+          context.stroke();
+        }
+        context.restore();
+      }
+
+      // ── Progress band: how far price has come since the fill ───────────────
+      const inner = this.model.inner;
+      if (inner) {
+        const yLow  = yAt(inner.low);
+        const yHigh = yAt(inner.high);
+        if (yLow !== null && yHigh !== null) {
+          const x1 = xAt(inner.from, 0);
+          const x2 = xAt(inner.to, width);
+          context.save();
+          context.fillStyle = this.colors.progressFill;
+          context.fillRect(x1, Math.min(yLow, yHigh),
+                           Math.max(x2 - x1, 1), Math.max(Math.abs(yLow - yHigh), 1));
+          context.restore();
+        }
+      }
+
+      // ── Labels on the right edge, TradingView-style ────────────────────────
+      const last = segments[segments.length - 1];
+      const xEnd = xAt(last.to, width);
+      const px   = (v: number) => v.toFixed(this.decimals);
+
+      const chip = (y: number | null, text: string, accent: string) => {
+        if (y === null) return;
+        context.save();
+        context.font = FONT;
+        const w = context.measureText(text).width + 10;
+        const h = 16;
+        const x = Math.min(xEnd + 6, width - w - 2);
+        context.fillStyle = this.colors.label;
+        context.beginPath();
+        context.rect(x, y - h / 2, w, h);
+        context.fill();
+        context.strokeStyle = accent;
+        context.lineWidth = 1;
+        context.stroke();
+        context.fillStyle = this.colors.labelText;
+        context.textBaseline = 'middle';
+        context.fillText(text, x + 5, y + 0.5);
+        context.restore();
+      };
+
+      const { riskPct, rewardPct, riskReward } = this.model;
+      if (last.target != null) {
+        chip(yAt(last.target),
+             `TP ${px(last.target)}${rewardPct != null ? `  +${rewardPct.toFixed(2)}%` : ''}`,
+             this.colors.profitStroke);
+      }
+      if (last.stop != null) {
+        chip(yAt(last.stop),
+             `SL ${px(last.stop)}${riskPct != null ? `  −${riskPct.toFixed(2)}%` : ''}`,
+             this.colors.lossStroke);
+      }
+      chip(yAt(last.entry),
+           riskReward != null
+             ? `${px(last.entry)}  R:R ${riskReward.toFixed(2)}`
+             : px(last.entry),
+           this.colors.entryLine);
     });
   }
 }
@@ -142,6 +226,7 @@ export class RiskRewardPrimitive implements ISeriesPrimitive<Time> {
   constructor(
     private model: RiskRewardModel,
     private readonly colors: RiskRewardColors = DEFAULT_COLORS,
+    private decimals: number = 2,
   ) {}
 
   attached(param: SeriesAttachedParameter<Time, SeriesType>): void {
@@ -156,8 +241,9 @@ export class RiskRewardPrimitive implements ISeriesPrimitive<Time> {
     this.requestUpdate = undefined;
   }
 
-  setModel(model: RiskRewardModel): void {
+  setModel(model: RiskRewardModel, decimals?: number): void {
     this.model = model;
+    if (decimals != null) this.decimals = decimals;
     this.requestUpdate?.();
   }
 
@@ -165,7 +251,9 @@ export class RiskRewardPrimitive implements ISeriesPrimitive<Time> {
     if (!this.chart || !this.series) return [];
     return [
       new RiskRewardPaneView(
-        new RiskRewardRenderer(this.chart, this.series, this.model, this.colors),
+        new RiskRewardRenderer(
+          this.chart, this.series, this.model, this.colors, this.decimals,
+        ),
       ),
     ];
   }

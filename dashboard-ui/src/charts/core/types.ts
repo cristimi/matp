@@ -41,6 +41,24 @@ export interface GeometryData {
   swing_lows?:     Array<[number, number]>;
 }
 
+/**
+ * One price the order actually rested at, and from when.
+ *
+ * A resting limit order is amended in place, so the overlay's single
+ * `entry_price` is only ever the LATEST one. Drawing it from `placed_at`
+ * backdates today's level over yesterday's bars — a buy limit then appears to
+ * have sat under the market for hours without filling. These steps carry the
+ * real walk. `source: 'backfill'` means the two ends are real but the steps
+ * between them were never recorded.
+ */
+export interface OverlayStep {
+  at:     number;
+  entry:  number | null;
+  stop:   number | null;
+  target: number | null;
+  source: string;
+}
+
 export interface ChartOverlay {
   side:          string | null;
   status:        string | null;
@@ -52,6 +70,8 @@ export interface ChartOverlay {
   current_price: number | null;
   closed_at:     number | null;
   close_price:   number | null;
+  /** Oldest first. Absent or empty ⇒ draw one box, as before. */
+  steps?:        OverlayStep[];
 }
 
 /** Response body of GET /positions/:id/candles and /orders/:id/candles. */
@@ -80,10 +100,37 @@ export interface PriceTimeBox {
   high: number;
 }
 
+/**
+ * One rung of the staircase: the levels the order held over one span of time.
+ *
+ * Drawn TradingView-style — a reward zone from entry to target and a risk zone
+ * from entry to stop, rather than one box spanning stop to target.
+ */
+export interface RiskRewardSegment {
+  from:   number;
+  to:     number;
+  entry:  number;
+  stop:   number | null;
+  target: number | null;
+}
+
 export interface RiskRewardModel {
   direction: 'long' | 'short';
 
-  /** Full stop → target span, from the bar the order was placed to the end. */
+  /**
+   * The levels over time. One entry when the order was never amended (or has no
+   * recorded history), one per recorded price otherwise. Always non-empty.
+   */
+  segments: RiskRewardSegment[];
+  /** True when the segments came from recorded history rather than one snapshot. */
+  stepped: boolean;
+  /**
+   * True when some segment was reconstructed by the migration rather than
+   * recorded live — the ends are real, the walk between them is not.
+   */
+  reconstructed: boolean;
+
+  /** Bounding box over every segment. Used for culling and for the fill span. */
   outer: PriceTimeBox;
   /** Entry → current price, from the bar the order filled. Null while unfilled. */
   inner: PriceTimeBox | null;

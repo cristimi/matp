@@ -45,6 +45,24 @@ export interface Candle {
   volume: number;
 }
 
+/**
+ * One price the order actually rested at, and from when. A resting limit order
+ * is amended in place, so `entry_price` alone is only ever the LATEST price —
+ * pairing it with `placed_at` draws today's level back to placement time. The
+ * steps carry the real walk so the chart can draw it as a staircase.
+ *
+ * `source: 'backfill'` marks a pair reconstructed by migration 065 from the
+ * original webhook plus the row's current values: the two ends are real, the
+ * steps between them were never recorded and are gone.
+ */
+export interface OverlayStep {
+  at:      number;
+  entry:   number | null;
+  stop:    number | null;
+  target:  number | null;
+  source:  string;
+}
+
 export interface ChartOverlay {
   side:          string | null;
   status:        string | null;
@@ -56,6 +74,8 @@ export interface ChartOverlay {
   current_price: number | null;   // last candle close, so box and candles agree
   closed_at:     number | null;
   close_price:   number | null;
+  /** Oldest first. Empty for orders with no recorded history (draws as one box). */
+  steps:         OverlayStep[];
 }
 
 export interface ChartPayload {
@@ -238,6 +258,34 @@ async function latestGeometry(
   return { data: rows[0].geometry_data, at: toMs(rows[0].triggered_at) };
 }
 
+/**
+ * The prices an order actually rested at, oldest first.
+ *
+ * Rows whose price is null are dropped: a step with no entry price has nothing
+ * to draw. Stop and target are carried per step because an amend re-fits those
+ * too, so a staircase that stepped only the entry would still show today's stop
+ * over yesterday's bars.
+ */
+async function loadSteps(orderId: string | null): Promise<OverlayStep[]> {
+  if (!orderId) return [];
+  const { rows } = await getPool().query(
+    `SELECT at, price, sl_price, tp_price, source
+       FROM order_price_history
+      WHERE order_id = $1 AND price IS NOT NULL
+      ORDER BY seq`,
+    [orderId],
+  );
+  return rows
+    .map(r => ({
+      at:     toMs(r.at) as number,
+      entry:  toNum(r.price),
+      stop:   toNum(r.sl_price),
+      target: toNum(r.tp_price),
+      source: String(r.source ?? ''),
+    }))
+    .filter(s => s.at != null && Number.isFinite(s.at));
+}
+
 export function clampLimit(raw: any): number {
   const n = parseInt(String(raw ?? ''), 10);
   if (!Number.isFinite(n) || n <= 0) return DEFAULT_LIMIT;
@@ -327,6 +375,7 @@ export async function buildPositionChart(
             sp.symbol,
             sp.side,
             sp.status,
+            sp.opening_order_id,
             sp.entry_price,
             sp.opened_at,
             sp.closed_at,
@@ -370,6 +419,7 @@ export async function buildPositionChart(
       target_price: toNum(r.tp_price),
       closed_at:    toMs(r.closed_at),
       close_price:  toNum(r.closing_price),
+      steps:        await loadSteps(r.opening_order_id),
     },
   );
 }
@@ -430,6 +480,7 @@ export async function buildOrderChart(
       target_price: toNum(r.tp_price),
       closed_at:    null,
       close_price:  null,
+      steps:        await loadSteps(orderId),
     },
   );
 }
@@ -514,6 +565,7 @@ export async function buildSignalChart(
       target_price: hasOrder ? toNum(r.tp_price) : null,
       closed_at:    null,
       close_price:  null,
+      steps:        hasOrder ? await loadSteps(r.order_id) : [],
     },
     { geometry: r.geometry_data ?? null, geometryAt: triggeredAt, endMs },
   );

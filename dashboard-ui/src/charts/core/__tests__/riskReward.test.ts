@@ -34,6 +34,129 @@ function overlay(patch: Partial<ChartOverlay> = {}): ChartOverlay {
   };
 }
 
+// ── the amend staircase ──────────────────────────────────────────────────────
+
+describe('computeRiskReward — amended orders', () => {
+  const series = candles(24, () => 105);
+
+  it('draws one segment when the order has no recorded history', () => {
+    const m = computeRiskReward({ overlay: overlay(), candles: series, barSeconds: 3600 })!;
+    expect(m.stepped).toBe(false);
+    expect(m.reconstructed).toBe(false);
+    expect(m.segments).toHaveLength(1);
+    expect(m.segments[0].entry).toBe(100);
+    expect(m.segments[0].from).toBe(T0 + 10 * HOUR);
+    expect(m.segments[0].to).toBe(series[series.length - 1].time);
+  });
+
+  it('gives each recorded price its own span, ending where the next begins', () => {
+    const m = computeRiskReward({
+      overlay: overlay({
+        entry_price: 104, stop_price: 94, target_price: 134,
+        steps: [
+          { at: T0 + 10 * HOUR, entry: 100, stop: 90, target: 130, source: 'placement' },
+          { at: T0 + 14 * HOUR, entry: 102, stop: 92, target: 132, source: 'amend' },
+          { at: T0 + 18 * HOUR, entry: 104, stop: 94, target: 134, source: 'amend' },
+        ],
+      }),
+      candles: series,
+      barSeconds: 3600,
+    })!;
+
+    expect(m.stepped).toBe(true);
+    expect(m.segments).toHaveLength(3);
+    expect(m.segments[0]).toMatchObject({ from: T0 + 10 * HOUR, to: T0 + 14 * HOUR, entry: 100 });
+    expect(m.segments[1]).toMatchObject({ from: T0 + 14 * HOUR, to: T0 + 18 * HOUR, entry: 102 });
+    expect(m.segments[2].entry).toBe(104);
+    expect(m.segments[2].to).toBe(series[series.length - 1].time);
+  });
+
+  it('steps the stop and target too, not just the entry', () => {
+    const m = computeRiskReward({
+      overlay: overlay({
+        steps: [
+          { at: T0 + 10 * HOUR, entry: 100, stop: 90, target: 130, source: 'placement' },
+          { at: T0 + 16 * HOUR, entry: 100, stop: 80, target: 150, source: 'amend' },
+        ],
+      }),
+      candles: series,
+      barSeconds: 3600,
+    })!;
+    expect(m.segments[0]).toMatchObject({ stop: 90, target: 130 });
+    expect(m.segments[1]).toMatchObject({ stop: 80, target: 150 });
+    // The bounding box has to cover every rung, not just the newest.
+    expect(m.outer.low).toBe(80);
+    expect(m.outer.high).toBe(150);
+  });
+
+  it('flags a reconstructed history so the UI can say the walk is incomplete', () => {
+    const m = computeRiskReward({
+      overlay: overlay({
+        steps: [
+          { at: T0 + 10 * HOUR, entry: 100, stop: 90, target: 130, source: 'backfill' },
+          { at: T0 + 20 * HOUR, entry: 108, stop: 98, target: 138, source: 'backfill' },
+        ],
+      }),
+      candles: series,
+      barSeconds: 3600,
+    })!;
+    expect(m.stepped).toBe(true);
+    expect(m.reconstructed).toBe(true);
+  });
+
+  it('sorts out-of-order steps and ignores ones with no price', () => {
+    const m = computeRiskReward({
+      overlay: overlay({
+        steps: [
+          { at: T0 + 18 * HOUR, entry: 104, stop: 94, target: 134, source: 'amend' },
+          { at: T0 + 10 * HOUR, entry: 100, stop: 90, target: 130, source: 'placement' },
+          { at: T0 + 12 * HOUR, entry: null, stop: 92, target: 132, source: 'amend' },
+        ],
+      }),
+      candles: series,
+      barSeconds: 3600,
+    })!;
+    expect(m.segments.map(s => s.entry)).toEqual([100, 104]);
+  });
+
+  it('collapses steps that fall outside the charted window into one rung', () => {
+    // Every step predates the series, so they all snap onto the first bar and
+    // would otherwise draw as a stack of zero-width rungs.
+    const m = computeRiskReward({
+      overlay: overlay({
+        placed_at: T0 - 50 * HOUR,
+        steps: [
+          { at: T0 - 50 * HOUR, entry: 100, stop: 90, target: 130, source: 'placement' },
+          { at: T0 - 40 * HOUR, entry: 101, stop: 91, target: 131, source: 'amend' },
+          { at: T0 - 30 * HOUR, entry: 102, stop: 92, target: 132, source: 'amend' },
+        ],
+      }),
+      candles: series,
+      barSeconds: 3600,
+    })!;
+    expect(m.segments).toHaveLength(1);
+    expect(m.segments[0].entry).toBe(102);   // the last one still standing
+    expect(m.segments[0].to).toBe(series[series.length - 1].time);
+  });
+
+  it('keeps the risk/reward numbers on the newest levels, not the first', () => {
+    const m = computeRiskReward({
+      overlay: overlay({
+        entry_price: 200, stop_price: 180, target_price: 260,
+        steps: [
+          { at: T0 + 10 * HOUR, entry: 100, stop: 90, target: 130, source: 'placement' },
+          { at: T0 + 16 * HOUR, entry: 200, stop: 180, target: 260, source: 'amend' },
+        ],
+      }),
+      candles: series,
+      barSeconds: 3600,
+    })!;
+    expect(m.entryPrice).toBe(200);
+    expect(m.riskPct).toBeCloseTo(10, 6);    // 200 → 180
+    expect(m.rewardPct).toBeCloseTo(30, 6);  // 200 → 260
+  });
+});
+
 // ── snapToBar ────────────────────────────────────────────────────────────────
 
 describe('snapToBar', () => {

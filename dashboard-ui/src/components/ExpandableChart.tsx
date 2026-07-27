@@ -201,10 +201,19 @@ export function ChartPanel({ path }: { path: string }) {
     ? [...rungs, payload.timeframe]
     : rungs;
 
+  // A resting order is re-priced in place, so "one entry price" is only the
+  // latest. Say how many times it moved, and admit when the walk between the
+  // ends was never recorded (orders that predate the price history).
+  const moves = rr?.stepped ? rr.segments.length - 1 : 0;
+
   const details = [
     rr?.riskPct   != null && { label: 'Risk',   value: `${rr.riskPct.toFixed(2)}%`,   color: 'var(--red)' },
     rr?.rewardPct != null && { label: 'Reward', value: `${rr.rewardPct.toFixed(2)}%`, color: 'var(--green)' },
     rr?.riskReward != null && { label: 'R:R',   value: rr.riskReward.toFixed(2) },
+    moves > 0 && {
+      label: 'Price moved',
+      value: rr!.reconstructed ? `${moves}× (partly recorded)` : `${moves}×`,
+    },
   ].filter(Boolean) as Array<{ label: string; value: string; color?: string }>;
 
   return (

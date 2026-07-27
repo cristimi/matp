@@ -357,6 +357,27 @@ async def _log_order(
             signal_log_id,
         )
 
+        # seq 0 of the price history. Written here rather than after the exchange
+        # accepts, so the original intent is on record even for an order the
+        # venue rejects. Priced orders only — a market order never rests, so it
+        # has no price to step. See migration 065.
+        if payload.price is not None:
+            await conn.execute(
+                """
+                INSERT INTO order_price_history
+                    (order_id, at, seq, price, sl_price, tp_price, size, source)
+                VALUES ($1, $2, 0, $3, $4, $5, $6, 'placement')
+                ON CONFLICT (order_id, seq) DO NOTHING
+                """,
+                order_id,
+                datetime.now(timezone.utc),
+                payload.price,
+                payload.sl_price,
+                payload.tp_price,
+                payload.size,
+            )
+
+
 async def _update_order_status(
     pool, order_id: uuid.UUID, status: str, payload: WebhookPayload,
     result: OrderResult = None,
@@ -695,7 +716,7 @@ async def amend_order_for_strategy(
         new_order_id       = result.get("order_id") or order_id
         cancelled_order_id = result.get("cancelled_order_id") or order_id
         async with pool.acquire() as conn:
-            await conn.execute(
+            row = await conn.fetchrow(
                 """
                 UPDATE orders
                 SET exchange_order_id = $1,
@@ -704,6 +725,7 @@ async def amend_order_for_strategy(
                     tp_price = COALESCE($4, tp_price),
                     sl_price = COALESCE($5, sl_price)
                 WHERE exchange_order_id = $6 AND strategy_id = $7 AND status = 'pending'
+                RETURNING id, price, sl_price, tp_price, size
                 """,
                 str(new_order_id),
                 Decimal(str(new_price)) if new_price is not None else None,
@@ -713,6 +735,27 @@ async def amend_order_for_strategy(
                 str(cancelled_order_id),
                 strategy_id,
             )
+            # Append the new resting price. Without this the row keeps its
+            # original received_at next to a price set hours later, and the chart
+            # draws today's level back to placement time (migration 065). The
+            # post-UPDATE values are used, not the request's, so a partial amend
+            # (price only, no tp/sl) records what the order actually holds.
+            if row is not None:
+                await conn.execute(
+                    """
+                    INSERT INTO order_price_history
+                        (order_id, at, seq, price, sl_price, tp_price, size,
+                         exchange_order_id, source)
+                    SELECT $1, $2,
+                           COALESCE(MAX(seq), -1) + 1,
+                           $3, $4, $5, $6, $7, 'amend'
+                      FROM order_price_history WHERE order_id = $1
+                    """,
+                    row["id"],
+                    datetime.now(timezone.utc),
+                    row["price"], row["sl_price"], row["tp_price"], row["size"],
+                    str(new_order_id),
+                )
     elif result.get("original_cancelled"):
         # Blofin cancel-then-replace: the cancel went through but the replacement was
         # rejected — the order is truly gone, not "unchanged". Reflect that locally so a

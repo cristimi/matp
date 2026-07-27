@@ -219,7 +219,7 @@ class LightweightChartHandle implements ChartHandle {
       tag(riskReward.entryPrice,  COLORS.entry,  'ENT', true);
       tag(riskReward.stopPrice,   COLORS.stop,   'SL', false);
 
-      this.primitive = new RiskRewardPrimitive(riskReward);
+      this.primitive = new RiskRewardPrimitive(riskReward, undefined, priceDecimals);
       this.candles.attachPrimitive(this.primitive);
     }
 

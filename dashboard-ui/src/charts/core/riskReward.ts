@@ -1,16 +1,24 @@
 /**
- * Layer A — the risk/reward box, computed in pure price/time space.
+ * Layer A — the risk/reward zones, computed in pure price/time space.
  *
- * Two rectangles:
- *   outer  fixed height spanning stop → target, from the bar the order was placed
- *          through to the end of the series (or the close, for a closed position).
- *   inner  the progress box: starts at the bar the order *filled*, and its height
- *          tracks entry → current price, so it visually grows toward the target
- *          or downward toward the stop as price moves.
+ * Shaped like TradingView's Long/Short Position tool: a reward zone from entry
+ * to target and a risk zone from entry to stop, rather than one box spanning
+ * stop to target.
+ *
+ *   segments  one rung per price the order actually rested at. A resting limit
+ *             order is amended in place, so a single entry price would be the
+ *             latest one drawn back over bars it was never live for; the rungs
+ *             put each level over its own span. Orders with no recorded history
+ *             produce exactly one rung and look as they always did.
+ *   outer     bounding box over every rung — culling, and the fill span.
+ *   inner     the progress box: starts at the bar the order *filled*, height
+ *             tracks entry → current price.
  *
  * No pixels, no DOM, no chart library. See types.ts for the contract.
  */
-import type { Candle, ChartOverlay, RiskRewardModel, PriceTimeBox } from './types';
+import type {
+  Candle, ChartOverlay, RiskRewardModel, RiskRewardSegment, PriceTimeBox,
+} from './types';
 
 const LONG_WORDS  = ['long', 'buy', 'open_long', 'bid'];
 const SHORT_WORDS = ['short', 'sell', 'open_short', 'ask'];
@@ -125,11 +133,51 @@ export function computeRiskReward({
   const endRaw = overlay.closed_at ?? lastCandleTime ?? placed;
   const end    = Math.max(onGrid(endRaw), placed);
 
+  // ── Segments: the staircase ────────────────────────────────────────────────
+  // Each recorded price runs until the next one replaces it, so the levels sit
+  // over the bars they were actually live for. Steps outside the charted window
+  // collapse onto its edges (snapToSeries clamps), and the collapsed duplicates
+  // are dropped so a long-lived order zoomed to its last hour draws one rung
+  // rather than a dozen zero-width ones.
+  const rawSteps = (overlay.steps ?? [])
+    .filter(s => s.entry != null && Number.isFinite(s.entry) && Number.isFinite(s.at))
+    .sort((a, b) => a.at - b.at);
+
+  const stepped = rawSteps.length > 0;
+  const reconstructed = rawSteps.some(s => s.source === 'backfill');
+
+  let segments: RiskRewardSegment[];
+  if (stepped) {
+    const built: RiskRewardSegment[] = [];
+    rawSteps.forEach((s, i) => {
+      const from = Math.max(onGrid(s.at), placed);
+      const to   = i + 1 < rawSteps.length
+        ? Math.max(onGrid(rawSteps[i + 1].at), from)
+        : end;
+      built.push({
+        from,
+        to: Math.max(to, from),
+        entry:  s.entry as number,
+        stop:   s.stop   ?? null,
+        target: s.target ?? null,
+      });
+    });
+    // Keep only rungs with real width, plus always the last one so a fully
+    // collapsed history still draws something.
+    segments = built.filter((s, i) => s.to > s.from || i === built.length - 1);
+    if (!segments.length) segments = [built[built.length - 1]];
+  } else {
+    segments = [{ from: placed, to: end, entry, stop, target }];
+  }
+
+  const levels = segments.flatMap(s =>
+    [s.entry, s.stop, s.target].filter((v): v is number => v != null));
+
   const outer: PriceTimeBox = {
-    from: placed,
-    to:   end,
-    low:  Math.min(...[stop, target, entry].filter((v): v is number => v != null)),
-    high: Math.max(...[stop, target, entry].filter((v): v is number => v != null)),
+    from: segments[0].from,
+    to:   segments[segments.length - 1].to,
+    low:  Math.min(...levels),
+    high: Math.max(...levels),
   };
 
   // ── Inner progress box ─────────────────────────────────────────────────────
@@ -158,6 +206,9 @@ export function computeRiskReward({
 
   return {
     direction,
+    segments,
+    stepped,
+    reconstructed,
     outer,
     inner,
     entryPrice:   entry,
