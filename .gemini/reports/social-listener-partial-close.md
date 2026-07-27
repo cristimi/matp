@@ -185,10 +185,13 @@ off at 64400, leave the rest running for TP2. That is what the trader asked for.
 
 ## Two things worth knowing
 
-**1. Confidence 0.55 against a floor of 0.50.** The model is less sure of TRIM than it
-was of the (wrong) OPEN, mostly because the post never names BTC. It passes, but with
-little room. Worth watching over the next few management cards before deciding whether
-the floor or the prompt needs adjusting.
+**1. Confidence sits close to the floor.** Two runs of the same post returned 0.55 and
+0.62 against a `confidence_floor` of 0.50 (temperature is 0; the spread is the model's
+own). The classification, direction and trigger price were identical both times — only
+the confidence moved. The model is less sure of TRIM than it was of the (wrong) OPEN,
+mostly because the post never names BTC. It passes, but with little room. Worth
+watching over the next few management cards before deciding whether the floor or the
+prompt needs adjusting.
 
 **2. This specific post can no longer be replayed through the normal path.** It was
 posted at 14:41; `max_signal_age_seconds` is 900s, so re-processing it now returns
@@ -203,7 +206,34 @@ VALUES ('telegram:AstronomerZero', 9790, 'BTC', 'SHORT', 0.5, 64400,
         now() + interval '48 hours');
 ```
 
-Not done — that is a live trading decision, not a deploy step.
+**Done, on the operator's explicit instruction** — but through the real code path, not
+by hand-written SQL. A one-off script re-extracted the post under v3 and called the
+same `evaluate()`, with only the age backstop bypassed (`now = posted_at + 66s`, the
+post's real decision latency). It writes the parked trim and nothing else: firing stays
+with the watcher, so the script could not place an order even if the level were already
+met.
+
+```
+$ docker compose exec -T social-listener python /app/arm_9790.py
+BEFORE  signal_log: v2 OPEN SHORT conf=0.72
+AFTER   extractor v3 TRIM SHORT conf=0.62 trigger=64400.0
+DECISION pending/trim_level_pending emit=False park=True frac=0.5 trigger=64400.0
+PARKED — watcher now owns it
+
+ channel_msg_id | asset | side  | size_fraction | trigger_price | status  |          expires_at
+----------------+-------+-------+---------------+---------------+---------+-------------------------------
+           9790 | BTC   | SHORT |           0.5 |         64400 | pending | 2026-07-29 15:18:35.345693+00
+
+ channel_msg_id | action_type | from_state | to_state |   intended_signal   | decision |       reason       | size_fraction
+----------------+-------------+------------+----------+---------------------+----------+--------------------+---------------
+           9790 | TRIM        | SHORT      | SHORT    | partial_close_short | pending  | trim_level_pending |           0.5
+```
+
+Note this rewrote post 9790's own `social_signal_log` and `social_shadow_orders` rows
+from the v2 verdict (`OPEN SHORT conf=0.72`, `skipped/no_state_change`) to the v3 one.
+Both tables hold one row per post, so re-judging a post overwrites its row rather than
+adding a second. The original verdict is preserved in this report and in
+`social-listener-partial-tp-not-taken.md`.
 
 ## Still not built (in the roadmap backlog)
 
