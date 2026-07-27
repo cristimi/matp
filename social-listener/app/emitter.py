@@ -31,7 +31,15 @@ _STEPS = {
     "close_short":   ["close_short"],
     "flip_to_long":  ["close_short", "open_long"],
     "flip_to_short": ["close_long", "open_short"],
+    # A partial close is the ordinary close signal carrying an explicit size and
+    # no `target_position` — order-listener's close path reduces by that size and
+    # clamps it to the size it believes is open, so we can never overshoot into a
+    # full close by sending a stale number.
+    "partial_close_long":  ["partial_close_long"],
+    "partial_close_short": ["partial_close_short"],
 }
+
+_PARTIAL = {"partial_close_long", "partial_close_short"}
 
 # webhook step -> order side
 _SIDE = {
@@ -39,6 +47,15 @@ _SIDE = {
     "close_short": "buy",
     "open_short":  "sell",
     "close_long":  "sell",
+    "partial_close_long":  "sell",
+    "partial_close_short": "buy",
+}
+
+# webhook step -> the `signal` value order-listener's payload schema accepts.
+# Everything else passes through unchanged.
+_WEBHOOK_SIGNAL = {
+    "partial_close_long":  "close_long",
+    "partial_close_short": "close_short",
 }
 
 
@@ -54,37 +71,51 @@ def _size_for(strategy: dict, mark: float) -> float:
 
 
 def _payload(step: str, asset: str, size: float, token: str) -> dict:
+    meta = {"source": settings.source_tag}
+    if step in _PARTIAL:
+        meta["intent"] = step
     body = {
         "base_asset":      asset,
         "quote_asset":     settings.execution_quote_asset,
         "side":            _SIDE[step],
         "order_type":      "market",
         "size":            size,
-        "signal":          step,
+        "signal":          _WEBHOOK_SIGNAL.get(step, step),
         "timestamp":       datetime.now(timezone.utc).isoformat(),
         "token":           token,
         "signal_source":   "social_listener",
-        "signal_metadata": {"source": settings.source_tag},
+        "signal_metadata": meta,
     }
     if step in ("close_long", "close_short"):
         # State-sync close: order-listener looks up the open position and closes
-        # it whole, so `size` is not what decides the closed quantity.
+        # it whole, so `size` is not what decides the closed quantity. A partial
+        # close must NOT set this — it is precisely the size that decides there.
         body["target_position"] = "flat"
     return body
 
 
-async def emit(signal: str, asset: str, mark: float, strategy: dict) -> tuple[bool, str]:
+async def emit(signal: str, asset: str, mark: float, strategy: dict,
+               close_size: float | None = None) -> tuple[bool, str]:
     """Fire the webhook step(s) for one decided transition.
+
+    `close_size` is the base-asset quantity for a partial close, and is required
+    for one — a partial with no size would fall back to entry sizing and could
+    reduce far more than the trader asked for.
 
     Returns (ok, detail). ok is True only when every step returned 2xx.
     """
     steps = _STEPS.get(signal)
     if not steps:
         return False, f"no webhook mapping for signal {signal!r}"
-    if mark is None or mark <= 0:
-        return False, "no mark price — refusing to send an unsized order"
 
-    size = _size_for(strategy, mark)
+    if signal in _PARTIAL:
+        if close_size is None or close_size <= 0:
+            return False, "no close size — refusing to send an unsized partial close"
+        size = round(float(close_size), 8)
+    else:
+        if mark is None or mark <= 0:
+            return False, "no mark price — refusing to send an unsized order"
+        size = _size_for(strategy, mark)
     if size <= 0:
         return False, f"computed size {size} is not tradeable"
 

@@ -8,7 +8,8 @@ from pydantic import BaseModel, Field
 from app.config import settings
 
 log = logging.getLogger(__name__)
-EXTRACTOR_VERSION = "v2"  # v2: reads the attached chart image alongside the text
+EXTRACTOR_VERSION = "v3"  # v3: TRIM is actionable — size_fraction + trigger_price
+                          # v2: reads the attached chart image alongside the text
 
 SYSTEM_PROMPT = """You extract a crypto trader's STATED position changes from a social post.
 You are a transcriber, not an analyst. You never decide whether a trade is good or likely.
@@ -21,10 +22,10 @@ Do NOT interpret the price action itself — candles, trendlines, indicators and
 no words are not statements. Never infer a trade from what the chart "looks like".
 
 Set is_actionable=true ONLY when the post asserts a NEW, concrete change to the trader's OWN
-position: opening, flipping, or fully closing a position.
+position: opening, flipping, fully closing, or taking PART of a position off.
 
 Set is_actionable=false for everything else, including:
-- P&L brags / recaps / "up X RR" / "TP hit" celebrations of an EXISTING trade
+- P&L brags / recaps / "up X RR" celebrations of a trade the post does not change
 - macro commentary, predictions, "looking for an entry", "a long next?"
 - hype, community chatter, emoji-only posts, anything without a concrete new entry/exit
 - RETROSPECTIVE chart annotations: a marker on an earlier candle explaining a trade the
@@ -35,9 +36,26 @@ Set is_actionable=false for everything else, including:
 action_type:
   OPEN  - newly entering a position
   FLIP  - closing one side and entering the opposite in the same post
-  CLOSE - fully closing a position
-  ADD / TRIM - scaling an existing position (always set is_actionable=false for these)
+  CLOSE - fully closing a position, leaving nothing on
+  TRIM  - taking PART of an existing position off, leaving the rest running
+  ADD   - scaling INTO an existing position. Always set is_actionable=false for ADD.
   NONE  - not a position change
+
+TRIM vs CLOSE. "closed", "out", "flat", "all out", "done with it" -> CLOSE. Anything that
+leaves the trade alive -> TRIM: "took half off", "trimmed", "partials", "banked some",
+"lock in W", "lock in a win", "TP1", "risk off by taking some profit", "secure profit".
+
+TRIM vs recap. A trim is actionable when the post states it as what happens to the trade
+NOW or at a named level. "TP1 hit, +3R, told you" describing something already done and
+already announced is a recap -> is_actionable=false, action_type=NONE.
+
+MANAGEMENT CARDS. A card that repeats an entry the trader is ALREADY in and adds profit or
+stop handling is trade MANAGEMENT, not a new entry. Do not answer OPEN merely because the
+card prints "Entry:". When the card's new content is where profit comes off, answer TRIM
+and put that level in trigger_price. Signs of management rather than a fresh call: the
+entry is described in the past ("Entry: 65.5k" alongside "risk off the trade"), the post
+talks about protecting or banking a move that already happened, or it hands out levels for
+a trade the channel has already been shown.
 
 DIRECTION FROM A TRADE CARD. Posts often list levels without the words "long" or "short":
 
@@ -62,9 +80,18 @@ If the levels are ambiguous and the post never states a side, leave direction nu
 lower confidence rather than guessing.
 
 asset           : uppercase base symbol (BTC, ETH). null if none.
-direction       : LONG or SHORT, the NEW resulting direction. null if none.
+direction       : LONG or SHORT. For OPEN/FLIP/CLOSE it is the NEW resulting direction. For
+                  TRIM it is the side of the position being trimmed (a partial profit on a
+                  short is direction=SHORT). null if none.
 reference_price : the entry/exit price the trader cites, as a number ("66.7k" -> 66700). Use a
                   price written in an annotation if the text gives none. null if absent.
+size_fraction   : TRIM only — how much of the position comes off, 0..1. "half" -> 0.5,
+                  "a third" -> 0.33, "most of it" -> 0.75, "a bit"/"some" -> 0.25.
+                  null when the post gives no idea of the amount. null for every other
+                  action_type.
+trigger_price   : TRIM only — the price at which the part comes off, when the post names one
+                  ("Lock in W 64.4k" -> 64400). null when the trim is presented as happening
+                  now, at market. null for every other action_type.
 confidence      : 0..1, how clearly the post states a concrete position change.
 evidence        : where the position change came from — "text", "image", "both", or "none".
 
@@ -77,6 +104,8 @@ class SocialExtraction(BaseModel):
     asset: Optional[str] = None
     direction: Optional[Literal["LONG", "SHORT"]] = None
     reference_price: Optional[float] = None
+    size_fraction: Optional[float] = Field(default=None, ge=0, le=1)
+    trigger_price: Optional[float] = None
     confidence: float = Field(ge=0, le=1)
     evidence: Literal["text", "image", "both", "none"] = "none"
     reasoning: Optional[str] = None
@@ -245,8 +274,13 @@ async def extract(raw_text: str, preview_text: str, image_bytes: bytes | None = 
         )
 
     asset = (result.asset or "").upper() or None
-    # Force scaling events to non-actionable per the contract.
-    is_actionable = result.is_actionable and result.action_type not in ("ADD", "TRIM")
+    # ADD (scaling in) stays non-actionable: sizing a scale-in would need its own
+    # margin decision, and nothing downstream expresses one. TRIM is actionable —
+    # it only ever reduces exposure, which is the safe direction to be wrong in.
+    is_actionable = result.is_actionable and result.action_type != "ADD"
+    # A fraction and a trigger only mean anything on a trim; drop them elsewhere so
+    # a stray value can never reach the sizing path.
+    is_trim = result.action_type == "TRIM"
     return {
         "failed": call_failed,
         "is_actionable": is_actionable,
@@ -254,6 +288,8 @@ async def extract(raw_text: str, preview_text: str, image_bytes: bytes | None = 
         "asset": asset,
         "direction": result.direction,
         "reference_price": result.reference_price,
+        "size_fraction": result.size_fraction if is_trim else None,
+        "trigger_price": result.trigger_price if is_trim else None,
         "confidence": result.confidence,
         "in_whitelist": (asset in _WHITELIST) if asset else False,
         "model": f"{used_provider}:{used_model}",

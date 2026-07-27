@@ -53,7 +53,8 @@ async def load_signal(channel_msg_id: int) -> dict | None:
     async with pool().acquire() as c:
         row = await c.fetchrow(
             """SELECT channel_msg_id, posted_at, is_actionable, action_type,
-                      asset, direction, reference_price, confidence
+                      asset, direction, reference_price, confidence,
+                      size_fraction, trigger_price
                FROM public.social_signal_log
                WHERE source=$1 AND channel_msg_id=$2""",
             settings.source_tag, channel_msg_id,
@@ -87,14 +88,109 @@ async def insert_shadow_order(rec: dict) -> None:
         await c.execute(
             """INSERT INTO public.social_shadow_orders
                (source, channel_msg_id, posted_at, phase, asset, action_type, from_state, to_state,
-                intended_signal, reference_price, mark_price, confidence, decision, reason, mode)
-               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+                intended_signal, reference_price, mark_price, confidence, decision, reason, mode,
+                size_fraction, close_size)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
                ON CONFLICT (source, channel_msg_id) DO NOTHING""",
             settings.source_tag, rec["channel_msg_id"], rec["posted_at"], rec["phase"], rec["asset"],
             rec["action_type"], rec["from_state"], rec["to_state"], rec["intended_signal"],
             rec["reference_price"], rec["mark_price"], rec["confidence"], rec["decision"],
             rec["reason"], rec.get("mode", "shadow"),
+            rec.get("size_fraction"), rec.get("close_size"),
         )
+
+
+async def resolve_shadow_order(channel_msg_id: int, decision: str, reason: str,
+                               mark: float | None, close_size: float | None,
+                               mode: str) -> None:
+    """Update the row a parked trim already wrote, once the watcher settles it.
+
+    social_shadow_orders is one row per post, so a pending trim that later fires
+    must overwrite its own row rather than insert a second one.
+    """
+    async with pool().acquire() as c:
+        await c.execute(
+            """UPDATE public.social_shadow_orders
+               SET decision=$3, reason=$4, mark_price=$5, close_size=$6, mode=$7
+               WHERE source=$1 AND channel_msg_id=$2""",
+            settings.source_tag, channel_msg_id, decision, reason, mark, close_size, mode,
+        )
+
+
+async def open_position(strategy_id: str, asset: str) -> dict | None:
+    """The listener strategy's open position in `asset`, or None.
+
+    Read from strategy_positions, the same record order-listener clamps a partial
+    close against — so the size sent and the size it enforces come from one source.
+    No exchange call is made here; every venue call stays in order-executor.
+    """
+    async with pool().acquire() as c:
+        row = await c.fetchrow(
+            """SELECT id, symbol, side, size, entry_price
+               FROM public.strategy_positions
+               WHERE strategy_id=$1 AND status='open' AND symbol LIKE $2
+               ORDER BY opened_at DESC LIMIT 1""",
+            strategy_id, f"{asset.upper()}%",
+        )
+    return dict(row) if row else None
+
+
+async def insert_pending_trim(rec: dict, ttl_hours: int) -> None:
+    async with pool().acquire() as c:
+        await c.execute(
+            """INSERT INTO public.social_pending_trims
+                 (source, channel_msg_id, asset, side, size_fraction, trigger_price, expires_at)
+               VALUES ($1,$2,$3,$4,$5,$6, now() + ($7 || ' hours')::interval)
+               ON CONFLICT (source, channel_msg_id) DO NOTHING""",
+            settings.source_tag, rec["channel_msg_id"], rec["asset"], rec["side"],
+            rec["size_fraction"], rec["trigger_price"], str(ttl_hours),
+        )
+
+
+async def pending_trims() -> list[dict]:
+    async with pool().acquire() as c:
+        rows = await c.fetch(
+            """SELECT id, channel_msg_id, asset, side, size_fraction, trigger_price
+               FROM public.social_pending_trims
+               WHERE source=$1 AND status='pending'
+               ORDER BY id""",
+            settings.source_tag,
+        )
+    return [dict(r) for r in rows]
+
+
+async def resolve_pending_trim(trim_id: int, status: str, resolution: str) -> None:
+    async with pool().acquire() as c:
+        await c.execute(
+            """UPDATE public.social_pending_trims
+               SET status=$2, resolution=$3, resolved_at=now()
+               WHERE id=$1 AND status='pending'""",
+            trim_id, status, resolution[:500],
+        )
+
+
+async def expire_pending_trims() -> int:
+    """Retire levels the market never reached. Returns how many were retired."""
+    async with pool().acquire() as c:
+        result = await c.execute(
+            """UPDATE public.social_pending_trims
+               SET status='expired', resolution='ttl elapsed', resolved_at=now()
+               WHERE source=$1 AND status='pending' AND expires_at < now()""",
+            settings.source_tag,
+        )
+    return int(result.rsplit(" ", 1)[-1] or 0)
+
+
+async def cancel_pending_trims(asset: str, resolution: str) -> int:
+    """Drop parked trims for an asset whose stance has moved on."""
+    async with pool().acquire() as c:
+        result = await c.execute(
+            """UPDATE public.social_pending_trims
+               SET status='cancelled', resolution=$3, resolved_at=now()
+               WHERE source=$1 AND status='pending' AND asset=$2""",
+            settings.source_tag, asset, resolution[:500],
+        )
+    return int(result.rsplit(" ", 1)[-1] or 0)
 
 
 async def load_execution_strategy(strategy_id: str) -> dict | None:
@@ -152,8 +248,9 @@ async def insert_signal(rec: dict) -> bool:
                is_actionable, action_type, asset, direction, reference_price,
                confidence, in_whitelist, model, extractor_version, raw_llm_json,
                input_tokens, output_tokens, total_tokens, has_image, image_sha,
-               merged_msg_ids)
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
+               merged_msg_ids, size_fraction, trigger_price)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,
+                    $22,$23,$24)
             ON CONFLICT (source, channel_msg_id) DO NOTHING
             """,
             settings.source_tag, rec["channel_msg_id"], rec["posted_at"],
@@ -165,5 +262,6 @@ async def insert_signal(rec: dict) -> bool:
             rec.get("input_tokens"), rec.get("output_tokens"), rec.get("total_tokens"),
             rec.get("has_image", False), rec.get("image_sha"),
             rec.get("merged_msg_ids"),
+            rec.get("size_fraction"), rec.get("trigger_price"),
         )
         return result.endswith("1")

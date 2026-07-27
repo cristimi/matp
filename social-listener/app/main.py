@@ -20,6 +20,87 @@ log = logging.getLogger("social-listener")
 _STRATEGY: dict | None = None
 
 
+async def fire_trim(asset: str, side: str, fraction: float,
+                    mark: float | None) -> tuple[bool, str, float | None]:
+    """Send one partial close for `fraction` of the live position.
+
+    The quantity is derived from strategy_positions, the same record order-listener
+    clamps against, so a stale read can only ever under-close. Returns
+    (ok, detail, close_size).
+    """
+    if _STRATEGY is None:
+        return False, "shadow mode — no strategy armed", None
+
+    pos = await db.open_position(settings.execution_strategy_id, asset)
+    if pos is None:
+        return False, f"no open {asset} position to trim", None
+    if (pos["side"] or "").upper() != side:
+        return False, f"position is {pos['side']}, expected {side}", None
+
+    close_size = round(float(pos["size"]) * fraction, 8)
+    if close_size <= 0:
+        return False, f"computed close size {close_size} is not tradeable", None
+
+    signal = "partial_close_long" if side == "LONG" else "partial_close_short"
+    ok, detail = await emitter.emit(signal, asset, mark, _STRATEGY, close_size=close_size)
+    return ok, detail, (close_size if ok else None)
+
+
+async def _sweep_pending_trims() -> None:
+    """One pass over parked trims: retire the dead, fire the ones the market reached."""
+    expired = await db.expire_pending_trims()
+    if expired:
+        log.info("pending trims: %d expired unreached", expired)
+
+    for t in await db.pending_trims():
+        asset, side = t["asset"], t["side"]
+
+        # The stance can move without this asset's handler running (a flip on
+        # another message, a manual state edit). Re-check before every fire.
+        if await db.get_state(asset) != side:
+            await db.resolve_pending_trim(t["id"], "cancelled", "stance no longer " + side)
+            log.info("parked trim msg %s cancelled: stance left %s", t["channel_msg_id"], side)
+            continue
+
+        mark = await marketdata.get_mark(asset)
+        if mark is None:
+            continue
+        trig = float(t["trigger_price"])
+        if not ((mark <= trig) if side == "SHORT" else (mark >= trig)):
+            continue
+
+        frac = float(t["size_fraction"])
+        if _STRATEGY is None:
+            await db.resolve_pending_trim(t["id"], "fired", "shadow mode")
+            await db.resolve_shadow_order(t["channel_msg_id"], "acted",
+                                          "trim_level_reached", mark, None, "shadow")
+            log.info("SHADOW trim msg %s %s %.0f%% — level %s reached at %s",
+                     t["channel_msg_id"], side, frac * 100, trig, mark)
+            continue
+
+        ok, detail, close_size = await fire_trim(asset, side, frac, mark)
+        if ok:
+            await db.resolve_pending_trim(t["id"], "fired", detail)
+            await db.resolve_shadow_order(t["channel_msg_id"], "acted",
+                                          "trim_level_reached", mark, close_size, "live")
+            log.info("LIVE trim msg %s %s %.0f%% (%s) at %s -> %s",
+                     t["channel_msg_id"], side, frac * 100, close_size, mark, detail)
+        else:
+            # Left pending on purpose: a transient failure gets the next sweep, and
+            # the TTL is what eventually retires a trim that can never be sent.
+            log.error("TRIM FAILED msg %s %s: %s — left parked",
+                      t["channel_msg_id"], side, detail)
+
+
+async def _pending_trim_loop() -> None:
+    while True:
+        await asyncio.sleep(settings.pending_trim_check_seconds)
+        try:
+            await _sweep_pending_trims()
+        except Exception:  # noqa: BLE001
+            log.exception("pending trim loop error")
+
+
 async def handle(msgs, phase: str):
     """
     Judge one post. `msgs` is the burst of Telegram messages that make it up —
@@ -95,15 +176,24 @@ async def handle(msgs, phase: str):
         # exchange does not hold. The cost of that choice is a missed trade,
         # which is the safe direction to be wrong in.
         mode = "shadow"
-        if d["advance"] and asset and phase == "live" and _STRATEGY is not None:
-            ok, detail = await emitter.emit(d["intended_signal"], asset, mark, _STRATEGY)
+        close_size = None
+        if d["emit"] and asset and phase == "live" and _STRATEGY is not None:
+            if d["is_trim"]:
+                ok, detail, close_size = await fire_trim(
+                    asset, cur, float(d["size_fraction"]), mark)
+            else:
+                ok, detail = await emitter.emit(d["intended_signal"], asset, mark, _STRATEGY)
             if ok:
                 mode = "live"
                 log.info("LIVE msg %s %s -> %s", rec["channel_msg_id"],
                          d["intended_signal"], detail)
             else:
-                d = {**d, "advance": False, "decision": "skipped",
-                     "reason": "emit_failed", "to_state": cur}
+                # A trim that cannot be sent is dropped, not parked: the instruction
+                # was for right now, and the reason it failed (no position, no size)
+                # will not fix itself by waiting.
+                d = {**d, "advance": False, "emit": False, "park": False,
+                     "decision": "skipped", "reason": "emit_failed", "to_state": cur}
+                close_size = None
                 log.error("EMIT FAILED msg %s %s: %s — state left at %s",
                           rec["channel_msg_id"], d["intended_signal"], detail, cur)
 
@@ -122,10 +212,33 @@ async def handle(msgs, phase: str):
             "decision":        d["decision"],
             "reason":          d["reason"],
             "mode":            mode,
+            "size_fraction":   d["size_fraction"],
+            "close_size":      close_size,
         })
+
+        # Park a trim whose level the market has not reached, so the watcher can
+        # take it at the price the trader actually named. Recorded after the shadow
+        # row so the watcher can only ever find a trim that already has its audit row.
+        if d["park"] and asset and phase == "live":
+            await db.insert_pending_trim({
+                "channel_msg_id": rec["channel_msg_id"],
+                "asset":          asset,
+                "side":           cur,
+                "size_fraction":  d["size_fraction"],
+                "trigger_price":  d["trigger_price"],
+            }, settings.pending_trim_ttl_hours)
+            log.info("PARKED trim msg %s %s %.0f%% at %s (mark %s)",
+                     rec["channel_msg_id"], cur, d["size_fraction"] * 100,
+                     d["trigger_price"], d["mark_price"])
 
         if d["advance"] and asset:
             await db.set_state(asset, d["to_state"], rec["channel_msg_id"])
+            # The stance just moved; any level parked against the old one belongs
+            # to a trade that no longer exists.
+            n = await db.cancel_pending_trims(asset, f"stance moved {cur}->{d['to_state']}")
+            if n:
+                log.info("cancelled %d parked trim(s) for %s: stance %s->%s",
+                         n, asset, cur, d["to_state"])
 
         log.info(
             "BRAIN msg %s %s->%s %s [%s/%s] mode=%s",
@@ -316,6 +429,7 @@ async def main():
             log.exception("live handler error")
 
     asyncio.create_task(_catchup_loop(client, channel))
+    asyncio.create_task(_pending_trim_loop())
 
     log.info("Listening for new messages...")
     await client.run_until_disconnected()

@@ -104,6 +104,24 @@ class Settings(BaseSettings):
     # long after the fact (a listener outage, a dropped update).
     max_signal_age_seconds: int = 900
 
+    # ---- Partial profit-taking (TRIM) ----
+    # How much of the open position a trim closes when the post says a part comes
+    # off but never says how much ("took some profit", "lock in W").
+    default_trim_fraction: float = 0.5
+    # Clamps applied to whatever the post claims. The upper clamp is the important
+    # one: a trim must never round up into a full close, because the state machine
+    # would still record the stance as open. A full exit has to come from a CLOSE
+    # post going through close_long/close_short.
+    min_trim_fraction: float = 0.1
+    max_trim_fraction: float = 0.9
+
+    # A trim the trader pinned to a price the market has not reached yet is parked
+    # rather than taken at the wrong price. The watcher fires it when the mark
+    # crosses the level; the TTL stops an unreached level firing days later, long
+    # after the trade it belonged to.
+    pending_trim_check_seconds: int = 30
+    pending_trim_ttl_hours: int = 48
+
     # When a post cites no price, reconstruct one from the 1m bar covering
     # posted_at so the staleness gate can still run, instead of entering blind.
     implied_ref_lookback_ms: int = 600_000  # how far back to scan the stream
