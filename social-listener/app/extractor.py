@@ -8,7 +8,8 @@ from pydantic import BaseModel, Field
 from app.config import settings
 
 log = logging.getLogger(__name__)
-EXTRACTOR_VERSION = "v4"  # v4: stop management — stop_price + stop_to_breakeven, STOP
+EXTRACTOR_VERSION = "v5"  # v5: ADD sizing, take-profit levels, amounts read off charts
+                          # v4: stop management — stop_price + stop_to_breakeven, STOP
                           # v3: TRIM is actionable — size_fraction + trigger_price
                           # v2: reads the attached chart image alongside the text
 
@@ -21,6 +22,20 @@ on it: text the trader has drawn on the chart ("Closed longs", "Flipped longs in
 the post. Read the instrument name from the chart header (e.g. "Bitcoin / TetherUS" -> BTC).
 Do NOT interpret the price action itself — candles, trendlines, indicators and drawings with
 no words are not statements. Never infer a trade from what the chart "looks like".
+
+THE IMAGE IS OFTEN THE ONLY PLACE THE NUMBERS EXIST. The post text you are given is
+frequently truncated — a linked article's description gets cut mid-sentence — while the
+chart carries the entry, the stop, the targets and how much came off. Read every number and
+percentage written on the chart: price labels on horizontal lines, boxes marked "Entry",
+"SL"/"Stop", "TP1"/"TP2"/"Target", and amounts such as "25%", "1/4", "half off", "closed
+50% here". Attach them to the matching field below. A level drawn on the chart counts as
+stated by the trader even when the text never mentions it.
+
+LEVELS FOR A TRADE ALREADY RUNNING. The first post about a trade is often plain text, and
+the chart showing entry/SL/TP arrives in a LATER post. That later post is still giving the
+levels of the SAME live trade. Fill in stop_price and take_profit_price from it even when
+the post is otherwise a recap and action_type is NONE — levels are information about an
+open position, not a new call, and reporting them is never the same as opening a trade.
 
 Set is_actionable=true ONLY when the post asserts a NEW, concrete change to the trader's OWN
 position: opening, flipping, fully closing, or taking PART of a position off.
@@ -40,8 +55,12 @@ action_type:
   CLOSE - fully closing a position, leaving nothing on
   TRIM  - taking PART of an existing position off, leaving the rest running
   STOP  - the post's ONLY position change is moving the stop
-  ADD   - scaling INTO an existing position. Always set is_actionable=false for ADD.
+  ADD   - scaling INTO a position the trader already holds, same side
   NONE  - not a position change
+
+ADD vs OPEN. OPEN starts a position; ADD grows one the trader is already in. "Adding
+here", "adding to the short", "scaling in", "second entry", "doubling down", "loading more"
+-> ADD. If the post reads as a first entry, it is OPEN, not ADD.
 
 TRIM vs CLOSE. "closed", "out", "flat", "all out", "done with it" -> CLOSE. Anything that
 leaves the trade alive -> TRIM: "took half off", "trimmed", "partials", "banked some",
@@ -103,10 +122,16 @@ direction       : LONG or SHORT. For OPEN/FLIP/CLOSE it is the NEW resulting dir
                   short is direction=SHORT). null if none.
 reference_price : the entry/exit price the trader cites, as a number ("66.7k" -> 66700). Use a
                   price written in an annotation if the text gives none. null if absent.
-size_fraction   : TRIM only — how much of the position comes off, 0..1. "half" -> 0.5,
-                  "a third" -> 0.33, "most of it" -> 0.75, "a bit"/"some" -> 0.25.
-                  null when the post gives no idea of the amount. null for every other
-                  action_type.
+size_fraction   : TRIM only — how much of the position comes off, 0..1. Read it from the
+                  text OR from the chart. Exact wording wins over any guess: "25%" -> 0.25,
+                  "a quarter" -> 0.25, "1/3" -> 0.33, "half" -> 0.5, "75%" -> 0.75.
+                  Only when no amount is stated anywhere, fall back to the vaguer words:
+                  "some"/"a bit"/"partials" -> 0.25, "most of it" -> 0.75. If even that is
+                  absent, null. null for every other action_type.
+add_multiple    : ADD only — how big the addition is as a multiple of the trader's usual
+                  entry. "same size again"/"doubling" -> 1.0, "half a position" -> 0.5,
+                  "small add"/"a bit more" -> 0.25. null when the post gives no amount.
+                  null for every other action_type.
 trigger_price   : TRIM only — the price at which the part comes off, when the post names one
                   ("Lock in W 64.4k" -> 64400). null when the trim is presented as happening
                   now, at market. null for every other action_type.
@@ -114,6 +139,9 @@ stop_price      : the stop level the post names, as a number. null if none.
 stop_to_breakeven : true when the post asks for the stop at entry without naming a price.
                   false or null otherwise. Never set both this and stop_price unless the
                   post really does both.
+take_profit_price : the take-profit level the post or chart gives, as a number. When
+                  several are shown ("TP1 64.4k, TP2 62k"), give the NEAREST one to the
+                  current price — that is the one that matters next. null if none.
 confidence      : 0..1, how clearly the post states a concrete position change.
 evidence        : where the position change came from — "text", "image", "both", or "none".
 
@@ -127,9 +155,11 @@ class SocialExtraction(BaseModel):
     direction: Optional[Literal["LONG", "SHORT"]] = None
     reference_price: Optional[float] = None
     size_fraction: Optional[float] = Field(default=None, ge=0, le=1)
+    add_multiple: Optional[float] = Field(default=None, ge=0, le=3)
     trigger_price: Optional[float] = None
     stop_price: Optional[float] = None
     stop_to_breakeven: Optional[bool] = None
+    take_profit_price: Optional[float] = None
     confidence: float = Field(ge=0, le=1)
     evidence: Literal["text", "image", "both", "none"] = "none"
     reasoning: Optional[str] = None
@@ -298,15 +328,15 @@ async def extract(raw_text: str, preview_text: str, image_bytes: bytes | None = 
         )
 
     asset = (result.asset or "").upper() or None
-    # ADD (scaling in) stays non-actionable: sizing a scale-in would need its own
-    # margin decision, and nothing downstream expresses one. TRIM is actionable —
-    # it only ever reduces exposure, which is the safe direction to be wrong in.
-    is_actionable = result.is_actionable and result.action_type != "ADD"
-    # A fraction and a trigger only mean anything on a trim; drop them elsewhere so
-    # a stray value can never reach the sizing path.
+    is_actionable = result.is_actionable
+    # A fraction and a trigger only mean anything on a trim, a multiple only on an
+    # add; drop them elsewhere so a stray value can never reach a sizing path.
     is_trim = result.action_type == "TRIM"
-    # Stop fields ride alongside any action_type, but only matter while a position
-    # stays open — a full exit takes its stops with it.
+    is_add = result.action_type == "ADD"
+    # Level fields ride alongside any action_type, but only matter while a position
+    # stays open — a full exit takes its stops with it. They are kept even on NONE,
+    # because the chart that finally shows a running trade's SL/TP usually arrives in
+    # a post that changes nothing.
     keeps_position = result.action_type not in ("CLOSE", "FLIP")
     return {
         "failed": call_failed,
@@ -316,9 +346,11 @@ async def extract(raw_text: str, preview_text: str, image_bytes: bytes | None = 
         "direction": result.direction,
         "reference_price": result.reference_price,
         "size_fraction": result.size_fraction if is_trim else None,
+        "add_multiple": result.add_multiple if is_add else None,
         "trigger_price": result.trigger_price if is_trim else None,
         "stop_price": result.stop_price if keeps_position else None,
         "stop_to_breakeven": bool(result.stop_to_breakeven) if keeps_position else None,
+        "take_profit_price": result.take_profit_price if keeps_position else None,
         "confidence": result.confidence,
         "in_whitelist": (asset in _WHITELIST) if asset else False,
         "model": f"{used_provider}:{used_model}",

@@ -46,48 +46,167 @@ async def fire_trim(asset: str, side: str, fraction: float,
     return ok, detail, (close_size if ok else None)
 
 
-async def apply_stop(rec: dict, asset: str, cur_state: str,
-                     mark: float | None) -> tuple[float | None, str]:
-    """Move the stop if the post asks for one and the guards allow it.
+async def apply_levels(rec: dict, asset: str, cur_state: str,
+                       mark: float | None) -> dict:
+    """Set the stop and/or take-profit the post gives, subject to the guards.
 
     Runs BEFORE the position half of a decision on purpose. order-listener re-applies
     a position's TP/SL at their pre-close prices after a partial reduce, so a stop
     moved after a trim would race that resize and could be silently reverted; moved
-    before it, the resize picks up the new stop and rescales it to the smaller size.
+    before it, the resize picks up the new level and rescales it to the smaller size.
 
-    Returns (stop_price_sent, reason) — stop_price_sent is None whenever nothing
-    went out, and `reason` records why for the audit row.
+    Both legs go out in ONE call, and always carry the level we want to end up with
+    rather than only the one that changed — modify-stops cancels every trigger and
+    places only what it is handed.
+
+    Returns the four audit fields: stop_price, stop_reason, tp_price, tp_reason.
     """
     if _STRATEGY is None:
-        # Still worth judging in shadow, so the recorded reason is the real one
-        # rather than a blanket "shadow".
-        want, reason = statemachine.evaluate_stop(rec, cur_state, None, mark, None)
-        return None, reason if reason != "no_entry_price" else "shadow_no_position"
+        # Still judged in shadow, so the recorded reason is the real one rather than
+        # a blanket "shadow".
+        _, sr = statemachine.evaluate_stop(rec, cur_state, None, mark, None)
+        _, tr = statemachine.evaluate_take_profit(rec, cur_state, None, mark, None)
+        return {"stop_price": None, "stop_reason": sr,
+                "tp_price": None, "tp_reason": tr}
 
     pos = await db.open_position(settings.execution_strategy_id, asset)
     entry = float(pos["entry_price"]) if pos and pos["entry_price"] is not None else None
-    last = await db.get_stop(asset)
+    held = await db.get_levels(asset)
+    # What is resting now: what we last set, else whatever the opening order carried.
+    cur_sl = held["stop_price"]
+    cur_tp = held["tp_price"]
+    if pos is not None:
+        if cur_sl is None and pos["sl_price"] is not None:
+            cur_sl = float(pos["sl_price"])
+        if cur_tp is None and pos["tp_price"] is not None:
+            cur_tp = float(pos["tp_price"])
 
-    want, reason = statemachine.evaluate_stop(rec, cur_state, entry, mark, last)
-    if want is None:
-        if reason not in ("no_stop_instruction",):
-            log.info("stop not moved for msg %s: %s (want from entry=%s mark=%s last=%s)",
-                     rec["channel_msg_id"], reason, entry, mark, last)
-        return None, reason
+    want_sl, sr = statemachine.evaluate_stop(
+        rec, cur_state, entry, mark, held["stop_price"])
+    want_tp, tr = statemachine.evaluate_take_profit(
+        rec, cur_state, entry, mark, cur_tp)
 
-    tp = float(pos["tp_price"]) if pos and pos["tp_price"] is not None else None
-    ok, detail = await emitter.adjust_stop(want, _STRATEGY, tp_price=tp)
+    if want_sl is None and want_tp is None:
+        for reason in (sr, tr):
+            if reason not in ("no_stop_instruction", "no_tp_instruction"):
+                log.info("levels unchanged for msg %s: sl=%s tp=%s "
+                         "(entry=%s mark=%s held=%s)",
+                         rec["channel_msg_id"], sr, tr, entry, mark, held)
+        return {"stop_price": None, "stop_reason": sr,
+                "tp_price": None, "tp_reason": tr}
+
+    send_sl = want_sl if want_sl is not None else cur_sl
+    send_tp = want_tp if want_tp is not None else cur_tp
+
+    ok, detail = await emitter.adjust_levels(_STRATEGY, sl_price=send_sl, tp_price=send_tp)
     if not ok:
         # modify-stops is cancel-then-place, so a failure can leave the position
-        # unprotected. Loud, and never recorded as the stop we hold.
-        log.error("STOP MOVE FAILED msg %s -> %s: %s — position stops may be "
-                  "UNCONFIRMED, check the exchange", rec["channel_msg_id"], want, detail)
-        return None, "stop_send_failed"
+        # unprotected. Loud, and never recorded as levels we hold.
+        log.error("LEVEL SET FAILED msg %s sl=%s tp=%s: %s — position triggers may be "
+                  "UNCONFIRMED, check the exchange",
+                  rec["channel_msg_id"], send_sl, send_tp, detail)
+        return {"stop_price": None, "stop_reason": "stop_send_failed" if want_sl else sr,
+                "tp_price": None, "tp_reason": "tp_send_failed" if want_tp else tr}
 
-    await db.set_stop(asset, want)
-    log.info("STOP msg %s %s moved to %s (was %s, entry %s): %s",
-             rec["channel_msg_id"], cur_state, want, last, entry, detail)
-    return want, "ok"
+    # "Risk off" is a standing instruction, not a one-shot: after a scale-in blends
+    # the entry, break-even means a different number and the watcher re-asserts it.
+    mode = "breakeven" if (want_sl is not None and rec.get("stop_to_breakeven")
+                           and rec.get("stop_price") is None) else None
+    await db.set_levels(asset, stop_price=send_sl, tp_price=send_tp, stop_mode=mode)
+    log.info("LEVELS msg %s %s sl=%s tp=%s (entry %s): %s",
+             rec["channel_msg_id"], cur_state, send_sl, send_tp, entry, detail)
+    return {"stop_price": want_sl, "stop_reason": sr if want_sl is None else "ok",
+            "tp_price": want_tp, "tp_reason": tr if want_tp is None else "ok"}
+
+
+async def fire_add(asset: str, side: str, multiple: float,
+                   mark: float | None) -> tuple[bool, str, float | None]:
+    """Scale into the live position by `multiple` standard entries.
+
+    Two ceilings apply. order-listener clamps any single order to one
+    margin_per_trade unit; this adds the cumulative one it cannot know about, so a
+    run of "adding here" posts cannot compound past max_position_multiple entries.
+    Returns (ok, detail, size_added).
+    """
+    if _STRATEGY is None:
+        return False, "shadow mode — no strategy armed", None
+    if mark is None or mark <= 0:
+        return False, "no mark price — refusing to size a scale-in", None
+
+    unit = emitter.standard_entry_size(_STRATEGY, mark)
+    if unit <= 0:
+        return False, "standard entry size is not tradeable", None
+
+    pos = await db.open_position(settings.execution_strategy_id, asset)
+    if pos is None:
+        return False, f"no open {asset} position to add to", None
+    if (pos["side"] or "").upper() != side:
+        return False, f"position is {pos['side']}, expected {side}", None
+
+    held = float(pos["size"])
+    ceiling = settings.max_position_multiple * unit
+    room = ceiling - held
+    if room <= 0:
+        return False, (f"exposure cap reached: {held} held vs ceiling {round(ceiling, 8)} "
+                       f"({settings.max_position_multiple}x standard entry {unit})"), None
+
+    size = round(min(multiple * unit, room), 8)
+    if size <= 0:
+        return False, f"computed add size {size} is not tradeable", None
+    if size < multiple * unit:
+        log.warning("add trimmed by exposure cap: wanted %s, sending %s "
+                    "(held %s, ceiling %s)", round(multiple * unit, 8), size, held,
+                    round(ceiling, 8))
+
+    signal = "add_long" if side == "LONG" else "add_short"
+    ok, detail = await emitter.emit(signal, asset, mark, _STRATEGY, open_size=size)
+    if ok:
+        # The blended entry price is about to move, so the stop we had set no longer
+        # means what it meant. Drop it and let the standing intent re-assert.
+        await db.clear_stop_price(asset)
+    return ok, detail, (size if ok else None)
+
+
+async def _sweep_standing_stops() -> None:
+    """Re-assert break-even for stances whose trader asked to be de-risked.
+
+    "Risk off the trade" is a standing instruction. A scale-in blends the entry
+    price, so the number that means break-even changes underneath it; without this,
+    a de-risked trade silently reverts to the wide guaranteed SL that order-listener
+    attaches to the add order.
+    """
+    if _STRATEGY is None:
+        return
+    for row in await db.stances_with_standing_stop():
+        asset, side = row["asset"], row["state"]
+        pos = await db.open_position(settings.execution_strategy_id, asset)
+        if pos is None or (pos["side"] or "").upper() != side:
+            continue
+        entry = float(pos["entry_price"])
+        held_sl = float(row["stop_price"]) if row["stop_price"] is not None else None
+        if held_sl is not None and abs(held_sl - entry) / entry < 1e-6:
+            continue   # already at break-even for the current entry
+
+        mark = await marketdata.get_mark(asset)
+        rec = {"stop_to_breakeven": True, "channel_msg_id": row.get("last_msg_id")}
+        # last_stop is deliberately not passed: the entry legitimately moved, so the
+        # monotonic guard would refuse the very correction this exists to make.
+        want, reason = statemachine.evaluate_stop(rec, side, entry, mark, None)
+        if want is None:
+            log.info("standing break-even for %s not re-asserted: %s "
+                     "(entry=%s mark=%s held=%s)", asset, reason, entry, mark, held_sl)
+            continue
+
+        tp = float(row["tp_price"]) if row["tp_price"] is not None else (
+            float(pos["tp_price"]) if pos["tp_price"] is not None else None)
+        ok, detail = await emitter.adjust_levels(_STRATEGY, sl_price=want, tp_price=tp)
+        if ok:
+            await db.set_levels(asset, stop_price=want, tp_price=tp)
+            log.info("STANDING break-even re-asserted for %s: %s -> %s (entry %s): %s",
+                     asset, held_sl, want, entry, detail)
+        else:
+            log.error("STANDING break-even FAILED for %s -> %s: %s — triggers may be "
+                      "UNCONFIRMED, check the exchange", asset, want, detail)
 
 
 async def _sweep_pending_trims() -> None:
@@ -143,6 +262,10 @@ async def _pending_trim_loop() -> None:
             await _sweep_pending_trims()
         except Exception:  # noqa: BLE001
             log.exception("pending trim loop error")
+        try:
+            await _sweep_standing_stops()
+        except Exception:  # noqa: BLE001
+            log.exception("standing stop loop error")
 
 
 async def handle(msgs, phase: str):
@@ -197,109 +320,142 @@ async def handle(msgs, phase: str):
                 "y" if rec["has_image"] else "n",
             )
 
-    if rec["is_actionable"]:
-        asset = (rec["asset"] or "").upper() or None
-        cur = await db.get_state(asset) if asset else "FLAT"
+    asset = (rec["asset"] or "").upper() or None
+    cur = await db.get_state(asset) if asset else "FLAT"
+    carries_levels = (
+        rec.get("stop_price") is not None
+        or rec.get("stop_to_breakeven")
+        or rec.get("take_profit_price") is not None
+    )
 
-        # Live signals need a mark whether or not the post cited a price — a
-        # priceless one is gated against the market price at posted_at instead.
-        mark = implied_ref = None
-        if phase == "live" and asset:
+    # A post that changes nothing can still carry the trade's numbers. The trader
+    # routinely calls a trade in plain text and only shows entry/SL/TP on a chart in
+    # a LATER post, which is a recap by every other measure. Those levels belong to
+    # the position we are holding right now, so they are applied on their own.
+    if not rec["is_actionable"]:
+        if carries_levels and asset and phase == "live" and cur != "FLAT":
             mark = await marketdata.get_mark(asset)
-            if rec["reference_price"] is None and rec.get("posted_at") is not None:
-                implied_ref = await marketdata.get_close_at(
-                    asset, int(rec["posted_at"].timestamp() * 1000)
-                )
+            lv = await apply_levels(rec, asset, cur, mark)
+            await db.insert_shadow_order({
+                "channel_msg_id": rec["channel_msg_id"], "posted_at": rec["posted_at"],
+                "phase": phase, "asset": asset, "action_type": rec["action_type"],
+                "from_state": cur, "to_state": cur, "intended_signal": "none",
+                "reference_price": rec["reference_price"], "mark_price": mark,
+                "confidence": rec["confidence"], "decision": "skipped",
+                "reason": "levels_only", "mode": "shadow",
+                "stop_price": lv["stop_price"], "stop_reason": lv["stop_reason"],
+                "tp_price": lv["tp_price"], "tp_reason": lv["tp_reason"],
+            })
+            log.info("LEVELS-ONLY msg %s %s sl=%s/%s tp=%s/%s",
+                     rec["channel_msg_id"], cur, lv["stop_price"], lv["stop_reason"],
+                     lv["tp_price"], lv["tp_reason"])
+        return
 
-        d = evaluate(rec, phase, cur, mark, implied_ref)
+    # Live signals need a mark whether or not the post cited a price — a
+    # priceless one is gated against the market price at posted_at instead.
+    mark = implied_ref = None
+    if phase == "live" and asset:
+        mark = await marketdata.get_mark(asset)
+        if rec["reference_price"] is None and rec.get("posted_at") is not None:
+            implied_ref = await marketdata.get_close_at(
+                asset, int(rec["posted_at"].timestamp() * 1000)
+            )
 
-        # Emit BEFORE recording, and only on the live path — "backfill" acts
-        # unconditionally by design, so emitting there would re-fire every old
-        # post on each restart. Fail-closed: a failed emission leaves the state
-        # unchanged, so social_position_state never claims a position the
-        # exchange does not hold. The cost of that choice is a missed trade,
-        # which is the safe direction to be wrong in.
-        # Stops first, and only while the post leaves us on the side we are already
-        # on — a CLOSE or FLIP takes its stops with it, and an OPEN has no position
-        # yet (order-listener injects its guaranteed SL at entry instead).
-        stop_price = None
-        stop_reason = "no_stop_instruction"
-        if asset and phase == "live" and d["to_state"] == cur and cur != "FLAT":
-            stop_price, stop_reason = await apply_stop(rec, asset, cur, mark)
+    d = evaluate(rec, phase, cur, mark, implied_ref)
 
-        mode = "shadow"
-        close_size = None
-        if d["emit"] and asset and phase == "live" and _STRATEGY is not None:
-            if d["is_trim"]:
-                ok, detail, close_size = await fire_trim(
-                    asset, cur, float(d["size_fraction"]), mark)
-            else:
-                ok, detail = await emitter.emit(d["intended_signal"], asset, mark, _STRATEGY)
-            if ok:
-                mode = "live"
-                log.info("LIVE msg %s %s -> %s", rec["channel_msg_id"],
-                         d["intended_signal"], detail)
-            else:
-                # A trim that cannot be sent is dropped, not parked: the instruction
-                # was for right now, and the reason it failed (no position, no size)
-                # will not fix itself by waiting.
-                d = {**d, "advance": False, "emit": False, "park": False,
-                     "decision": "skipped", "reason": "emit_failed", "to_state": cur}
-                close_size = None
-                log.error("EMIT FAILED msg %s %s: %s — state left at %s",
-                          rec["channel_msg_id"], d["intended_signal"], detail, cur)
+    # Emit BEFORE recording, and only on the live path — "backfill" acts
+    # unconditionally by design, so emitting there would re-fire every old
+    # post on each restart. Fail-closed: a failed emission leaves the state
+    # unchanged, so social_position_state never claims a position the
+    # exchange does not hold. The cost of that choice is a missed trade,
+    # which is the safe direction to be wrong in.
+    # Levels first, and only while the post leaves us on the side we are already
+    # on — a CLOSE or FLIP takes its triggers with it, and an OPEN has no position
+    # yet (order-listener injects its guaranteed SL at entry instead).
+    lv = {"stop_price": None, "stop_reason": "no_stop_instruction",
+          "tp_price": None, "tp_reason": "no_tp_instruction"}
+    if asset and phase == "live" and d["to_state"] == cur and cur != "FLAT":
+        lv = await apply_levels(rec, asset, cur, mark)
 
-        await db.insert_shadow_order({
+    mode = "shadow"
+    close_size = add_size = None
+    if d["emit"] and asset and phase == "live" and _STRATEGY is not None:
+        if d["is_trim"]:
+            ok, detail, close_size = await fire_trim(
+                asset, cur, float(d["size_fraction"]), mark)
+        elif d["is_add"]:
+            ok, detail, add_size = await fire_add(
+                asset, cur, float(d["add_multiple"]), mark)
+        else:
+            ok, detail = await emitter.emit(d["intended_signal"], asset, mark, _STRATEGY)
+        if ok:
+            mode = "live"
+            log.info("LIVE msg %s %s -> %s", rec["channel_msg_id"],
+                     d["intended_signal"], detail)
+        else:
+            # A trim or add that cannot be sent is dropped, not parked: the
+            # instruction was for right now, and the reason it failed (no position,
+            # no size, exposure cap) will not fix itself by waiting.
+            d = {**d, "advance": False, "emit": False, "park": False,
+                 "decision": "skipped", "reason": "emit_failed", "to_state": cur}
+            close_size = add_size = None
+            log.error("EMIT FAILED msg %s %s: %s — state left at %s",
+                      rec["channel_msg_id"], d["intended_signal"], detail, cur)
+
+    await db.insert_shadow_order({
+        "channel_msg_id": rec["channel_msg_id"],
+        "posted_at":       rec["posted_at"],
+        "phase":           phase,
+        "asset":           asset,
+        "action_type":     rec["action_type"],
+        "from_state":      cur,
+        "to_state":        d["to_state"],
+        "intended_signal": d["intended_signal"],
+        "reference_price": rec["reference_price"],
+        "mark_price":      d["mark_price"],
+        "confidence":      rec["confidence"],
+        "decision":        d["decision"],
+        "reason":          d["reason"],
+        "mode":            mode,
+        "size_fraction":   d["size_fraction"],
+        "close_size":      close_size,
+        "add_size":        add_size,
+        "stop_price":      lv["stop_price"],
+        "stop_reason":     lv["stop_reason"],
+        "tp_price":        lv["tp_price"],
+        "tp_reason":       lv["tp_reason"],
+    })
+
+    # Park a trim whose level the market has not reached, so the watcher can
+    # take it at the price the trader actually named. Recorded after the shadow
+    # row so the watcher can only ever find a trim that already has its audit row.
+    if d["park"] and asset and phase == "live":
+        await db.insert_pending_trim({
             "channel_msg_id": rec["channel_msg_id"],
-            "posted_at":       rec["posted_at"],
-            "phase":           phase,
-            "asset":           asset,
-            "action_type":     rec["action_type"],
-            "from_state":      cur,
-            "to_state":        d["to_state"],
-            "intended_signal": d["intended_signal"],
-            "reference_price": rec["reference_price"],
-            "mark_price":      d["mark_price"],
-            "confidence":      rec["confidence"],
-            "decision":        d["decision"],
-            "reason":          d["reason"],
-            "mode":            mode,
-            "size_fraction":   d["size_fraction"],
-            "close_size":      close_size,
-            "stop_price":      stop_price,
-            "stop_reason":     stop_reason,
-        })
+            "asset":          asset,
+            "side":           cur,
+            "size_fraction":  d["size_fraction"],
+            "trigger_price":  d["trigger_price"],
+        }, settings.pending_trim_ttl_hours)
+        log.info("PARKED trim msg %s %s %.0f%% at %s (mark %s)",
+                 rec["channel_msg_id"], cur, d["size_fraction"] * 100,
+                 d["trigger_price"], d["mark_price"])
 
-        # Park a trim whose level the market has not reached, so the watcher can
-        # take it at the price the trader actually named. Recorded after the shadow
-        # row so the watcher can only ever find a trim that already has its audit row.
-        if d["park"] and asset and phase == "live":
-            await db.insert_pending_trim({
-                "channel_msg_id": rec["channel_msg_id"],
-                "asset":          asset,
-                "side":           cur,
-                "size_fraction":  d["size_fraction"],
-                "trigger_price":  d["trigger_price"],
-            }, settings.pending_trim_ttl_hours)
-            log.info("PARKED trim msg %s %s %.0f%% at %s (mark %s)",
-                     rec["channel_msg_id"], cur, d["size_fraction"] * 100,
-                     d["trigger_price"], d["mark_price"])
+    if d["advance"] and asset:
+        await db.set_state(asset, d["to_state"], rec["channel_msg_id"])
+        # The stance just moved; any level parked against the old one belongs
+        # to a trade that no longer exists.
+        n = await db.cancel_pending_trims(asset, f"stance moved {cur}->{d['to_state']}")
+        if n:
+            log.info("cancelled %d parked trim(s) for %s: stance %s->%s",
+                     n, asset, cur, d["to_state"])
 
-        if d["advance"] and asset:
-            await db.set_state(asset, d["to_state"], rec["channel_msg_id"])
-            # The stance just moved; any level parked against the old one belongs
-            # to a trade that no longer exists.
-            n = await db.cancel_pending_trims(asset, f"stance moved {cur}->{d['to_state']}")
-            if n:
-                log.info("cancelled %d parked trim(s) for %s: stance %s->%s",
-                         n, asset, cur, d["to_state"])
-
-        log.info(
-            "BRAIN msg %s %s->%s %s [%s/%s] mode=%s stop=%s/%s",
-            rec["channel_msg_id"], cur, d["to_state"],
-            d["intended_signal"], d["decision"], d["reason"], mode,
-            stop_price, stop_reason,
-        )
+    log.info(
+        "BRAIN msg %s %s->%s %s [%s/%s] mode=%s sl=%s/%s tp=%s/%s",
+        rec["channel_msg_id"], cur, d["to_state"],
+        d["intended_signal"], d["decision"], d["reason"], mode,
+        lv["stop_price"], lv["stop_reason"], lv["tp_price"], lv["tp_reason"],
+    )
 
 
 def group_bursts(msgs: list, window_seconds: float, max_size: int) -> list[list]:

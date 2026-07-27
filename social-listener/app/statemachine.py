@@ -46,6 +46,21 @@ def _trim_fraction(rec: dict) -> float:
     return max(settings.min_trim_fraction, min(settings.max_trim_fraction, frac))
 
 
+def _add_multiple(rec: dict) -> float:
+    """The clamped size of a scale-in, in standard entries.
+
+    A post that names no amount gets the default. The clamp bounds a single add;
+    the cumulative ceiling across adds is applied by the caller, which is the only
+    place that knows the position's current size.
+    """
+    raw = rec.get("add_multiple")
+    try:
+        mult = float(raw) if raw is not None else settings.default_add_multiple
+    except (TypeError, ValueError):
+        mult = settings.default_add_multiple
+    return max(0.0, min(settings.max_add_multiple, mult))
+
+
 def _too_old(rec: dict, now: datetime | None) -> bool:
     """True when the post is past the tradeable age backstop.
 
@@ -120,6 +135,93 @@ def evaluate_stop(
             return None, "stop_not_tighter"
 
     return want, "ok"
+
+
+def evaluate_take_profit(
+    rec: dict,
+    cur_state: str,
+    entry_price: float | None,
+    mark: float | None,
+    last_tp: float | None = None,
+    now: datetime | None = None,
+) -> tuple[float | None, str]:
+    """Where the take-profit should go. Returns (tp_price, reason).
+
+    A take-profit can only ever close a trade in profit, so it needs none of the
+    tighten-only reasoning the stop guards carry. What it does need is to be a
+    target rather than an instant exit: a level already on the wrong side of the
+    mark would fill the moment it is placed.
+    """
+    want = rec.get("take_profit_price")
+    if want is None:
+        return None, "no_tp_instruction"
+    if cur_state == "FLAT":
+        return None, "no_position_for_tp"
+    if _too_old(rec, now):
+        return None, "signal_too_old"
+    try:
+        want = float(want)
+    except (TypeError, ValueError):
+        return None, "no_tp_instruction"
+
+    short = cur_state == "SHORT"
+
+    # Profit sits below entry on a short. A "take-profit" on the losing side is a
+    # misread level, not a target.
+    if entry_price is not None and ((want >= float(entry_price)) if short
+                                    else (want <= float(entry_price))):
+        return None, "tp_wrong_side"
+
+    # Already past the mark: placing it would fill immediately at market, turning a
+    # target into an unplanned full exit.
+    if mark is not None and ((want >= float(mark)) if short else (want <= float(mark))):
+        return None, "tp_already_crossed"
+
+    if last_tp is not None and abs(float(last_tp) - want) / max(want, 1e-9) < 1e-6:
+        return None, "tp_unchanged"
+
+    return want, "ok"
+
+
+def _evaluate_add(rec, phase, cur_state, mark, now, base, skip) -> dict:
+    """Scaling into a position the trader already holds.
+
+    Unlike a trim, an add INCREASES exposure, so it keeps every gate an entry has —
+    including the `staleness_pct` chase gate. Adding late into a move that already
+    ran is exactly the mistake that gate exists to prevent.
+    """
+    if cur_state == "FLAT":
+        return skip("no_position_to_add")
+
+    direction = (rec.get("direction") or "").upper() or None
+    if direction and direction != cur_state:
+        return skip("add_side_mismatch")
+
+    sig  = "add_long" if cur_state == "LONG" else "add_short"
+    mult = _add_multiple(rec)
+    marks = {"sig": sig, "add_multiple": mult}
+
+    if mult <= 0:
+        return skip("add_size_zero", **marks)
+
+    # Backfill acts unconditionally; an add fired against an old post at every
+    # restart would silently multiply real exposure.
+    if phase == "backfill":
+        return skip("backfill_no_add", **marks)
+
+    if _too_old(rec, now):
+        return skip("signal_too_old", **marks)
+
+    ref = rec.get("reference_price")
+    if ref is not None and mark is not None:
+        moved = (float(mark) - float(ref)) / float(ref)
+        chased = (moved > settings.staleness_pct) if cur_state == "LONG" \
+            else (-moved > settings.staleness_pct)
+        if chased:
+            return skip("stale_price", **marks)
+
+    return base("acted", "add_at_market", cur_state, sig, False, True,
+                is_add=True, add_multiple=mult)
 
 
 def _evaluate_trim(rec, phase, cur_state, mark, now, base, skip) -> dict:
@@ -203,8 +305,8 @@ def evaluate(
             "decision": decision, "reason": reason,
             "to_state": to, "intended_signal": sig,
             "mark_price": mark, "advance": advance, "emit": emit,
-            "is_trim": False, "park": False,
-            "size_fraction": None, "trigger_price": None,
+            "is_trim": False, "is_add": False, "park": False,
+            "size_fraction": None, "trigger_price": None, "add_multiple": None,
         }
         out.update(extra)
         return out
@@ -222,6 +324,9 @@ def evaluate(
 
     if rec.get("action_type") == "TRIM":
         return _evaluate_trim(rec, phase, cur_state, mark, now, base, skip)
+
+    if rec.get("action_type") == "ADD":
+        return _evaluate_add(rec, phase, cur_state, mark, now, base, skip)
 
     # A stop-only post moves no position. It still reaches the caller's stop
     # handling, which is keyed off the record, not off this decision.

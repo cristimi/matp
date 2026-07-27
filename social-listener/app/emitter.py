@@ -37,9 +37,15 @@ _STEPS = {
     # full close by sending a stale number.
     "partial_close_long":  ["partial_close_long"],
     "partial_close_short": ["partial_close_short"],
+    # A scale-in is the ordinary open signal carrying its own size. order-listener's
+    # _apply_position_fill tops up the existing leg and blends the entry price, so
+    # this grows the position instead of creating a second one.
+    "add_long":  ["add_long"],
+    "add_short": ["add_short"],
 }
 
 _PARTIAL = {"partial_close_long", "partial_close_short"}
+_ADD = {"add_long", "add_short"}
 
 # webhook step -> order side
 _SIDE = {
@@ -49,6 +55,8 @@ _SIDE = {
     "close_long":  "sell",
     "partial_close_long":  "sell",
     "partial_close_short": "buy",
+    "add_long":  "buy",
+    "add_short": "sell",
 }
 
 # webhook step -> the `signal` value order-listener's payload schema accepts.
@@ -56,6 +64,8 @@ _SIDE = {
 _WEBHOOK_SIGNAL = {
     "partial_close_long":  "close_long",
     "partial_close_short": "close_short",
+    "add_long":  "open_long",
+    "add_short": "open_short",
 }
 
 
@@ -72,7 +82,7 @@ def _size_for(strategy: dict, mark: float) -> float:
 
 def _payload(step: str, asset: str, size: float, token: str) -> dict:
     meta = {"source": settings.source_tag}
-    if step in _PARTIAL:
+    if step in _PARTIAL or step in _ADD:
         meta["intent"] = step
     body = {
         "base_asset":      asset,
@@ -94,13 +104,20 @@ def _payload(step: str, asset: str, size: float, token: str) -> dict:
     return body
 
 
+def standard_entry_size(strategy: dict, mark: float) -> float:
+    """One standard entry in base asset — the unit an add is measured in."""
+    return _size_for(strategy, mark)
+
+
 async def emit(signal: str, asset: str, mark: float, strategy: dict,
-               close_size: float | None = None) -> tuple[bool, str]:
+               close_size: float | None = None,
+               open_size: float | None = None) -> tuple[bool, str]:
     """Fire the webhook step(s) for one decided transition.
 
-    `close_size` is the base-asset quantity for a partial close, and is required
-    for one — a partial with no size would fall back to entry sizing and could
-    reduce far more than the trader asked for.
+    `close_size` is the base-asset quantity for a partial close and is required for
+    one — a partial with no size would fall back to entry sizing and could reduce
+    far more than the trader asked for. `open_size` does the same for a scale-in,
+    whose size is a fraction of a standard entry rather than a whole one.
 
     Returns (ok, detail). ok is True only when every step returned 2xx.
     """
@@ -112,6 +129,10 @@ async def emit(signal: str, asset: str, mark: float, strategy: dict,
         if close_size is None or close_size <= 0:
             return False, "no close size — refusing to send an unsized partial close"
         size = round(float(close_size), 8)
+    elif signal in _ADD:
+        if open_size is None or open_size <= 0:
+            return False, "no add size — refusing to send an unsized scale-in"
+        size = round(float(open_size), 8)
     else:
         if mark is None or mark <= 0:
             return False, "no mark price — refusing to send an unsized order"
@@ -143,26 +164,33 @@ async def emit(signal: str, asset: str, mark: float, strategy: dict,
     return True, "; ".join(done)
 
 
-async def adjust_stop(sl_price: float, strategy: dict,
-                      tp_price: float | None = None,
-                      dry_run: bool = False) -> tuple[bool, str]:
-    """Move the stop on the strategy's open position.
+async def adjust_levels(strategy: dict,
+                        sl_price: float | None = None,
+                        tp_price: float | None = None,
+                        dry_run: bool = False) -> tuple[bool, str]:
+    """Set the stop and/or take-profit on the strategy's open position.
 
     Uses order-listener's existing `/strategies/{id}/adjust-stops`, which resolves
     the position and hands off to order-executor's modify-stops — so, as everywhere
     else here, this service makes no exchange call and holds no credentials.
 
-    `tp_price` must be passed whenever the position has one. modify-stops cancels
-    every existing trigger and places only the legs it was asked for, so sending a
-    lone sl_price would silently delete a resting take-profit.
+    ONE call carries both legs on purpose. modify-stops cancels every existing
+    trigger and places only what it is handed, so moving the stop without re-sending
+    the take-profit deletes the take-profit (and the reverse). Callers must always
+    pass the levels they want to END UP with, not just the one that changed.
 
-    Returns (ok, detail). ok requires the SL leg to be CONFIRMED resting: the
-    endpoint's own contract is that `success` alone is not enough, because
+    Returns (ok, detail). ok requires every requested leg to be CONFIRMED resting:
+    the endpoint's own contract is that `success` alone is not enough, because
     cancel-then-place is not atomic and a position can be left unprotected.
     """
+    if sl_price is None and tp_price is None:
+        return False, "no levels to set"
+
     url = f"{settings.listener_url}/strategies/{settings.execution_strategy_id}/adjust-stops"
     token = strategy["webhook_secret"]
-    body: dict = {"sl_price": float(sl_price), "token": token}
+    body: dict = {"token": token}
+    if sl_price is not None:
+        body["sl_price"] = float(sl_price)
     if tp_price is not None:
         body["tp_price"] = float(tp_price)
     if dry_run:
@@ -179,12 +207,18 @@ async def adjust_stop(sl_price: float, strategy: dict,
 
     data = resp.json()
     if data.get("simulated"):
-        return True, f"dry run: intended sl={data.get('intended_sl_price')}"
-    if not data.get("success") or data.get("sl_ok") is not True:
-        # sl_ok is the field that says whether the position is actually protected.
-        return False, (f"stop not confirmed resting (success={data.get('success')}, "
+        return True, (f"dry run: intended sl={data.get('intended_sl_price')} "
+                      f"tp={data.get('intended_tp_price')}")
+
+    legs_ok = data.get("success") is True
+    if sl_price is not None and data.get("sl_ok") is not True:
+        legs_ok = False
+    if tp_price is not None and data.get("tp_ok") is not True:
+        legs_ok = False
+    if not legs_ok:
+        return False, (f"levels not confirmed resting (success={data.get('success')}, "
                        f"sl_ok={data.get('sl_ok')}, tp_ok={data.get('tp_ok')}): "
                        f"{data.get('error') or data.get('error_msg')}")
 
-    log.info("stop moved to %s (tp=%s) -> %s", sl_price, tp_price, resp.status_code)
-    return True, f"sl={sl_price} confirmed (tp_ok={data.get('tp_ok')})"
+    log.info("levels set sl=%s tp=%s -> %s", sl_price, tp_price, resp.status_code)
+    return True, f"sl={sl_price} tp={tp_price} confirmed"

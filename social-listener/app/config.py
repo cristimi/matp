@@ -104,6 +104,18 @@ class Settings(BaseSettings):
     # long after the fact (a listener outage, a dropped update).
     max_signal_age_seconds: int = 900
 
+    # ---- Scaling in (ADD) ----
+    # An add is sized as a multiple of ONE standard entry (margin_per_trade x
+    # leverage), not of the position, so a post that says nothing about size gets a
+    # predictable amount rather than one that compounds with the position.
+    default_add_multiple: float = 0.5
+    max_add_multiple: float = 1.0
+    # Cumulative ceiling: total position size may never exceed this many standard
+    # entries. order-listener's margin clamp bounds each order on its own but knows
+    # nothing about the ones before it, so without this a run of "adding here" posts
+    # would compound without limit.
+    max_position_multiple: float = 2.0
+
     # ---- Partial profit-taking (TRIM) ----
     # How much of the open position a trim closes when the post says a part comes
     # off but never says how much ("took some profit", "lock in W").
