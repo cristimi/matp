@@ -129,14 +129,52 @@ So v4 reads "Risk off the trade" as `stop_to_breakeven=true`, the guards resolve
 the entry price 65385.3, the HTTP path to order-listener works, and the same path
 refuses a widened stop.
 
-## Not applied to the open position
+## Applied to the open position
 
-The live short (0.00155 BTC @ 65385.3) still carries its entry-time stop at 68361.6.
-Moving it to 65385.3 is a real change to how that trade can end — it would close at
-break-even on a bounce instead of running — so it is an operator decision, not a deploy
-step. Everything is in place to do it; only the instruction is missing.
+On the operator's explicit instruction, and through the same `apply_stop()` the listener
+uses — so the guards, the TP pass-through and the `sl_ok` confirmation all applied. Only
+the age backstop was bypassed.
 
-Every future management post gets this automatically.
+```
+$ docker compose exec -T social-listener python /app/arm_stop.py
+LIVE execution armed: strategy=social-btc-astro account=blofin-blofin-demo-v5vr
+before: stance=SHORT mark=64545.8 position sl=68361.6 tp=None entry=65385.3
+app.emitter    stop moved to 65385.3 (tp=None) -> 200
+social-listener STOP msg 9790 SHORT moved to 65385.3 (was None, entry 65385.3): sl=65385.3 confirmed (tp_ok=None)
+apply_stop -> sent=65385.3 reason=ok
+recorded
+```
+
+order-listener's side, showing the old stop cancelled and the new one placed:
+
+```
+order-listener-1 | app.webhook_handler: adjust-stops strategy=social-btc-astro
+                   pos=75c43386-f13e-4cca-bafc-9ae50aeb8769 (BTC-USDT short)
+                   tp=None sl=65385.3 cancelled=1 placed=1
+```
+
+And read back from the exchange itself, not from our own tables:
+
+```
+$ docker compose exec -T nginx wget -qO- \
+    http://order-executor:8004/accounts/blofin-blofin-demo-v5vr/trigger-orders/BTC-USDT
+[
+    {
+        "oid": "10002953452",
+        "tpsl": "sl",
+        "triggerPx": "65385.300000000000000000",
+        "sz": "1.6"
+    }
+]
+```
+
+The remaining half-short can no longer lose money. Every future management post gets
+this automatically.
+
+Incidental observation, pre-existing and not introduced here: the trigger is sized 1.6
+contracts against a 1.55-contract position — the executor rounds up when sizing a
+trigger for a partial position. It is reduce-only, so the exchange clamps it, but it is
+worth knowing about if trigger sizing is ever audited.
 
 ## Known limits
 
