@@ -118,7 +118,52 @@ apply it on your word; my recommendation is that `modify-stops` should treat "no
 for this leg" as *leave it alone* rather than *delete it*, with an explicit
 `cancel_tp: true` needed to remove a target on purpose.
 
-**The SOL position is live right now with a stop at 73.50 and no target.**
+---
+
+## 1b. UPDATE 2026-07-28 15:03 — the position closed, and the missing TP did NOT cost it
+
+The position closed while this was being written. It is **not** live any more:
+
+```
+  symbol  | side  | status |           closed_at           | close_reason       |  closing_price  |  pnl
+----------+-------+--------+-------------------------------+--------------------+-----------------+--------
+ SOL-USDT | short | closed | 2026-07-28 15:03:47.643656+00 | Closed on exchange | 73.5025         | 0.0523
+```
+
+It exited at 73.5025 — the trailed stop at 73.50 — for **+0.05 USDT**.
+
+**Correction to §1.** I wrote that the position "could not have taken profit because nothing
+was there to fire". Mechanically true, but it implied the deleted TP cost this trade money.
+It did not, as far as the data can show — and where the data is silent I should not have
+implied anything. The new excursion instrumentation (migration 069) recorded:
+
+```
+ symbol   | opened_at           | excursion_first_at  | samples | entry | sl_at_entry | tp_at_entry | mfe_price | mfe_r | closing_price
+ SOL-USDT | 2026-07-28 01:01:20 | 2026-07-28 14:03:19 |      57 | 73.61 |     74.2559 |     72.3783 |     72.55 | 1.641 | 73.5025
+```
+
+With risk = |73.61 − 74.2559| = 0.6459:
+
+- the **target** at 72.3783 sat at **1.907 R**
+- the best price **observed** was 72.55 = **1.641 R**
+- it exited at **0.166 R**
+
+So in the hour that was measured, price never reached the target — the TP would not have
+filled even had it been resting. **But sampling only began at 14:03 and the position opened
+at 01:01, so 13 of its 14 hours are unobserved.** Whether price touched 72.3783 in that
+window is unknown and unknowable: no price history is retained. The honest verdict is
+**the deleted TP cannot be shown to have cost this trade anything, and cannot be cleared
+either**.
+
+What the data *does* show is the more interesting failure: the trade ran to at least
+**+1.64 R** and closed at **+0.17 R**, giving back nearly all of it to a trailed stop. That
+is precisely the "winner given back" shape the forensics report could only guess at — and it
+is the first trade in the system's history where it is measurable rather than invisible.
+
+The bug in §1 is real and worth fixing on its own merits (a stop-only adjustment silently
+deleting a target is indefensible), and it is fixed in
+`.gemini/reports/modify-stops-preserve-unpriced-leg.md`. But this particular trade is not
+evidence of its cost.
 
 ---
 

@@ -118,22 +118,38 @@ failures.
 
 ## 4. What this does NOT do
 
-**The fix is preventative. It does not restore the take-profit SOL already lost.**
+**The fix is preventative only.**
 
-`sol-ai-6486`'s open short is still running with a stop and no target:
+**Update 2026-07-28 15:03 — there is nothing left to restore.** The SOL position closed
+before this fix was deployed, stopped out at 73.5025 for +0.05 USDT. No SOL position is open
+and no SOL triggers remain:
 
 ```
 $ docker compose exec nginx wget -qO- http://order-executor:8004/accounts/blofin-blofin-demo-v5vr/trigger-orders/SOL-USDT
-[{"oid":"10002979398","tpsl":"sl","triggerPx":"73.500000000000000000","sz":"2.66"}]
+[]
 ```
 
-The DB still records `tp_price = 72.3783` on its opening order, so DB and exchange disagree
-and the UI draws a target that is not there. Restoring it means placing a trigger order on a
-live position — a trading action, not telemetry — so it is left for an explicit decision
-rather than done as a side effect of a bug fix.
+An earlier draft of this report described that position as live and asked whether its target
+should be restored. That was stale by three hours and is withdrawn.
 
-Live end-to-end confirmation of preservation is likewise still outstanding: it needs either a
-stop-only `adjust_stops` to fire against a position that *has* a TP (BNB currently does), or
-a deliberate no-op `modify-stops` call against one. Both touch a live position's protection
-during the non-atomic cancel-then-place window, so neither was done unprompted. The unit
-tests cover the logic; the live proof is pending.
+Note also that the deleted target **cannot be shown to have cost that trade anything**: the
+target sat at 1.907 R and the best price observed was 1.641 R, though 13 of the position's 14
+hours predate excursion sampling and are unmeasured. See the update section in
+`.gemini/reports/sol-missing-tp-and-rr-zone-borders.md`. The bug is worth fixing regardless —
+a stop-only adjustment silently destroying a target is indefensible — but this trade is not
+proof of its cost.
+
+Live end-to-end confirmation of preservation is still outstanding. It needs a stop-only
+`adjust_stops` to fire against a position that *has* a target. `bnb-ai-scalper-edbb` still
+carries both legs and is the natural candidate:
+
+```
+$ docker compose exec nginx wget -qO- http://order-executor:8004/accounts/blofin-blofin-demo-v5vr/trigger-orders/BNB-USDT
+[{"oid":"10002979245","tpsl":"sl","triggerPx":"578.34","sz":"3"},
+ {"oid":"10002979244","tpsl":"tp","triggerPx":"559.97","sz":"3"}]
+```
+
+When it fires, the listener log will read `preserved=tp@559.97`. Forcing it instead means a
+deliberate `modify-stops` call, which touches a live position's protection during the
+non-atomic cancel-then-place window — not done unprompted. The unit tests cover the logic;
+the live proof is pending.
