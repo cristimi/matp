@@ -6,6 +6,7 @@ Safety rule: never close or shrink a row on a single exchange read.
 A discrepancy must hold for RECONCILE_MISS_THRESHOLD consecutive passes before acting.
 """
 
+import asyncio
 import logging
 import os
 import uuid
@@ -70,6 +71,15 @@ async def reconcile_once(pool) -> None:
         await sync_position_pnl(pool)
         await _recover_manual_close_pnl(pool)
         return
+
+    # Excursion telemetry (migration 069). Runs before any miss-count processing so the
+    # final sample of a position's life is taken on the same pass that may close it.
+    # Write-only: nothing below reads mfe/mae, and a failure here must never affect
+    # reconciliation, hence the blanket catch.
+    try:
+        await _sample_excursions(pool, rows)
+    except Exception as e:
+        logger.error(f"reconciler: excursion sampling failed (non-fatal): {e}", exc_info=True)
 
     # Group open positions by account_id
     by_account: dict[str, list] = {}
@@ -239,6 +249,143 @@ async def reconcile_once(pool) -> None:
     await sync_position_pnl(pool)
     await _recover_manual_close_pnl(pool)
     logger.debug("reconciler: pass complete")
+
+
+# ── Excursion telemetry (migration 069) ──────────────────────────────────────────
+# One mark-price read per open position per reconciler pass, folded into
+# strategy_positions.mfe_price/mae_price. Pure telemetry: no branch anywhere in this
+# service, order-executor or ai-signal-generator reads these columns, so nothing here
+# can move a stop, size an order or gate a signal.
+#
+# RESOLUTION: sampling at RECONCILE_INTERVAL_SECONDS (default 60s) cannot see a wick
+# between two reads. What lands in the DB is a LOWER BOUND on the true excursion, never
+# the exact extreme — see migration 069's header and always read the columns alongside
+# excursion_samples.
+
+async def _sample_excursions(pool, rows: list) -> None:
+    """Fold this pass's mark price into each open position's MFE/MAE.
+
+    `rows` is the open-position set reconcile_once already loaded (it carries
+    account_id, resolved via the strategies join — strategy_positions has no
+    account_id column of its own).
+
+    get_mark_price returns None on any failure and never raises. A None is skipped
+    silently: excursion_samples is NOT incremented, so the sample count stays an
+    honest record of how much of the position's life was actually observed.
+    """
+    from app.executor_client import get_mark_price
+
+    targets = [r for r in rows if r["account_id"] and r["symbol"]]
+    if not targets:
+        return
+
+    # Concurrent: one HTTP hop per position, and this homelab's cross-container calls
+    # can take seconds under load. Serial reads would stretch a pass past its interval.
+    marks = await asyncio.gather(
+        *(get_mark_price(r["account_id"], r["symbol"]) for r in targets),
+        return_exceptions=True,
+    )
+
+    sampled = 0
+    skipped = 0
+    for row, mark in zip(targets, marks):
+        if isinstance(mark, BaseException):
+            # get_mark_price documents that it never raises; treat a surprise as a miss.
+            logger.warning(
+                f"reconciler: excursion mark-price raised for position {row['id']} "
+                f"({row['symbol']}): {mark!r} — skipping this sample"
+            )
+            skipped += 1
+            continue
+        if mark is None:
+            skipped += 1
+            continue
+        try:
+            mark_dec = Decimal(str(mark))
+        except Exception:
+            logger.warning(
+                f"reconciler: excursion unparseable mark price {mark!r} for position "
+                f"{row['id']} ({row['symbol']}) — skipping this sample"
+            )
+            skipped += 1
+            continue
+        if mark_dec <= 0:
+            skipped += 1
+            continue
+
+        async with pool.acquire() as conn:
+            updated = await conn.execute(_EXCURSION_UPDATE_SQL, row["id"], mark_dec)
+        # "UPDATE 0" when the position closed between the load and now — expected, not an error.
+        if updated.endswith(" 0"):
+            skipped += 1
+        else:
+            sampled += 1
+
+    if sampled or skipped:
+        logger.info(
+            f"reconciler: excursion sampled {sampled}/{len(targets)} open position(s)"
+            + (f", {skipped} skipped (mark price unavailable or position closed)" if skipped else "")
+        )
+
+
+# Single statement so the extremes are read and written atomically — two reconciler
+# passes can never interleave a read-modify-write and lose a sample.
+#
+# ref  : the R denominator, |entry - opening order sl_price|, with entry =
+#        COALESCE(opening order actual_fill_price, entry_price). Same definition the
+#        forensics report used, so old and new numbers stay comparable. NULLIF(...,0)
+#        collapses "no stop", "stop == entry" and a missing opening order into a NULL
+#        denominator, which leaves mfe_r/mae_r NULL rather than writing a garbage number.
+# ext  : the new extremes, direction-aware. For a long, favourable is higher and adverse
+#        is lower; for a short, the reverse. COALESCE seeds both from the first sample.
+_EXCURSION_UPDATE_SQL = """
+    WITH ref AS (
+        SELECT sp.id,
+               COALESCE(oo.actual_fill_price, sp.entry_price) AS entry,
+               NULLIF(
+                   ABS(COALESCE(oo.actual_fill_price, sp.entry_price) - oo.sl_price),
+                   0
+               ) AS risk_dist
+        FROM strategy_positions sp
+        LEFT JOIN orders oo ON oo.id = sp.opening_order_id
+        WHERE sp.id = $1
+    ),
+    ext AS (
+        SELECT sp.id,
+               sp.side,
+               CASE WHEN sp.side = 'long'
+                    THEN GREATEST(COALESCE(sp.mfe_price, $2::numeric), $2::numeric)
+                    ELSE LEAST   (COALESCE(sp.mfe_price, $2::numeric), $2::numeric)
+               END AS new_mfe,
+               CASE WHEN sp.side = 'long'
+                    THEN LEAST   (COALESCE(sp.mae_price, $2::numeric), $2::numeric)
+                    ELSE GREATEST(COALESCE(sp.mae_price, $2::numeric), $2::numeric)
+               END AS new_mae
+        FROM strategy_positions sp
+        WHERE sp.id = $1
+    )
+    UPDATE strategy_positions sp
+    SET mfe_price = ext.new_mfe,
+        mae_price = ext.new_mae,
+        mfe_r = CASE
+                    WHEN ref.risk_dist IS NULL OR ref.entry IS NULL THEN NULL
+                    WHEN ext.side = 'long' THEN (ext.new_mfe - ref.entry) / ref.risk_dist
+                    ELSE                        (ref.entry - ext.new_mfe) / ref.risk_dist
+                END,
+        mae_r = CASE
+                    WHEN ref.risk_dist IS NULL OR ref.entry IS NULL THEN NULL
+                    WHEN ext.side = 'long' THEN (ext.new_mae - ref.entry) / ref.risk_dist
+                    ELSE                        (ref.entry - ext.new_mae) / ref.risk_dist
+                END,
+        excursion_samples  = sp.excursion_samples + 1,
+        excursion_first_at = COALESCE(sp.excursion_first_at, NOW()),
+        excursion_last_at  = NOW(),
+        updated_at         = NOW()
+    FROM ref, ext
+    WHERE sp.id = ref.id
+      AND sp.id = ext.id
+      AND sp.status = 'open'
+"""
 
 
 async def _guard_liquidation_safety(
