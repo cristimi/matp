@@ -6,6 +6,7 @@ from a normalized (base_asset, quote_asset) pair.
 EXCHANGE_FORMATTERS = {
     "blofin":      lambda base, quote: f"{base}-{quote}",       # BTC-USDT
     "hyperliquid": lambda base, quote: base,                     # BTC
+    "binance":     lambda base, quote: f"{base}{quote}",         # BTCUSDT
 }
 
 class SymbolFactory:

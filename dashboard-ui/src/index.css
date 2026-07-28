@@ -46,6 +46,7 @@
   .badge-yellow { @apply badge bg-yellow-100 text-yellow-700 dark:bg-yellow-900/50 dark:text-yellow-300; }
   .badge-gray   { @apply badge bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400; }
   .badge-blue   { @apply badge bg-blue-100 text-blue-700 dark:bg-blue-900/50 dark:text-blue-300; }
+  .badge-amber  { @apply badge bg-amber-100 text-amber-700 dark:bg-amber-900/50 dark:text-amber-300; }
 
   .table-row-hover {
     @apply hover:bg-gray-50 dark:hover:bg-gray-800/50 transition-colors duration-100;

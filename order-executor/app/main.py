@@ -185,6 +185,28 @@ async def validate_credentials(request: ValidateRequest):
         except Exception as e:
             return {"valid": False, "error": str(e)}
 
+    elif request.exchange == "binance":
+        try:
+            from app.adapters.binance import BinanceAdapter
+            adapter = BinanceAdapter(creds, request.mode)
+            try:
+                balance = await adapter.get_balance()
+                if "error" in balance:
+                    return {"valid": False, "error": f"Binance auth failed: {balance['error']}"}
+                # Hedge mode would let an "entry" open a second opposite leg and would
+                # reject every reduce-only close, so refuse the account at the point
+                # it is added rather than at the first trade.
+                hedge = await adapter._check_position_mode()
+                if hedge:
+                    return {"valid": False, "error": f"Binance {hedge}"}
+                total = balance.get("total_balance", 0)
+                ccy   = balance.get("currency", "USDT")
+                return {"valid": True, "detail": f"Connected — balance: {total:.2f} {ccy}"}
+            finally:
+                await adapter.close()
+        except Exception as e:
+            return {"valid": False, "error": str(e)}
+
     return {"valid": False, "error": f"Unsupported exchange for validation: {request.exchange}"}
 
 

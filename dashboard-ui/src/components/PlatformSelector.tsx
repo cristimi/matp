@@ -6,7 +6,7 @@ interface Props {
   onChange?: (platform: string) => void;
 }
 
-const PLATFORMS = ['blofin', 'hyperliquid'];
+const PLATFORMS = ['blofin', 'hyperliquid', 'binance'];
 
 export function PlatformSelector({ current, onChange }: Props) {
   const [selected, setSelected] = useState(current);

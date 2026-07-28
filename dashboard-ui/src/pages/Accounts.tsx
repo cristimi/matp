@@ -52,6 +52,10 @@ export default function Accounts() {
       { key: 'private_key', label: 'API Wallet Private Key', type: 'password', placeholder: '0x...' },
       { key: 'main_wallet', label: 'Main Wallet Address',    type: 'text',     placeholder: '0x...' },
     ],
+    binance: [
+      { key: 'api_key',    label: 'API Key',    type: 'text',     placeholder: '' },
+      { key: 'api_secret', label: 'API Secret', type: 'password', placeholder: '' },
+    ],
   };
 
   const slugify = (name: string, exchange: string): string => {
@@ -516,6 +520,7 @@ export default function Accounts() {
                   }}>
                   <option value="blofin">Blofin</option>
                   <option value="hyperliquid">Hyperliquid</option>
+                  <option value="binance">Binance</option>
                 </select>
               </div>
               <div style={{ flex:1, display:'flex', flexDirection:'column', gap:'5px' }}>

@@ -36,7 +36,7 @@ router.post('/', async (req: Request, res: Response) => {
     });
   }
 
-  const validExchanges = ['blofin', 'hyperliquid'];
+  const validExchanges = ['blofin', 'hyperliquid', 'binance'];
   if (!validExchanges.includes(exchange)) {
     return res.status(400).json({
       error: `Invalid exchange. Must be one of: ${validExchanges.join(', ')}`,
@@ -225,8 +225,40 @@ router.post('/:id/credentials', async (req: Request, res: Response) => {
       return res.status(400).json({ error: validateResult.error || 'Credential validation failed' });
     }
 
+    // Key-based duplicate check for the API-key exchanges. Two accounts sharing one
+    // key are indistinguishable downstream: positions, balance and reconciliation
+    // all read the same exchange account through two strategy identities, so PnL
+    // gets attributed twice. Compared via /meta, which returns the key but never
+    // the secret.
+    if ((exchange === 'blofin' || exchange === 'binance')) {
+      let ownKey: string | undefined;
+      try {
+        const parsed = JSON.parse(credentials_json);
+        ownKey = parsed.api_key;
+      } catch { /* validated upstream; nothing to compare against */ }
+      if (ownKey) {
+        const existingSame = await getPool().query(
+          `SELECT id FROM exchange_accounts WHERE exchange = $1 AND is_active = true AND id != $2`,
+          [exchange, req.params.id]
+        );
+        for (const existing of existingSame.rows) {
+          try {
+            const metaResp = await fetch(`${EXECUTOR_URL}/accounts/${existing.id}/meta`,
+              { signal: AbortSignal.timeout(5000) });
+            if (metaResp.ok) {
+              const meta = await metaResp.json() as any;
+              if (meta.api_key && meta.api_key === ownKey) {
+                return res.status(409).json({
+                  error: `That API key is already registered on account "${existing.id}"`,
+                });
+              }
+            }
+          } catch { /* non-fatal: skip unresponsive account */ }
+        }
+      }
+    }
+
     // HL duplicate check: ensure no existing active account uses the same API wallet
-    // TODO(blofin-dedup): add equivalent check for Blofin using api_key comparison
     if (exchange === 'hyperliquid' && (validateResult as any).wallet) {
       const derivedWallet: string = (validateResult as any).wallet;
       const existingHL = await getPool().query(

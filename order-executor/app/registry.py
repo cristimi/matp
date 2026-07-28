@@ -50,10 +50,14 @@ class AccountRegistry:
             from app.adapters.hyperliquid import HyperliquidAdapter
             return HyperliquidAdapter(credentials, mode)
 
+        elif exchange == "binance":
+            from app.adapters.binance import BinanceAdapter
+            return BinanceAdapter(credentials, mode)
+
         else:
             raise ValueError(
                 f"Unknown exchange '{exchange}' for account {account_id}. "
-                f"Supported: blofin, hyperliquid"
+                f"Supported: blofin, hyperliquid, binance"
             )
 
     async def invalidate(self, account_id: str):

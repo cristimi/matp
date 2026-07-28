@@ -27,6 +27,7 @@ export function PlatformBadge({ platform }: { platform: string }) {
   const colors: Record<string, string> = {
     blofin:      'badge-blue',
     hyperliquid: 'badge-yellow',
+    binance:     'badge-amber',
     auto:        'badge-gray',
   };
   return <span className={colors[platform] ?? 'badge-gray'}>{platform}</span>;
