@@ -139,17 +139,66 @@ hours predate excursion sampling and are unmeasured. See the update section in
 a stop-only adjustment silently destroying a target is indefensible — but this trade is not
 proof of its cost.
 
-Live end-to-end confirmation of preservation is still outstanding. It needs a stop-only
-`adjust_stops` to fire against a position that *has* a target. `bnb-ai-scalper-edbb` still
-carries both legs and is the natural candidate:
+## 5. Live end-to-end proof on a real position
+
+Run on the operator's explicit instruction, against `bnb-ai-scalper-edbb`'s open BNB short —
+the only remaining position carrying both legs. A stop-only `adjust-stops` was sent through
+the **full listener path** (not straight to the executor), re-using the stop's own current
+price so the stop itself was unchanged. This is the exact request shape that destroyed SOL's
+target.
+
+**Before** — both legs resting:
 
 ```
 $ docker compose exec nginx wget -qO- http://order-executor:8004/accounts/blofin-blofin-demo-v5vr/trigger-orders/BNB-USDT
-[{"oid":"10002979245","tpsl":"sl","triggerPx":"578.34","sz":"3"},
- {"oid":"10002979244","tpsl":"tp","triggerPx":"559.97","sz":"3"}]
+[{"oid":"10002979245","tpsl":"sl","triggerPx":"578.340000000000000000","sz":"3"},
+ {"oid":"10002979244","tpsl":"tp","triggerPx":"559.970000000000000000","sz":"3"}]
 ```
 
-When it fires, the listener log will read `preserved=tp@559.97`. Forcing it instead means a
-deliberate `modify-stops` call, which touches a live position's protection during the
-non-atomic cancel-then-place window — not done unprompted. The unit tests cover the logic;
-the live proof is pending.
+**The call** — `sl_price` only, no `tp_price`:
+
+```
+POST http://order-listener:8001/strategies/bnb-ai-scalper-edbb/adjust-stops
+{"sl_price": 578.34}
+
+{"success":true,"position_id":"ce29013f-df30-401f-8a30-f16a86605594",
+ "cancelled":[{"oid":"10002979245","tpsl":"sl","success":true},
+              {"oid":"10002979244","tpsl":"tp","success":true}],
+ "placed":[{"tpsl":"tp","oid":"10002984061","status":"placed"},
+           {"tpsl":"sl","oid":"10002984062","status":"placed"}],
+ "sl_ok":true,"tp_ok":true,
+ "sl_oid":"10002984062","tp_oid":"10002984061","attempts":1,
+ "preserved":[{"tpsl":"tp","triggerPx":559.97}],"error_msg":null}
+```
+
+Both legs cancelled (as always), **both legs placed back** — the TP among them, carried
+forward at 559.97 without the caller ever mentioning it.
+
+**After** — both legs still resting, new oids:
+
+```
+$ docker compose exec nginx wget -qO- http://order-executor:8004/accounts/blofin-blofin-demo-v5vr/trigger-orders/BNB-USDT
+[{"oid":"10002984062","tpsl":"sl","triggerPx":"578.340000000000000000","sz":"3"},
+ {"oid":"10002984061","tpsl":"tp","triggerPx":"559.970000000000000000","sz":"3"}]
+```
+
+**The logs, side by side with the bug that started this.** Same request shape, opposite
+outcome:
+
+```
+# SOL, old code — the target is gone
+2026-07-28 14:17:13 app.webhook_handler: adjust-stops strategy=sol-ai-6486
+  (SOL-USDT short) tp=None sl=73.5 cancelled=1 placed=1
+
+# BNB, new code — the target survives
+2026-07-28 17:59:56 app.webhook_handler: adjust-stops strategy=bnb-ai-scalper-edbb
+  (BNB-USDT short) tp=None sl=578.34 cancelled=2 placed=2 preserved=tp@559.97
+
+2026-07-28 17:59:55 app.main: modify-stops blofin-blofin-demo-v5vr/BNB-USDT: found 2 trigger orders
+2026-07-28 17:59:55 app.main: modify-stops blofin-blofin-demo-v5vr/BNB-USDT: preserving tp=559.97
+  (not priced by caller, carried forward instead of dropped)
+```
+
+The whole operation completed in one attempt (`attempts: 1`), so the cancel-then-place window
+where the position was unprotected lasted under two seconds. BNB is fully protected, with
+both legs at their original prices.
