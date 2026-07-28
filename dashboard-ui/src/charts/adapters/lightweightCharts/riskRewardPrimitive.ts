@@ -25,20 +25,23 @@ import type {
 
 import type { RiskRewardModel } from '../../core';
 
+// The zones are fill-only. They used to carry a 1px border at 0.70 alpha in the
+// SAME hue as the candles — profitStroke was rgb(34,197,94), which is exactly
+// COLORS.up, and lossStroke was rgb(239,68,68), exactly COLORS.down. Because this
+// primitive draws at zOrder 'top', those borders ran over the bars and swallowed
+// every wick they crossed: a wick and the zone edge were the same pixel colour, so
+// the high/low of any candle touching entry, target or stop simply vanished.
+// The fills are translucent enough to read the zone without an outline.
 export interface RiskRewardColors {
   profitFill:   string;
-  profitStroke: string;
   lossFill:     string;
-  lossStroke:   string;
   entryLine:    string;
   progressFill: string;
 }
 
 export const DEFAULT_COLORS: RiskRewardColors = {
   profitFill:   'rgba(34, 197, 94, 0.16)',
-  profitStroke: 'rgba(34, 197, 94, 0.70)',
   lossFill:     'rgba(239, 68, 68, 0.16)',
-  lossStroke:   'rgba(239, 68, 68, 0.70)',
   entryLine:    'rgba(226, 232, 240, 0.95)',
   progressFill: 'rgba(226, 232, 240, 0.10)',
 };
@@ -74,9 +77,10 @@ class RiskRewardRenderer implements IPrimitivePaneRenderer {
       };
       const yAt = (price: number): number | null => this.series.priceToCoordinate(price);
 
+      // Fill only — no outline. See the note on RiskRewardColors: a bordered zone
+      // hid the wick of every candle its edge crossed.
       const zone = (
-        x1: number, x2: number, yA: number, yB: number,
-        fill: string, stroke: string,
+        x1: number, x2: number, yA: number, yB: number, fill: string,
       ) => {
         const top = Math.min(yA, yB);
         const h   = Math.max(Math.abs(yB - yA), 1);
@@ -84,11 +88,6 @@ class RiskRewardRenderer implements IPrimitivePaneRenderer {
         context.save();
         context.fillStyle = fill;
         context.fillRect(x1, top, w, h);
-        context.strokeStyle = stroke;
-        context.lineWidth   = 1;
-        context.beginPath();
-        context.rect(x1 + 0.5, top + 0.5, w - 1, h - 1);
-        context.stroke();
         context.restore();
       };
 
@@ -104,13 +103,13 @@ class RiskRewardRenderer implements IPrimitivePaneRenderer {
         if (seg.target != null) {
           const yT = yAt(seg.target);
           if (yT !== null) {
-            zone(x1, x2, yEntry, yT, this.colors.profitFill, this.colors.profitStroke);
+            zone(x1, x2, yEntry, yT, this.colors.profitFill);
           }
         }
         if (seg.stop != null) {
           const yS = yAt(seg.stop);
           if (yS !== null) {
-            zone(x1, x2, yEntry, yS, this.colors.lossFill, this.colors.lossStroke);
+            zone(x1, x2, yEntry, yS, this.colors.lossFill);
           }
         }
 

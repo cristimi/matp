@@ -319,8 +319,15 @@ async def _log_order(
     pool, payload: WebhookPayload, order_id: uuid.UUID, strategy_id: str, pair_id: int,
     symbol: str, effective_leverage: int, effective_margin_mode: str = "isolated",
     signal_log_id: Optional[int] = None,
+    mark_price_at_decision: Optional[Decimal] = None,
 ) -> None:
-    """Write initial order record to PostgreSQL."""
+    """Write initial order record to PostgreSQL.
+
+    mark_price_at_decision is telemetry only (migration 070): the exchange mark at
+    the instant this order was created, so slippage against actual_fill_price is
+    computable later. Nothing reads it to make a decision, and None is a normal
+    outcome — a failed mark-price read must never stop an order.
+    """
     async with pool.acquire() as conn:
         await conn.execute(
             """
@@ -328,11 +335,11 @@ async def _log_order(
                 id, received_at, pair_id, symbol, side, signal, order_type, size, price,
                 leverage, margin_mode, tp_price, sl_price, platform, strategy_id,
                 status, raw_webhook, signal_source, signal_metadata, indicator_price,
-                signal_log_id
+                signal_log_id, mark_price_at_decision
             ) VALUES (
                 $1, $2, $3, $4, $5, $6, $7, $8,
                 $9, $10, $11, $12, $13, $14, $15,
-                'received', $16, $17, $18, $19, $20
+                'received', $16, $17, $18, $19, $20, $21
             )
             """,
             order_id,
@@ -355,6 +362,7 @@ async def _log_order(
             json.dumps(payload.signal_metadata),
             payload.indicator_price,
             signal_log_id,
+            mark_price_at_decision,
         )
 
         # seq 0 of the price history. Written here rather than after the exchange
@@ -876,10 +884,17 @@ async def receive_webhook(
     # Reference price resolution — shared by clamp and guaranteed-SL below.
     # For opening signals without a webhook price, fetch the exchange mark price.
     # Backstop: reject if still no price — never place an unsized open.
+    # Telemetry only (migration 070): the exchange mark at this decision instant.
+    # Seeded from the sizing read below when that branch runs — a market open has no
+    # webhook price, so the dominant entry path costs zero extra executor calls.
+    _decision_mark: Optional[Decimal] = None
+
     _ref_price = float(payload.indicator_price or payload.price or 0)
     if payload.signal in ("open_long", "open_short") and _ref_price <= 0:
         _acct_for_price = strategy.get("account_id") or ""
         _mp = await get_mark_price(_acct_for_price, resolved.execution_symbol)
+        if _mp:
+            _decision_mark = Decimal(str(_mp))
         _ref_price = float(_mp) if _mp else 0.0
         if _ref_price > 0:
             logger.info(
@@ -976,8 +991,32 @@ async def receive_webhook(
             f"Price stripped: {resolved.price_stripped}"
         )
 
+    # Decision-time mark snapshot (migration 070). Already in hand for a market open;
+    # fetched here for a priced (limit) order and for every close signal, which never
+    # reach the sizing read above. call_executor_get is bounded at 10s and never
+    # raises, get_mark_price returns None on failure, and the try/except is a third
+    # layer: an order must never fail because telemetry could not be gathered.
+    if _decision_mark is None:
+        try:
+            _mp_snap = await get_mark_price(
+                strategy.get("account_id") or "", resolved.execution_symbol
+            )
+            if _mp_snap:
+                _decision_mark = Decimal(str(_mp_snap))
+            else:
+                logger.info(
+                    f"strategy={strategy_id}: mark price unavailable for "
+                    f"{resolved.execution_symbol} — order {order_id} proceeds with "
+                    f"mark_price_at_decision NULL"
+                )
+        except Exception as _e:
+            logger.warning(
+                f"strategy={strategy_id}: decision-mark snapshot failed for "
+                f"{resolved.execution_symbol}: {_e!r} — proceeding without it"
+            )
+
     await _log_webhook_call(pool, strategy_id, 200)
-    await _log_order(pool, payload, order_id, strategy_id, None, resolved.execution_symbol, effective_leverage, effective_margin_mode, signal_log_id)
+    await _log_order(pool, payload, order_id, strategy_id, None, resolved.execution_symbol, effective_leverage, effective_margin_mode, signal_log_id, _decision_mark)
 
     _acct_id    = strategy.get("account_id") or ""
     _acct_label = await _get_account_label(pool, _acct_id)
