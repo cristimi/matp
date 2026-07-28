@@ -283,10 +283,17 @@ async def call_executor_modify_stops(
     side:       str,
     tp_price=None,
     sl_price=None,
+    clear_tp:   bool = False,
+    clear_sl:   bool = False,
 ) -> dict:
     """
     POST to /accounts/{account_id}/positions/modify-stops.
     Returns result dict. Never raises.
+
+    Omitting a leg PRESERVES it at its current resting price — the executor reads the
+    live triggers and carries an unpriced leg forward. Pass clear_tp/clear_sl to
+    remove one deliberately. (Before 2026-07-28 an omitted leg was silently deleted,
+    which is how sol-ai-6486 lost its take-profit to a stop-only adjust_stops.)
     """
     url = f"{EXECUTOR_URL}/accounts/{account_id}/positions/modify-stops"
     body: dict = {"symbol": symbol, "side": side}
@@ -294,6 +301,10 @@ async def call_executor_modify_stops(
         body["tp_price"] = float(tp_price)
     if sl_price is not None:
         body["sl_price"] = float(sl_price)
+    if clear_tp:
+        body["clear_tp"] = True
+    if clear_sl:
+        body["clear_sl"] = True
     try:
         async with httpx.AsyncClient(timeout=TIMEOUT_SECONDS) as client:
             response = await client.post(url, json=body)

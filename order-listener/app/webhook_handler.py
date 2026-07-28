@@ -580,10 +580,15 @@ async def adjust_stops_for_strategy(
             },
         )
 
+    _preserved = result.get("preserved") or []
     logger.info(
         f"adjust-stops strategy={strategy_id} pos={pos['id']} ({pos['symbol']} {pos['side']})"
         f" tp={tp_price} sl={sl_price}"
         f" cancelled={len(result.get('cancelled', []))} placed={len(result.get('placed', []))}"
+        + (
+            " preserved=" + ",".join(f"{p['tpsl']}@{p['triggerPx']}" for p in _preserved)
+            if _preserved else ""
+        )
     )
     return {"success": True, "position_id": str(pos["id"]), **result}
 

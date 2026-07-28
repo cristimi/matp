@@ -446,6 +446,11 @@ class ModifyStopsRequest(PydanticBaseModel):
     side:     str                         # position side: "long" | "short"
     tp_price: _Optional[float] = None
     sl_price: _Optional[float] = None
+    # An OMITTED leg is PRESERVED at whatever price it is currently resting at, not
+    # deleted. Set clear_tp/clear_sl to remove a leg on purpose. See the note on
+    # modify_stops() for why this default changed.
+    clear_tp: bool = False
+    clear_sl: bool = False
 
 
 _MODIFY_STOPS_VERIFY_ATTEMPTS   = 3
@@ -486,14 +491,38 @@ async def modify_stops(account_id: str, request: ModifyStopsRequest):
     Cancel existing TP/SL trigger orders for a position and place new ones.
     Does not touch the position itself — pure stop management.
 
-    `success` is True only if every requested leg (SL, and TP if requested) is
-    CONFIRMED resting on the exchange after a verify-read-back+retry loop — never
-    trust the adapter's own place call alone (an exchange can accept the signed
-    action while rejecting an individual leg). Because cancel-then-place is not
-    atomic, a caller must inspect `sl_ok`/`tp_ok` (not just `success`) to know
+    ── AN OMITTED LEG IS PRESERVED, NOT DELETED ──────────────────────────────────
+    This route cancels EVERY resting trigger before placing, because that is how a
+    leg gets resized after a partial close. It used to then place back only the legs
+    the caller handed a price for, which meant a request carrying just a stop
+    silently destroyed the take-profit.
+
+    That is not hypothetical. sol-ai-6486 held an open short whose TP (72.3783) was
+    wiped by an `adjust_stops` the AI issued with a new stop and no target:
+
+        adjust-stops strategy=sol-ai-6486 pos=aeb2bfff (SOL-USDT short)
+          tp=None sl=73.5 cancelled=1 placed=1
+
+    leaving a position that could only ever exit via its stop. The AI's
+    dispatch_adjust_stops omits tp_price whenever resolved_tp_price is None, so every
+    stop-only adjustment did this. See
+    .gemini/reports/sol-missing-tp-and-rr-zone-borders.md.
+
+    So: a leg with no price in the request is re-placed at the price it is CURRENTLY
+    resting at, read back from the exchange in step 2. Removing a leg is now an
+    explicit act — set clear_tp / clear_sl. Every other caller in the codebase
+    already passes both legs explicitly (the partial-close resize, the post-fill
+    re-anchor, the liquidation-safety guard), so this changes nothing for them.
+
+    `success` is True only if every effective leg (SL, and TP if one is requested or
+    preserved) is CONFIRMED resting on the exchange after a verify-read-back+retry
+    loop — never trust the adapter's own place call alone (an exchange can accept the
+    signed action while rejecting an individual leg). Because cancel-then-place is
+    not atomic, a caller must inspect `sl_ok`/`tp_ok` (not just `success`) to know
     whether the position may currently be unprotected.
 
-    Returns: {success, cancelled, placed, sl_ok, tp_ok, sl_oid, tp_oid, attempts, error_msg}
+    Returns: {success, cancelled, placed, sl_ok, tp_ok, sl_oid, tp_oid, attempts,
+              preserved, error_msg}
     """
     try:
         adapter = await registry.get(account_id)
@@ -537,6 +566,68 @@ async def modify_stops(account_id: str, request: ModifyStopsRequest):
             f"modify-stops {account_id}/{request.symbol}: found {len(existing)} trigger orders"
         )
 
+        # 2b. Resolve the EFFECTIVE price for each leg before anything is cancelled.
+        # A leg the caller did not price is carried forward at whatever it is resting
+        # at now, so cancel-then-place cannot silently drop it. `existing` is a
+        # CONFIRMED read (an unknown one returned above), so an absent leg here really
+        # is absent rather than unreadable.
+        existing_tp = existing_sl = None
+        for trig in existing:
+            px = trig.get("triggerPx")
+            if px is None:
+                continue
+            try:
+                px_f = float(px)
+            except (TypeError, ValueError):
+                logger.warning(
+                    f"modify-stops {account_id}/{request.symbol}: unparseable triggerPx "
+                    f"{px!r} on oid={trig.get('oid')} — ignoring for preservation"
+                )
+                continue
+            if trig.get("tpsl") == "tp":
+                existing_tp = px_f
+            elif trig.get("tpsl") == "sl":
+                existing_sl = px_f
+
+        eff_tp = request.tp_price
+        if eff_tp is None and not request.clear_tp:
+            eff_tp = existing_tp
+        eff_sl = request.sl_price
+        if eff_sl is None and not request.clear_sl:
+            eff_sl = existing_sl
+
+        preserved = []
+        if request.tp_price is None and eff_tp is not None:
+            preserved.append({"tpsl": "tp", "triggerPx": eff_tp})
+        if request.sl_price is None and eff_sl is not None:
+            preserved.append({"tpsl": "sl", "triggerPx": eff_sl})
+        if preserved:
+            logger.info(
+                f"modify-stops {account_id}/{request.symbol}: preserving "
+                + ", ".join(f"{p['tpsl']}={p['triggerPx']}" for p in preserved)
+                + " (not priced by caller, carried forward instead of dropped)"
+            )
+
+        # Nothing to place and nothing asked to be cleared — cancelling here would
+        # strip the position for no reason. Bail out before touching anything.
+        if eff_tp is None and eff_sl is None and not (request.clear_tp or request.clear_sl):
+            logger.info(
+                f"modify-stops {account_id}/{request.symbol}: no legs requested and none "
+                f"resting — nothing to do, leaving the position untouched"
+            )
+            return {
+                "success":   True,
+                "cancelled": [],
+                "placed":    [],
+                "sl_ok":     None,
+                "tp_ok":     None,
+                "sl_oid":    None,
+                "tp_oid":    None,
+                "attempts":  0,
+                "preserved": [],
+                "error_msg": None,
+            }
+
         # 3. Cancel them
         cancelled = []
         for trig in existing:
@@ -557,16 +648,16 @@ async def modify_stops(account_id: str, request: ModifyStopsRequest):
         # (None) never causes that demotion — it only pauses confirmation, so a
         # transient read failure can never trigger a duplicate re-place.
         trigger_side = "sell" if request.side == "long" else "buy"
-        sl_state = _LEG_PENDING if request.sl_price is not None else None
-        tp_state = _LEG_PENDING if request.tp_price is not None else None
+        sl_state = _LEG_PENDING if eff_sl is not None else None
+        tp_state = _LEG_PENDING if eff_tp is not None else None
         all_placed: list = []
         sl_oid = tp_oid = None
         attempts = 0
 
         while (sl_state == _LEG_PENDING or tp_state == _LEG_PENDING) and attempts < _MODIFY_STOPS_VERIFY_ATTEMPTS:
             attempts += 1
-            place_tp = request.tp_price if tp_state == _LEG_PENDING else None
-            place_sl = request.sl_price if sl_state == _LEG_PENDING else None
+            place_tp = eff_tp if tp_state == _LEG_PENDING else None
+            place_sl = eff_sl if sl_state == _LEG_PENDING else None
             place_result = await adapter.place_trigger_orders(
                 symbol       = request.symbol,
                 trigger_side = trigger_side,
@@ -608,8 +699,8 @@ async def modify_stops(account_id: str, request: ModifyStopsRequest):
                     f"awaiting-confirm leg as-is (not re-placing on an unknown read)"
                 )
             else:
-                if sl_state in (_LEG_AWAITING_CONFIRM, _LEG_PENDING) and request.sl_price is not None:
-                    sl_leg = _find_landed_leg(verify, "sl", request.sl_price)
+                if sl_state in (_LEG_AWAITING_CONFIRM, _LEG_PENDING) and eff_sl is not None:
+                    sl_leg = _find_landed_leg(verify, "sl", eff_sl)
                     if sl_leg:
                         sl_oid = sl_leg.get("oid")
                         sl_state = _LEG_CONFIRMED
@@ -617,8 +708,8 @@ async def modify_stops(account_id: str, request: ModifyStopsRequest):
                         # Adapter reported it placed, but a CONFIRMED read-back shows
                         # it genuinely absent — safe to retry placing next attempt.
                         sl_state = _LEG_PENDING
-                if tp_state in (_LEG_AWAITING_CONFIRM, _LEG_PENDING) and request.tp_price is not None:
-                    tp_leg = _find_landed_leg(verify, "tp", request.tp_price)
+                if tp_state in (_LEG_AWAITING_CONFIRM, _LEG_PENDING) and eff_tp is not None:
+                    tp_leg = _find_landed_leg(verify, "tp", eff_tp)
                     if tp_leg:
                         tp_oid = tp_leg.get("oid")
                         tp_state = _LEG_CONFIRMED
@@ -633,8 +724,11 @@ async def modify_stops(account_id: str, request: ModifyStopsRequest):
                 )
                 await asyncio.sleep(_MODIFY_STOPS_VERIFY_DELAY_S)
 
-        sl_ok = None if request.sl_price is None else (sl_state == _LEG_CONFIRMED)
-        tp_ok = None if request.tp_price is None else (tp_state == _LEG_CONFIRMED)
+        # Reported against the EFFECTIVE legs: a preserved TP that failed to land is a
+        # real failure the caller must hear about — under the old behaviour that leg
+        # would simply have vanished and still reported success.
+        sl_ok = None if eff_sl is None else (sl_state == _LEG_CONFIRMED)
+        tp_ok = None if eff_tp is None else (tp_state == _LEG_CONFIRMED)
         success = (sl_ok is not False) and (tp_ok is not False)
 
         error_msg = None
@@ -657,6 +751,7 @@ async def modify_stops(account_id: str, request: ModifyStopsRequest):
             "sl_oid":    sl_oid,
             "tp_oid":    tp_oid,
             "attempts":  attempts,
+            "preserved": preserved,
             "error_msg": error_msg,
         }
 
