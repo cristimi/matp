@@ -77,6 +77,90 @@ def _missing_inputs(sc: dict, state: dict) -> list[str]:
     return missing
 
 
+# (use_* flag, key in the snapshot, state key, sub-key | None, extractor).
+# Deliberately the same (flag, top_key, sub_key) triple shape as
+# _MISSING_INPUT_CHECKS so the two stay consistent: anything that lands in
+# missing_inputs also lands here as an explicit null, never as an absent key.
+#
+# The extractor pulls a COMPACT numeric summary, not the whole payload — this
+# column is for slicing results by regime, not for reconstructing the prompt.
+_REGIME_SNAPSHOT_FIELDS = [
+    ('use_volatility_regime', 'volatility_regime', 'volatility_regime', None,
+     lambda v: {
+         'atr_percentile':      v.get('atr_percentile'),
+         'bb_width_percentile': v.get('bb_width_percentile'),
+         'squeeze_flag':        v.get('squeeze_flag'),
+     }),
+    ('use_funding_rate', 'funding_rate', 'sentiment_data', 'funding_rate',
+     lambda v: {
+         'rate':           v.get('rate'),
+         'interpretation': v.get('interpretation'),
+     }),
+    ('use_fear_greed', 'fear_greed', 'sentiment_data', 'fear_greed',
+     lambda v: {
+         'value': v.get('value'),
+         'label': v.get('label'),
+     }),
+    ('use_open_interest', 'open_interest', 'sentiment_data', 'open_interest',
+     lambda v: {
+         'change_24h_pct':   v.get('change_24h_pct'),
+         'long_short_ratio': v.get('long_short_ratio'),
+     }),
+    ('use_cvd', 'cvd', 'cvd_data', None,
+     lambda v: {
+         'cvd_window_usd': v.get('cvd_window_usd'),
+         'cvd_trend':      v.get('cvd_trend'),
+         'cvd_divergence': v.get('cvd_divergence'),
+     }),
+    # The strategy's OWN symbol's trend per timeframe — NOT a market-wide regime.
+    # For a BTC strategy this is BTC's trend; for eth-ai-34d2 it is ETH's.
+    ('use_mtf_structure', 'mtf_structure', 'mtf_structure', None,
+     lambda v: {
+         tf['tf']: tf.get('trend_direction')
+         for tf in v if isinstance(tf, dict) and tf.get('tf')
+     }),
+    # BTC's share of total market cap, not its trend. Disabled on every strategy
+    # since 2026-07-05, so expect this key to be absent on current rows.
+    ('use_btc_dominance', 'btc_dominance', 'market_context', 'btc_dominance',
+     lambda v: {
+         'value': v.get('btc_dominance'),
+         'trend': v.get('btc_dom_trend'),
+     }),
+]
+
+
+def _regime_snapshot(sc: dict, state: dict) -> dict:
+    """The numeric market state this decision was made in (migration 071).
+
+    Three states per key, and the difference matters when reading results back:
+      key absent         -> the strategy never enabled that source
+      key present, None  -> enabled but the fetch came back empty; the model
+                            decided blind to it (same row lists it in missing_inputs)
+      key present, value -> delivered, and this is what the model was shown
+
+    So an unrequested source and a failed one can never be confused for each
+    other, which is the whole reason this column exists.
+    """
+    snapshot: dict = {}
+    for flag, key, top_key, sub_key, extract in _REGIME_SNAPSHOT_FIELDS:
+        if not sc.get(flag):
+            continue                      # never requested -> key stays ABSENT
+        value = state.get(top_key)
+        if sub_key is not None:
+            value = (value or {}).get(sub_key)
+        if not value:
+            snapshot[key] = None          # requested, did not arrive
+            continue
+        try:
+            snapshot[key] = extract(value)
+        except Exception as exc:
+            # A shape change upstream must never cost us the whole row, and must
+            # never be silently indistinguishable from "did not arrive".
+            logger.warning("regime_snapshot: could not summarise %s: %s", key, exc)
+            snapshot[key] = {'error': 'unparseable'}
+    return snapshot
+
+
 async def node_dispatch(state: AgentState) -> AgentState:
     pool   = get_pool()
     sc     = state['strategy_config']
@@ -102,6 +186,15 @@ async def node_dispatch(state: AgentState) -> AgentState:
     fallback_attempts_json = json.dumps(fallback_attempts) if fallback_attempts else None
     scout_usage = state.get('scout_usage') or {}
 
+    # Migration 071. Built even when it comes out empty ({} = the strategy enabled
+    # none of these sources), so an empty snapshot and a pre-071 NULL row stay
+    # distinguishable. Never allowed to break the log write.
+    try:
+        regime_snapshot_json = json.dumps(_regime_snapshot(sc, state))
+    except Exception as exc:
+        logger.warning("regime_snapshot build failed: %s", exc)
+        regime_snapshot_json = None
+
     # ── 1. Always write ai_signal_log ────────────────────────────────────
     signal_log_id = None
     try:
@@ -116,9 +209,9 @@ async def node_dispatch(state: AgentState) -> AgentState:
                     llm_provider, llm_model, geometry_data,
                     input_tokens, output_tokens, total_tokens, missing_inputs,
                     llm_tier, scout_input_tokens, scout_output_tokens,
-                    scout_total_tokens, fallback_attempts
+                    scout_total_tokens, fallback_attempts, regime_snapshot
                 ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16::jsonb,
-                          $17,$18,$19,$20,$21,$22,$23,$24,$25::jsonb)
+                          $17,$18,$19,$20,$21,$22,$23,$24,$25::jsonb,$26::jsonb)
                 RETURNING id
                 """,
                 state['strategy_id'],
@@ -146,6 +239,7 @@ async def node_dispatch(state: AgentState) -> AgentState:
                 scout_usage.get('output_tokens'),
                 scout_usage.get('total_tokens'),
                 fallback_attempts_json,
+                regime_snapshot_json,
             )
     except Exception as exc:
         logger.error("Failed to write ai_signal_log: %s", exc)
