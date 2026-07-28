@@ -32,8 +32,6 @@ export interface RiskRewardColors {
   lossStroke:   string;
   entryLine:    string;
   progressFill: string;
-  label:        string;
-  labelText:    string;
 }
 
 export const DEFAULT_COLORS: RiskRewardColors = {
@@ -43,13 +41,9 @@ export const DEFAULT_COLORS: RiskRewardColors = {
   lossStroke:   'rgba(239, 68, 68, 0.70)',
   entryLine:    'rgba(226, 232, 240, 0.95)',
   progressFill: 'rgba(226, 232, 240, 0.10)',
-  label:        'rgba(15, 23, 42, 0.88)',
-  labelText:    'rgba(241, 245, 249, 0.98)',
 };
 
 const toUtc = (ms: number) => Math.floor(ms / 1000) as UTCTimestamp;
-
-const FONT = '11px ui-sans-serif, system-ui, -apple-system, sans-serif';
 
 class RiskRewardRenderer implements IPrimitivePaneRenderer {
   constructor(
@@ -167,47 +161,11 @@ class RiskRewardRenderer implements IPrimitivePaneRenderer {
         }
       }
 
-      // ── Labels on the right edge, TradingView-style ────────────────────────
-      const last = segments[segments.length - 1];
-      const xEnd = xAt(last.to, width);
-      const px   = (v: number) => v.toFixed(this.decimals);
-
-      const chip = (y: number | null, text: string, accent: string) => {
-        if (y === null) return;
-        context.save();
-        context.font = FONT;
-        const w = context.measureText(text).width + 10;
-        const h = 16;
-        const x = Math.min(xEnd + 6, width - w - 2);
-        context.fillStyle = this.colors.label;
-        context.beginPath();
-        context.rect(x, y - h / 2, w, h);
-        context.fill();
-        context.strokeStyle = accent;
-        context.lineWidth = 1;
-        context.stroke();
-        context.fillStyle = this.colors.labelText;
-        context.textBaseline = 'middle';
-        context.fillText(text, x + 5, y + 0.5);
-        context.restore();
-      };
-
-      const { riskPct, rewardPct, riskReward } = this.model;
-      if (last.target != null) {
-        chip(yAt(last.target),
-             `TP ${px(last.target)}${rewardPct != null ? `  +${rewardPct.toFixed(2)}%` : ''}`,
-             this.colors.profitStroke);
-      }
-      if (last.stop != null) {
-        chip(yAt(last.stop),
-             `SL ${px(last.stop)}${riskPct != null ? `  −${riskPct.toFixed(2)}%` : ''}`,
-             this.colors.lossStroke);
-      }
-      chip(yAt(last.entry),
-           riskReward != null
-             ? `${px(last.entry)}  R:R ${riskReward.toFixed(2)}`
-             : px(last.entry),
-           this.colors.entryLine);
+      // No text is drawn over the candles. SL / entry / TP each already carry a
+      // tag on the right-hand price axis (the `createPriceLine` calls in the
+      // adapter), so chips floating beside the same levels only said it twice and
+      // covered the bars while doing it. Risk, reward and R:R moved out to the
+      // card's own details grid.
     });
   }
 }

@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { HeaderPill }    from '../components/shared/HeaderPill';
 import { DataGrid }      from '../components/shared/DataGrid';
 import { ActionBand }    from '../components/shared/ActionBand';
-import { ExpandableChart } from '../components/ExpandableChart';
+import { ExpandableChart, type ChartStat } from '../components/ExpandableChart';
 import { SectionHeader } from '../components/shared/SectionHeader';
 import { TopBar }        from '../components/shared/TopBar';
 import { FilterBar }     from '../components/shared/FilterBar';
@@ -52,6 +52,13 @@ function PositionCard({
   const { symbol, side, status } = position;
   const isStale  = status === 'stale';
   const isClosed = status === 'closed';
+
+  // Risk / Reward / R:R, derived by the chart panel from the same overlay it
+  // draws. Kept after the chart is collapsed again: they describe the position,
+  // not the chart, and a figure that vanishes when you close a panel is worse
+  // than one that stays. Only the stop and target the position actually has can
+  // produce them, so an empty list simply means there is nothing to show.
+  const [chartStats, setChartStats] = useState<ChartStat[]>([]);
 
   // Left bar color
   const barColor = isClosed ? 'var(--gray)'
@@ -152,6 +159,19 @@ function PositionCard({
       ),
     },
   ];
+
+  // Sits directly under Entry/Size/Margin, where the numbers it qualifies are.
+  const riskRow = chartStats.map(s => ({
+    label: s.label,
+    value: (
+      <span style={{
+        fontFamily:'JetBrains Mono, monospace', fontSize:'13px',
+        fontWeight:600, color: s.color || 'var(--text)', whiteSpace:'nowrap',
+      }}>
+        {s.value}
+      </span>
+    ),
+  }));
 
   const botRow = isClosed ? [
     {
@@ -345,10 +365,13 @@ function PositionCard({
       </div>
 
       {/* Data grid */}
-      <DataGrid rows={[topRow, botRow]} />
+      <DataGrid rows={riskRow.length ? [topRow, riskRow, botRow] : [topRow, botRow]} />
 
       {/* Action band or closed band */}
-      <ExpandableChart path={`/positions/${position.id}/candles`} />
+      <ExpandableChart
+        path={`/positions/${position.id}/candles`}
+        onStats={setChartStats}
+      />
 
       {isClosed ? (
         <div style={{

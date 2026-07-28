@@ -103,7 +103,25 @@ function Message({ text }: { text: string }) {
  * directly beneath it — can position each independently. Mount it only while
  * open: mounting is what triggers the fetch and creates the chart.
  */
-export function ChartPanel({ path }: { path: string }) {
+/** One labelled figure the panel derives from the chart payload. */
+export interface ChartStat {
+  label: string;
+  value: string;
+  color?: string;
+}
+
+export function ChartPanel({ path, onStats }: {
+  path: string;
+  /**
+   * Hand the derived figures (Risk, Reward, R:R, price moves) to the caller
+   * instead of drawing them under the chart. Supplying this is what moves them:
+   * a caller that wants them somewhere better — the Positions card puts them in
+   * its details grid, beside Size and Margin — takes them over entirely, and the
+   * strip below the chart is not rendered. Callers that pass nothing keep the
+   * strip exactly as it was.
+   */
+  onStats?: (stats: ChartStat[]) => void;
+}) {
   const [payload, setPayload] = useState<ChartPayload | null>(null);
   const [error,   setError]   = useState<string | null>(null);
   // null = whatever the API defaults to (two rungs below the strategy's own).
@@ -158,6 +176,38 @@ export function ChartPanel({ path }: { path: string }) {
     };
   }, [payload]);
 
+  // Derived before the early returns below, so the caller is told about them on
+  // the same render the chart appears on.
+  const { stats, notes } = useMemo(() => {
+    const rr = models?.riskReward;
+    if (!rr) return { stats: [] as ChartStat[], notes: [] as ChartStat[] };
+
+    // Facts about the position: they belong wherever the position is described,
+    // and stay true with the chart shut.
+    const stats = [
+      rr.riskPct    != null && { label: 'Risk',   value: `${rr.riskPct.toFixed(2)}%`,   color: 'var(--red)' },
+      rr.rewardPct  != null && { label: 'Reward', value: `${rr.rewardPct.toFixed(2)}%`, color: 'var(--green)' },
+      rr.riskReward != null && { label: 'R:R',    value: rr.riskReward.toFixed(2) },
+    ].filter(Boolean) as ChartStat[];
+
+    // Narration for what the chart is drawing — a resting order is re-priced in
+    // place, so "one entry price" is only the latest, and the staircase above is
+    // the rest. Meaningless away from the picture, so it never moves out.
+    const moves = rr.stepped ? rr.segments.length - 1 : 0;
+    const notes: ChartStat[] = moves > 0 ? [{
+      label: 'Price moved',
+      value: rr.reconstructed ? `${moves}× (partly recorded)` : `${moves}×`,
+    }] : [];
+
+    return { stats, notes };
+  }, [models]);
+
+  // Held in a ref so an inline arrow from the caller cannot re-fire this on
+  // every render — the stats themselves are the only thing that should.
+  const onStatsRef = useRef(onStats);
+  onStatsRef.current = onStats;
+  useEffect(() => { onStatsRef.current?.(stats); }, [stats]);
+
   // Mount / update the chart through the adapter interface.
   useEffect(() => {
     const container = containerRef.current;
@@ -201,20 +251,9 @@ export function ChartPanel({ path }: { path: string }) {
     ? [...rungs, payload.timeframe]
     : rungs;
 
-  // A resting order is re-priced in place, so "one entry price" is only the
-  // latest. Say how many times it moved, and admit when the walk between the
-  // ends was never recorded (orders that predate the price history).
-  const moves = rr?.stepped ? rr.segments.length - 1 : 0;
-
-  const details = [
-    rr?.riskPct   != null && { label: 'Risk',   value: `${rr.riskPct.toFixed(2)}%`,   color: 'var(--red)' },
-    rr?.rewardPct != null && { label: 'Reward', value: `${rr.rewardPct.toFixed(2)}%`, color: 'var(--green)' },
-    rr?.riskReward != null && { label: 'R:R',   value: rr.riskReward.toFixed(2) },
-    moves > 0 && {
-      label: 'Price moved',
-      value: rr!.reconstructed ? `${moves}× (partly recorded)` : `${moves}×`,
-    },
-  ].filter(Boolean) as Array<{ label: string; value: string; color?: string }>;
+  // The caller owns the position figures when it asked for them, so they are not
+  // shown twice; the chart's own narration stays here either way.
+  const details = onStats ? notes : [...stats, ...notes];
 
   return (
     <div style={{ borderTop: '1px solid var(--border)', background: 'var(--bg2)' }}>
@@ -337,9 +376,12 @@ export function ChartIconButton({
 export function ExpandableChart({
   path,
   variant = 'footer',
+  onStats,
 }: {
   path: string;
   variant?: 'footer' | 'inline';
+  /** Passed straight to ChartPanel — see the note on its own `onStats`. */
+  onStats?: (stats: ChartStat[]) => void;
 }) {
   const [open, setOpen] = useState(false);
   const inline = variant === 'inline';
@@ -369,7 +411,7 @@ export function ExpandableChart({
       >
         {open ? '▾ Hide chart' : '▸ Chart'}
       </button>
-      {open && <ChartPanel path={path} />}
+      {open && <ChartPanel path={path} onStats={onStats} />}
     </>
   );
 }

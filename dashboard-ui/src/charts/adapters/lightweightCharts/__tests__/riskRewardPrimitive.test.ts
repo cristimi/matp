@@ -62,7 +62,7 @@ function render(model: RiskRewardModel) {
 
   const p = new RiskRewardPrimitive(model, DEFAULT_COLORS, 2);
   p.attached({ chart, series, requestUpdate: () => {} } as any);
-  p.paneViews()[0].renderer().draw({
+  p.paneViews()[0].renderer()!.draw({
     useMediaCoordinateSpace: (fn: any) => fn({ context, mediaSize: { width: 5000 } }),
   } as any);
 
@@ -167,13 +167,14 @@ describe('RiskRewardPrimitive — TradingView-style position zones', () => {
     expect(entries[1].y1).toBe(1000 - 510 + 0.5);
   });
 
-  it('labels the newest levels with price, percentage and R:R', () => {
+  it('writes no text over the candles', () => {
+    // SL / entry / TP each carry a tag on the right-hand price axis already (the
+    // adapter's createPriceLine calls), and risk/reward/R:R live in the card's
+    // details grid. Chips here only repeated both, on top of the bars.
     const { texts } = render(model({
       segments: [seg(100, 200, 500, 480, 560), seg(200, 300, 510, 490, 570)],
     }));
-    expect(texts.some(t => t.startsWith('TP 570.00') && t.includes('+12.00%'))).toBe(true);
-    expect(texts.some(t => t.startsWith('SL 490.00') && t.includes('4.00%'))).toBe(true);
-    expect(texts.some(t => t.includes('510.00') && t.includes('R:R 3.00'))).toBe(true);
+    expect(texts).toEqual([]);
   });
 
   it('draws nothing when the zones are scrolled out of view', () => {
@@ -187,7 +188,7 @@ describe('RiskRewardPrimitive — TradingView-style position zones', () => {
     const series: any = { priceToCoordinate: (p: number) => 1000 - p };
     const p = new RiskRewardPrimitive(model(), DEFAULT_COLORS, 2);
     p.attached({ chart, series, requestUpdate: () => {} } as any);
-    p.paneViews()[0].renderer().draw({
+    p.paneViews()[0].renderer()!.draw({
       useMediaCoordinateSpace: (fn: any) => fn({
         context: { fillRect: (x: number, y: number, w: number, h: number) =>
           rects.push({ x, y, w, h, fill: '' }), save() {}, restore() {} },
