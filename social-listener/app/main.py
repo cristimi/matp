@@ -3,7 +3,7 @@ import logging
 
 from telethon import events
 
-from app import db, emitter, marketdata, statemachine
+from app import db, emitter, marketdata, post_lock, statemachine
 from app.config import settings
 from app.extractor import extract
 from app.statemachine import evaluate
@@ -37,7 +37,19 @@ async def fire_trim(asset: str, side: str, fraction: float,
     if (pos["side"] or "").upper() != side:
         return False, f"position is {pos['side']}, expected {side}", None
 
-    close_size = round(float(pos["size"]) * fraction, 8)
+    held = float(pos["size"])
+    # Nothing left worth shaving. Repeated partials converge on dust — four of them
+    # took a 0.0031 BTC short to 0.00029 on 2026-07-27 — and a stub that small should
+    # leave on a CLOSE post, whole, not be quartered again.
+    if mark is not None and mark > 0:
+        floor = settings.min_trim_position_fraction * emitter.standard_entry_size(
+            _STRATEGY, mark)
+        if held < floor:
+            return False, (f"position {held} is below the trim floor {round(floor, 8)} "
+                           f"({settings.min_trim_position_fraction} of a standard entry) "
+                           f"— close it whole instead"), None
+
+    close_size = round(held * fraction, 8)
     if close_size <= 0:
         return False, f"computed close size {close_size} is not tradeable", None
 
@@ -268,7 +280,20 @@ async def _pending_trim_loop() -> None:
             log.exception("standing stop loop error")
 
 
-async def handle(msgs, phase: str):
+async def handle(msgs, phase: str, source: str = "live"):
+    """Judge one post under the per-post lock, so the live handler and the catchup
+    loop can never judge the same burst at the same time."""
+    if not isinstance(msgs, (list, tuple)):
+        msgs = [msgs]
+    if not msgs:
+        return
+    key_id = max(m.id for m in msgs)
+    async with post_lock.post_slot(key_id, source) as owned:
+        if owned:
+            await _handle_locked(msgs, phase, key_id)
+
+
+async def _handle_locked(msgs, phase: str, key_id: int):
     """
     Judge one post. `msgs` is the burst of Telegram messages that make it up —
     usually one, but the author often splits a single thought across two or three
@@ -279,13 +304,6 @@ async def handle(msgs, phase: str):
     The merged record is keyed on the highest message id, so `already_seen` and
     `max_channel_msg_id` both refer to the burst as a whole.
     """
-    if not isinstance(msgs, (list, tuple)):
-        msgs = [msgs]
-    if not msgs:
-        return
-
-    key_id = max(m.id for m in msgs)
-
     # Skip messages already fully evaluated by the brain (idempotent restarts).
     if await db.already_shadow_evaluated(key_id):
         return
@@ -363,6 +381,21 @@ async def handle(msgs, phase: str):
 
     d = evaluate(rec, phase, cur, mark, implied_ref)
 
+    # The author re-posts the same trade card as the trade develops — msg 9794 was
+    # msg 9790's card again with TP2 filled in, and the 64.4k trim it asked for had
+    # already been taken eight hours earlier. A repost is not a new instruction, so
+    # a trim is checked against the ones already carried out for this stance.
+    if d["is_trim"] and asset and phase == "live" and _STRATEGY is not None:
+        pos = await db.open_position(settings.execution_strategy_id, asset)
+        if pos is not None:
+            dup = await db.trim_already_taken(
+                asset, cur, d["trigger_price"], pos["opened_at"],
+                settings.min_trim_interval_minutes)
+            if dup:
+                log.warning("msg %s trim refused: %s", rec["channel_msg_id"], dup)
+                d = {**d, "decision": "skipped", "reason": dup.split(" ")[0],
+                     "emit": False, "park": False, "advance": False}
+
     # Emit BEFORE recording, and only on the live path — "backfill" acts
     # unconditionally by design, so emitting there would re-fire every old
     # post on each restart. Fail-closed: a failed emission leaves the state
@@ -392,6 +425,14 @@ async def handle(msgs, phase: str):
             mode = "live"
             log.info("LIVE msg %s %s -> %s", rec["channel_msg_id"],
                      d["intended_signal"], detail)
+            if d["is_trim"]:
+                # Into the same ledger parked trims use, so a later repost of this
+                # instruction can see it was already carried out.
+                await db.record_fired_trim({
+                    "channel_msg_id": rec["channel_msg_id"], "asset": asset,
+                    "side": cur, "size_fraction": d["size_fraction"],
+                    "trigger_price": d["trigger_price"],
+                }, settings.pending_trim_ttl_hours, detail)
         else:
             # A trim or add that cannot be sent is dropped, not parked: the
             # instruction was for right now, and the reason it failed (no position,
@@ -516,7 +557,7 @@ class _LiveBuffer:
         try:
             for burst in group_bursts(batch, settings.merge_window_seconds,
                                       settings.merge_max_messages):
-                await handle(burst, "live")
+                await handle(burst, "live", source="live-buffer")
         except Exception:  # noqa: BLE001
             log.exception("live flush error")
 
@@ -550,7 +591,7 @@ async def _catchup_loop(client, channel):
                 log.warning("catchup: recovering %d missed message(s) after id %s as %d post(s)",
                             len(gap), last_id, len(bursts))
                 for burst in bursts:
-                    await handle(burst, "live")
+                    await handle(burst, "live", source="catchup")
         except Exception:  # noqa: BLE001
             log.exception("catchup loop error")
 
@@ -625,7 +666,7 @@ async def main():
         msgs.append(m)
     bursts = group_bursts(msgs, settings.merge_window_seconds, settings.merge_max_messages)
     for burst in bursts:  # oldest -> newest
-        await handle(burst, "backfill")
+        await handle(burst, "backfill", source="backfill")
     log.info("Backfill complete (%d messages, %d post(s))", len(msgs), len(bursts))
 
     buffer = _LiveBuffer()

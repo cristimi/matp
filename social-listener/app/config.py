@@ -127,6 +127,17 @@ class Settings(BaseSettings):
     min_trim_fraction: float = 0.1
     max_trim_fraction: float = 0.9
 
+    # A trim must not whittle a position into dust. Below this share of one standard
+    # entry there is nothing meaningful left to shave, and what remains should leave
+    # on a CLOSE post instead. Learned on 2026-07-27: four partials took a 0.0031 BTC
+    # short down to 0.00029, the last of them closing 0.0000969 — under $7 of notional.
+    min_trim_position_fraction: float = 0.2
+
+    # The author re-posts the same trade card as the trade develops, so the same
+    # instruction arrives more than once. A named level is deduped exactly; this
+    # interval is the backstop for an at-market trim, which has no level to compare.
+    min_trim_interval_minutes: int = 30
+
     # A trim the trader pinned to a price the market has not reached yet is parked
     # rather than taken at the wrong price. The watcher fires it when the mark
     # crosses the level; the TTL stops an unreached level firing days later, long

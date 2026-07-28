@@ -1,5 +1,6 @@
 import json
 import logging
+from datetime import datetime, timezone
 
 import asyncpg
 
@@ -200,7 +201,7 @@ async def open_position(strategy_id: str, asset: str) -> dict | None:
     """
     async with pool().acquire() as c:
         row = await c.fetchrow(
-            """SELECT p.id, p.symbol, p.side, p.size, p.entry_price,
+            """SELECT p.id, p.symbol, p.side, p.size, p.entry_price, p.opened_at,
                       o.tp_price, o.sl_price
                FROM public.strategy_positions p
                LEFT JOIN public.orders o ON o.id = p.opening_order_id
@@ -221,6 +222,62 @@ async def insert_pending_trim(rec: dict, ttl_hours: int) -> None:
             settings.source_tag, rec["channel_msg_id"], rec["asset"], rec["side"],
             rec["size_fraction"], rec["trigger_price"], str(ttl_hours),
         )
+
+
+async def record_fired_trim(rec: dict, ttl_hours: int, resolution: str) -> None:
+    """Enter an immediately-executed trim in the same ledger parked ones use.
+
+    Without this the ledger only knows about trims that had to wait, and the dedupe
+    below cannot see that an instruction was already carried out.
+    """
+    async with pool().acquire() as c:
+        await c.execute(
+            """INSERT INTO public.social_pending_trims
+                 (source, channel_msg_id, asset, side, size_fraction, trigger_price,
+                  expires_at, status, resolved_at, resolution)
+               VALUES ($1,$2,$3,$4,$5,$6, now() + ($7 || ' hours')::interval,
+                       'fired', now(), $8)
+               ON CONFLICT (source, channel_msg_id) DO NOTHING""",
+            settings.source_tag, rec["channel_msg_id"], rec["asset"], rec["side"],
+            rec["size_fraction"], rec.get("trigger_price"), str(ttl_hours),
+            resolution[:500],
+        )
+
+
+async def trim_already_taken(asset: str, side: str, trigger_price: float | None,
+                             since, interval_minutes: int) -> str | None:
+    """Why this trim must not run, or None if it may.
+
+    Scoped to the stance by `since` (the open position's opened_at), so trims from
+    a trade that has already been and gone never block a new one.
+    """
+    async with pool().acquire() as c:
+        rows = await c.fetch(
+            """SELECT channel_msg_id, trigger_price, created_at
+               FROM public.social_pending_trims
+               WHERE source=$1 AND asset=$2 AND side=$3
+                 AND status IN ('pending','fired') AND created_at >= $4
+               ORDER BY id DESC""",
+            settings.source_tag, asset, side, since,
+        )
+    if not rows:
+        return None
+
+    # Same named level, same stance: the author re-posted the card, not a new call.
+    if trigger_price is not None:
+        for r in rows:
+            if r["trigger_price"] is None:
+                continue
+            prev = float(r["trigger_price"])
+            if abs(prev - float(trigger_price)) / max(abs(prev), 1e-9) < 1e-4:
+                return f"trim_already_taken (msg {r['channel_msg_id']} at {prev})"
+
+    newest = rows[0]
+    age_min = (datetime.now(timezone.utc) - newest["created_at"]).total_seconds() / 60
+    if age_min < interval_minutes:
+        return (f"trim_too_soon ({age_min:.1f}m after msg "
+                f"{newest['channel_msg_id']}, floor {interval_minutes}m)")
+    return None
 
 
 async def pending_trims() -> list[dict]:
