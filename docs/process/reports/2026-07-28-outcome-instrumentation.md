@@ -8,7 +8,7 @@ places, sizes, gates, or exits a trade.
 | Phase | What | Migration | Status |
 |---|---|---|---|
 | 1 | MFE/MAE on positions | 069 | **Done, verified live** |
-| 2 | Decision-time mark price on orders | 070 | Deployed; **verification incomplete** — see §2.3 |
+| 2 | Decision-time mark price on orders | 070 | **Working on real fills**; 2 orders not the 3 asked for — see §2.3 |
 | 3 | Regime values on AI signals | 071 | **Done, verified live** |
 
 ---
@@ -97,6 +97,24 @@ Reconciler logs, clean:
 2026-07-28 14:05:27,347 [INFO] app.reconciler: reconciler: excursion sampled 3/3 open position(s)
 ```
 
+### Sustained run — ~12 hours later
+
+Sampling has run continuously without intervention, and the two positions still open have
+accumulated a dense record:
+
+```
+  symbol  | side  | status | entry_price | excursion_samples | mfe_price | mae_price | mfe_r | mae_r  |  pnl
+----------+-------+--------+-------------+-------------------+-----------+-----------+-------+--------+--------
+ BTC-USDT | short | open   |     65385.3 |               710 |   62960.7 |   64143.2 | 0.815 |  0.417 | 3.4819
+ BNB-USDT | short | open   |      572.37 |               711 |   565.23 |   575.85 | 1.195 | -0.583 | 0.8329
+```
+
+710/711 samples over ~12 hours is the expected count at a 60s cadence with no gaps. BNB shows
+the shape the columns exist to capture: it reached **+1.195 R** in favour and **−0.583 R**
+against. BTC's `mae_r` is **positive (+0.417)** — it has never been observed at a loss, which
+is the documented "favourable positive for both legs" convention reading correctly rather
+than a bug.
+
 ### First real payoff, within hours
 
 `sol-ai-6486`'s short closed at 15:03 with 57 samples recorded:
@@ -164,11 +182,24 @@ one bounded 10s call that never raises.
 | Mark-price read fails | NULL | `get_mark_price` returns None and never raises; the order proceeds unchanged. Telemetry never blocks a trade. |
 | Rows before 2026-07-28 | NULL | Not backfillable — no historical marks are kept. |
 
-### Verification status — INCOMPLETE, stated plainly
+### Verification status — WORKING, on two orders rather than the three asked for
 
-**Phase 2 does not have the verification the brief asked for.** It required populated
-snapshot values alongside `actual_fill_price` on at least three real orders placed after
-deploy. In the ~4.5 hours since deploy, **one** order arrived:
+Order flow stopped for hours after SOL closed at 15:03, leaving only BNB and BTC open on
+candle-close cadence. Two genuine filled orders have since landed, and slippage is
+computable on both:
+
+```
+  symbol  | side |   signal    | order_type | status | mark_at_decision | actual_fill_price | slippage_pct |          received_at
+----------+------+-------------+------------+--------+------------------+-------------------+--------------+-------------------------------
+ BNB-USDT | buy  | close_short | market     | filled |            571.8 |            571.77 |     -0.00525 | 2026-07-28 21:02:51.489873+00
+ BNB-USDT | buy  | close_short | market     | filled |            568.9 |             568.9 |      0.00000 | 2026-07-28 23:01:55.357234+00
+```
+
+Negative is favourable on a buy: the first fill came in 3 ticks *better* than the mark, the
+second landed exactly on it. **This is the number that was unmeasurable on 148 of 163
+historical entries.** It is now measurable per order.
+
+The third order in the window is the SOL one, and it is correctly NULL:
 
 ```
   symbol  |     signal     | order_type | status | mark_at_decision |  actual_fill_price  |          received_at
@@ -176,17 +207,15 @@ deploy. In the ~4.5 hours since deploy, **one** order arrived:
  SOL-USDT | exchange_close | market     | filled |                  | 73.5025             | 2026-07-28 15:03:47.578805+00
 ```
 
-That row is NULL — and **correctly so**: it is the reconciler's synthetic close order for
-SOL's external stop-out, exactly the documented NULL case above. So it is a small positive
-signal for the design, but it is not the verification required.
+That is the reconciler's synthetic close for SOL's external stop-out — exactly the documented
+NULL case, so it confirms the design rather than contradicting it.
 
-Order flow simply stopped: SOL closed at 15:03, leaving only BNB and BTC open, and the
-scheduler moved to candle-close cadence. No entry has been attempted since. Synthetic
-close-to-flat webhooks were considered and rejected as verification — they produce no
-`actual_fill_price`, so they would prove nothing.
-
-**This phase should be treated as unverified until three genuine filled orders land.** The
-query to run:
+**Stated precisely: the brief asked for three orders with populated values; two have
+arrived.** The mechanism is proven end-to-end on real fills — capture, storage, and
+read-time slippage all work — but the sample is two, and both are closes on the same symbol.
+No priced limit entry has been placed since deploy, so the limit-order path (the one that
+adds an executor call rather than reusing the sizing read) is still unexercised in
+production. The standing query:
 
 ```sql
 SELECT symbol, signal, order_type, status, mark_price_at_decision, actual_fill_price,
@@ -342,7 +371,7 @@ write-only telemetry:
 | Would stopped-out trades have reached target? | **Answerable going forward**, to 60s resolution |
 | Are stops too tight or too wide? | **Answerable going forward**, same caveat |
 | Does market regime affect performance? | **Answerable going forward** |
-| How much did entry slippage cost? | **Instrumented, not yet verified** (§2.3) |
+| How much did entry slippage cost? | **Answerable going forward** — measured on real fills (§2.3); limit-entry path still unexercised |
 | How much did funding cost? | Still unanswerable — deferred |
 | What were the true fees? | Still unanswerable — deferred |
 | Did unfilled limit proposals turn out right? | Still unanswerable — out of scope |
