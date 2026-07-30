@@ -1336,6 +1336,58 @@ async def close_strategy_position(
         realized_pnl_f - open_fee_f - close_fee_f if realized_pnl_f is not None else None
     )
 
+    # ── Give every executed close an order row ───────────────────────────
+    # The tree lists a position's orders as `id = opening_order_id OR
+    # closes_position_id = sp.id`, so a close with no order row is invisible:
+    # position 7b023a64 had 74% taken off at 64932.3 on 2026-07-30 and showed
+    # only its entry. Four callers reach here with closing_order_id=None —
+    # manual_close, flatten_on_disable, flip_close, and the reconciler's partial
+    # reduction — and every one of them left the same hole. The webhook path is
+    # unaffected: it creates its order first and passes the id in.
+    #
+    # This is the same synthetic row _handle_full_external_close already writes
+    # for full external closes, moved here so the partial and manual paths get it
+    # too. It also fixes an under-count: the reconciler sums
+    # `orders.pnl WHERE closes_position_id = sp.id` as prior_close_pnl, and
+    # closes that never got a row were missing from that sum.
+    if closing_order_id is None:
+        _close_side   = "sell" if side == "long" else "buy"
+        _close_signal = (
+            "exchange_close" if reason == "Closed on exchange"
+            else ("close_long" if side == "long" else "close_short")
+        )
+        _source = {
+            "manual_close":       "manual",
+            "Closed on exchange": "reconciler",
+        }.get(reason or "", "system")
+        try:
+            async with pool.acquire() as conn:
+                _row = await conn.fetchrow(
+                    """
+                    INSERT INTO orders
+                      (symbol, side, signal, order_type, size, platform,
+                       strategy_id, account_id, status, actual_fill_price,
+                       pnl, raw_webhook, signal_source, exchange_fee)
+                    VALUES
+                      ($1, $2, $3, 'market', $4, 'exchange',
+                       $5, $6, 'filled', $7,
+                       $8, '{}'::jsonb, $9, $10)
+                    RETURNING id
+                    """,
+                    symbol, _close_side, _close_signal, float(eff_close_size),
+                    strategy['id'], acct_id or None,
+                    fill_price_f, realized_pnl_f, _source,
+                    float(fee) if fee is not None else None,
+                )
+            closing_order_id = _row["id"]
+        except Exception as _oe:
+            # The close itself already executed on the exchange — a missing audit
+            # row must not roll it back or report failure.
+            logger.error(
+                f"close_strategy_position: close executed for position {pos['id']} "
+                f"but creating its order row failed: {_oe}"
+            )
+
     async with pool.acquire() as conn:
         async with conn.transaction():
             if is_full:
