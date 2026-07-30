@@ -804,18 +804,28 @@ class BlofinAdapter(ExchangeAdapter):
             except Exception as e:
                 logger.warning(f"Blofin _partial_close: fill recovery failed: {e}")
 
-        fill_price = pnl = fee = None
+        fill_price = pnl = fee = fill_size = None
         if details:
             fill_price = self._parse_fill_price(details)
             pnl_raw = details.get("pnl") or details.get("realizedPnl")
             pnl = Decimal(str(pnl_raw)) if pnl_raw is not None else None
             fee_raw = details.get("fee")
             fee = Decimal(str(fee_raw)) if fee_raw is not None else None
+            # The REQUESTED size is not what fills: _to_contracts rounds to the
+            # instrument's lot step, so asking to close 0.002325 BTC (2.325
+            # contracts, lot 0.1) really closes 0.0023. The caller used to have
+            # nothing but its own request to write down, which left
+            # strategy_positions.size at 0.000775 against the exchange's 0.0008
+            # on 2026-07-30 and tripped a false reconcile_divergent flag.
+            # _parse_fill_size was already here and already used by the entry
+            # path; this leg simply never called it.
+            fill_size = await self._parse_fill_size(symbol, details, str(order_size))
 
         return OrderResult(
             success=True,
             status="filled",
             exchange_order_id=exchange_order_id,
+            actual_fill_size=fill_size,
             raw_response=data,
             actual_fill_price=fill_price,
             realized_pnl=pnl,

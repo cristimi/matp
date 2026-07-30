@@ -10,7 +10,7 @@ import time
 import uuid
 import asyncio
 from datetime import datetime, timezone
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Request, Header
@@ -1324,6 +1324,32 @@ async def close_strategy_position(
         fill_price   = close_result.get('actual_fill_price')
         realized_pnl = close_result.get('realized_pnl')
         fee          = close_result.get('fee')
+
+        # Prefer what actually filled over what we asked for. The exchange rounds
+        # the request to its lot step (0.002325 BTC -> 2.325 contracts -> 2.3),
+        # and writing the request down instead left the DB size 0.000025 adrift
+        # from the exchange on 2026-07-30, which the reconciler then flagged as a
+        # divergence it will never heal (it refuses to grow a position).
+        # Only trusted for a PARTIAL reduce: on a full close the position is
+        # zeroed regardless, and a short fill there is a problem to surface, not
+        # to silently adopt as the new truth.
+        _filled = close_result.get('actual_fill_size')
+        if _filled is not None and not is_full:
+            try:
+                _filled_dec = Decimal(str(_filled))
+                if _filled_dec > 0 and _filled_dec != eff_close_size:
+                    logger.info(
+                        f"close_strategy_position: exchange filled {_filled_dec} of the "
+                        f"{eff_close_size} requested for {symbol} {side} (lot rounding) "
+                        f"— recording the fill"
+                    )
+                if _filled_dec > 0:
+                    eff_close_size = min(_filled_dec, current_size)
+            except (InvalidOperation, TypeError, ValueError):
+                logger.warning(
+                    f"close_strategy_position: unparseable actual_fill_size "
+                    f"{_filled!r} for {symbol} {side} — keeping the requested size"
+                )
 
     fill_price_f   = float(fill_price)   if fill_price   is not None else None
     realized_pnl_f = float(realized_pnl) if realized_pnl is not None else None
