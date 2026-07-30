@@ -1660,13 +1660,23 @@ async def sync_position_pnl(pool) -> None:
             RETURNING sp.id, sp.strategy_id, sp.pnl_realized
             """
         )
-        # (2) Corrections (already-booked, value changed): update only, do NOT re-book.
-        await conn.execute(
+        # (2) Corrections (already-booked, value changed): update, and book the
+        # DELTA. This used to update the position and deliberately not re-book,
+        # to avoid double-counting the whole figure — but that left the strategy
+        # permanently behind its own positions. social-btc-astro booked 1.609267
+        # for position 75c43386 at close, a later correction moved its
+        # pnl_realized to 3.481933, and strategies.pnl_total kept the old number:
+        # 5.099169 booked against 6.971835 of closed positions, adrift by exactly
+        # the 1.872666 difference. capital_allocation is derived from that total,
+        # so the error feeds straight into position sizing and the drawdown stop.
+        #
+        # Booking (new - old) is the correct middle ground: the original amount
+        # stays booked once, and only the revision moves the total. It stays
+        # idempotent through the IS DISTINCT FROM guard — once the value settles,
+        # no row is returned and nothing is booked.
+        corrected = await conn.fetch(
             """
-            UPDATE strategy_positions sp
-            SET pnl_realized = sub.total,
-                updated_at   = NOW()
-            FROM (
+            WITH sub AS (
                 SELECT o.closes_position_id AS pid,
                        COALESCE(SUM(o.pnl), 0) - COALESCE(SUM(o.exchange_fee), 0)
                            - COALESCE(oo.exchange_fee, 0) AS total
@@ -1675,14 +1685,33 @@ async def sync_position_pnl(pool) -> None:
                 LEFT JOIN orders oo ON oo.id = sp2.opening_order_id
                 WHERE o.closes_position_id IS NOT NULL AND o.pnl IS NOT NULL
                 GROUP BY o.closes_position_id, oo.exchange_fee
-            ) sub
-            WHERE sp.id = sub.pid
-              AND sp.pnl_realized IS NOT NULL
-              AND sp.pnl_realized IS DISTINCT FROM sub.total
+            ),
+            changed AS (
+                SELECT sp.id, sp.strategy_id,
+                       sp.pnl_realized AS prev,
+                       sub.total       AS next
+                FROM strategy_positions sp
+                JOIN sub ON sp.id = sub.pid
+                WHERE sp.pnl_realized IS NOT NULL
+                  AND sp.pnl_realized IS DISTINCT FROM sub.total
+            )
+            UPDATE strategy_positions sp
+            SET pnl_realized = changed.next,
+                updated_at   = NOW()
+            FROM changed
+            WHERE sp.id = changed.id
+            RETURNING sp.id, changed.strategy_id, changed.prev, changed.next
             """
         )
     for r in newly:
         await _book_realized_pnl(pool, str(r['strategy_id']), r['pnl_realized'])
+    for r in corrected:
+        delta = float(r['next']) - float(r['prev'])
+        logger.info(
+            f"sync_position_pnl: position {r['id']} pnl_realized corrected "
+            f"{r['prev']} -> {r['next']}, booking delta {delta:+.8f} to {r['strategy_id']}"
+        )
+        await _book_realized_pnl(pool, str(r['strategy_id']), delta)
 
 
 async def _process_order(
