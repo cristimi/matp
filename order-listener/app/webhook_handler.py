@@ -403,7 +403,8 @@ async def _update_order_status(
                 actual_fill_price = $6,
                 pnl = $7,
                 account_id = $8,
-                exchange_fee = $9
+                exchange_fee = $9,
+                size = COALESCE($10, size)
             WHERE id = $5
             """,
             status,
@@ -415,6 +416,16 @@ async def _update_order_status(
             result.realized_pnl if result else None,
             account_id or None,
             result.fee if result else None,
+            # The row was written with the REQUESTED size; the exchange rounds it to
+            # the instrument's lot step. strategy_positions has used the confirmed
+            # fill size since the fill-size work (_materialize_fill, "Use
+            # exchange-confirmed fill size"), but the order row never caught up — so
+            # social-btc-astro's entry read 0.00314564 against a 0.0031 position, and
+            # the position's own close legs (0.0023 + 0.0008) summed to less than its
+            # entry. Only on a confirmed fill: a rejected or still-pending order has
+            # no filled size to adopt, and COALESCE leaves those untouched.
+            (result.actual_fill_size
+             if (result and status == "filled" and result.actual_fill_size) else None),
         )
 
     # Publish status update to Redis
