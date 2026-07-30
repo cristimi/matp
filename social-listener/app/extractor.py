@@ -8,7 +8,13 @@ from pydantic import BaseModel, Field
 from app.config import settings
 
 log = logging.getLogger(__name__)
-EXTRACTOR_VERSION = "v5"  # v5: ADD sizing, take-profit levels, amounts read off charts
+EXTRACTOR_VERSION = "v6"  # v6: a complete chart outranks the prose; a size and its price
+                          #     must come off the SAME annotation. v5 read "TP (Close 30%)"
+                          #     at 64,733 off the chart, kept the 30%, and replaced the price
+                          #     with "67.7k" from the post's poem — parking a trim the post
+                          #     never asked for (msg 9801, 2026-07-30). It also returned the
+                          #     card's SL 63,103 as null.
+                          # v5: ADD sizing, take-profit levels, amounts read off charts
                           # v4: stop management — stop_price + stop_to_breakeven, STOP
                           # v3: TRIM is actionable — size_fraction + trigger_price
                           # v2: reads the attached chart image alongside the text
@@ -30,6 +36,26 @@ percentage written on the chart: price labels on horizontal lines, boxes marked 
 "SL"/"Stop", "TP1"/"TP2"/"Target", and amounts such as "25%", "1/4", "half off", "closed
 50% here". Attach them to the matching field below. A level drawn on the chart counts as
 stated by the trader even when the text never mentions it.
+
+A COMPLETE CHART WINS OVER THE PROSE. A chart is COMPLETE when it labels the entry AND at
+least one stop or target level. Those drawn numbers ARE the trade: they are what the trader
+is actually running, placed deliberately on the price axis. Prose in the post never
+overrides them. Poems, slogans and celebration lines round numbers off, name a level the
+trade has not reached yet, or quote the final target rather than the one coming off now —
+none of that displaces a labelled level. Take a number from the text ONLY for a field the
+chart leaves unlabelled. When the chart and the text disagree about the same field, use the
+chart's value and say in reasoning that you did.
+
+A complete card almost always labels more levels than the action itself needs. Fill
+stop_price and take_profit_price from it regardless of action_type — a card showing "SL
+63,103" and "TP (Close 30%) 64,733" must return BOTH of those numbers, not null.
+
+NEVER SPLIT AN ANNOTATION. A size and the price it comes off at must be read from the SAME
+label. If "TP (Close 30%)" sits on the 64,733 line, then size_fraction=0.30 belongs with
+trigger_price=64733 — never with a price taken from somewhere else in the post. Welding a
+percentage off the chart onto a number out of the text invents an instruction the trader
+never gave. If the size has no price on its own annotation, leave trigger_price null rather
+than borrowing one.
 
 LEVELS FOR A TRADE ALREADY RUNNING. The first post about a trade is often plain text, and
 the chart showing entry/SL/TP arrives in a LATER post. That later post is still giving the
