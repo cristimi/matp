@@ -532,7 +532,7 @@ async def adjust_stops_for_strategy(
     async with pool.acquire() as conn:
         pos = await conn.fetchrow(
             """
-            SELECT id, symbol, side FROM strategy_positions
+            SELECT id, symbol, side, opening_order_id FROM strategy_positions
             WHERE strategy_id = $1 AND status = 'open'
             ORDER BY opened_at DESC LIMIT 1
             """,
@@ -581,9 +581,75 @@ async def adjust_stops_for_strategy(
         )
 
     _preserved = result.get("preserved") or []
+
+    # ── Persist the new levels onto the opening order ────────────────────
+    # Until 2026-07-30 this route changed the exchange and wrote NOTHING back, so
+    # orders.sl_price kept the value set at entry forever. The dashboard reads
+    # exactly that column (dashboard-api/src/routes/strategies.ts, o_open.sl_price),
+    # so every later stop move was invisible: sol-ai-6486 position c2a2a927 showed
+    # a 74.5011 stop on screen while the live stop was 73.88, and when 73.88 filled
+    # the close looked like it had hit neither SL nor TP. Same fix the sibling
+    # amend-order route already applies to resting orders.
+    #
+    # The EFFECTIVE level per leg is what landed on the exchange: the caller's
+    # price, or — for a leg the caller left unpriced — the value the executor
+    # carried forward, which it reports back in `preserved`. Only reached on the
+    # success path, so both legs are confirmed resting (sl_ok/tp_ok not False).
+    eff_tp, eff_sl = tp_price, sl_price
+    for _p in _preserved:
+        try:
+            if _p.get("tpsl") == "tp" and eff_tp is None:
+                eff_tp = float(_p["triggerPx"])
+            elif _p.get("tpsl") == "sl" and eff_sl is None:
+                eff_sl = float(_p["triggerPx"])
+        except (TypeError, ValueError, KeyError):
+            logger.warning(
+                f"adjust-stops strategy={strategy_id}: unparseable preserved leg {_p!r}"
+                " — not persisting that leg"
+            )
+
+    if pos["opening_order_id"] is not None and (eff_tp is not None or eff_sl is not None):
+        try:
+            async with pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    """
+                    UPDATE orders
+                    SET tp_price = COALESCE($1, tp_price),
+                        sl_price = COALESCE($2, sl_price)
+                    WHERE id = $3
+                    RETURNING id, price, sl_price, tp_price, size
+                    """,
+                    Decimal(str(eff_tp)) if eff_tp is not None else None,
+                    Decimal(str(eff_sl)) if eff_sl is not None else None,
+                    pos["opening_order_id"],
+                )
+                # Timestamped trail, so the chart draws the stop stepping over time
+                # instead of one flat line back to entry. Post-UPDATE values are
+                # used, matching the amend-order route's convention.
+                if row is not None:
+                    await conn.execute(
+                        """
+                        INSERT INTO order_price_history
+                            (order_id, at, seq, price, sl_price, tp_price, size, source)
+                        SELECT $1, $2,
+                               COALESCE(MAX(seq), -1) + 1,
+                               $3, $4, $5, $6, 'adjust_stops'
+                          FROM order_price_history WHERE order_id = $1
+                        """,
+                        row["id"], datetime.now(timezone.utc),
+                        row["price"], row["sl_price"], row["tp_price"], row["size"],
+                    )
+        except Exception as exc:
+            # The exchange is already updated and correct — a bookkeeping failure
+            # must not turn a successful stop move into a reported failure.
+            logger.error(
+                f"adjust-stops strategy={strategy_id} pos={pos['id']}: exchange updated "
+                f"but persisting tp={eff_tp} sl={eff_sl} failed: {exc}"
+            )
+
     logger.info(
         f"adjust-stops strategy={strategy_id} pos={pos['id']} ({pos['symbol']} {pos['side']})"
-        f" tp={tp_price} sl={sl_price}"
+        f" tp={tp_price} sl={sl_price} persisted_tp={eff_tp} persisted_sl={eff_sl}"
         f" cancelled={len(result.get('cancelled', []))} placed={len(result.get('placed', []))}"
         + (
             " preserved=" + ",".join(f"{p['tpsl']}@{p['triggerPx']}" for p in _preserved)

@@ -10,6 +10,12 @@ logger = logging.getLogger(__name__)
 _MIN_SL_TP_PCT = 0.05   # below this, SL/TP sits ~on entry (degenerate)
 _MAX_SL_TP_PCT = 50.0   # above this is almost certainly hallucinated
 
+# Smallest partial close worth paying a round trip for, as a percent of the open
+# position. Real de-risking trims measured on bnb-ai-scalper-edbb sit at 9-17%;
+# everything below a couple of percent in the record was the fraction/percent
+# mix-up described at the use site, not an intended trim.
+_MIN_PARTIAL_CLOSE_PCT = 2.0
+
 # Maps action → strategy_config cooldown key; None means no cooldown
 _ACTION_COOLDOWN: dict[str, str | None] = {
     'open_long':         'cooldown_entry_minutes',
@@ -233,6 +239,50 @@ async def node_guard(state: AgentState) -> AgentState:
                     pos_side, current_price, new_sl, new_tp,
                 )
                 return _reject(state, 'stop_wrong_side')
+
+        # Breakeven rule: while the position is IN PROFIT, a stop on the losing
+        # side of ENTRY is not "protecting gains" — it converts a winner into a
+        # booked loss the moment it fills. sol-ai-6486 lost position c2a2a927
+        # exactly this way on 2026-07-30: short from 73.79, +0.136% at the time,
+        # stop moved to 73.88 with the reasoning "to protect gains", filled at
+        # 73.8776 for -0.24 gross / -0.48 net. The wrong-side check above passed
+        # it because 73.88 sat above the 73.69 live price, which is a
+        # structurally valid short stop — it just guaranteed a loss.
+        #
+        # Deliberately scoped to in-profit only: a tighten taken while UNDERWATER
+        # legitimately sits in the loss zone (that is what reducing a losing
+        # trade's risk looks like), and so does every opening stop.
+        entry_raw = state.get('position_entry_price')
+        if (new_sl is not None and pos_side in ('long', 'short')
+                and entry_raw and float(entry_raw) > 0 and current_price > 0):
+            entry     = float(entry_raw)
+            in_profit = current_price > entry if pos_side == 'long' else current_price < entry
+            locks_loss = float(new_sl) < entry if pos_side == 'long' else float(new_sl) > entry
+            if in_profit and locks_loss:
+                logger.warning(
+                    "node_guard reject adjust_stops: stop %s locks a loss on an in-profit "
+                    "%s (entry %s, price %s) — breakeven or better is required",
+                    new_sl, pos_side, entry, current_price,
+                )
+                return _reject(state, 'stop_locks_loss_in_profit')
+
+        # Noise floor: a stop parked within a fraction of a percent of the live
+        # price is a market order with extra steps. The SOL stop above sat 0.258%
+        # away on a symbol whose own opening stops averaged 1.160% and never went
+        # below 0.550% that month. Same reasoning as the min_close_move_pct floor
+        # for discretionary exits, and the same 0.30 default (migration 072) —
+        # one noise band, two ways of walking into it.
+        min_stop_dist = float(sc.get('min_stop_distance_pct') or 0.0)
+        if new_sl is not None and min_stop_dist > 0 and current_price > 0:
+            dist_pct = abs(float(new_sl) - current_price) / current_price * 100.0
+            if dist_pct < min_stop_dist:
+                logger.warning(
+                    "node_guard reject adjust_stops: stop %s is %.3f%% from price %s, "
+                    "inside the %.2f%% floor",
+                    new_sl, dist_pct, current_price, min_stop_dist,
+                )
+                return _reject(state, 'stop_too_close')
+
         return {
             **state,
             'gate_passed':           True,
@@ -397,6 +447,37 @@ async def node_guard(state: AgentState) -> AgentState:
         if not position_size:
             return _reject(state, 'size_resolution_failed')
         size_pct = float(signal.get('size_pct') or 50.0)
+
+        # Unit repair. size_pct carried NO schema description and the prompt never
+        # mentioned it, so models supplied a FRACTION: sol-ai-6486 asked for
+        # "partial close of 50%" and sent 0.5, which this line read as 0.5% and
+        # turned into a 0.0135 SOL trade — ~1 USD of a 200 USD position, fee paid,
+        # nothing de-risked. Every sol-ai-6486 partial close from 2026-07-22 to
+        # 2026-07-30 came out at 0.500-0.513% of the position for that reason.
+        #
+        # A value strictly inside (0, 1) cannot sensibly mean a percent here —
+        # "close 0.37% of the position" is dust on every symbol this system
+        # trades — so it is read as the fraction it plainly is. 1 is deliberately
+        # left alone: it is genuinely ambiguous, and turning a possible "1%" into
+        # a 100% close would be far worse than the dust it currently produces.
+        # The floor below then catches it. llm_chain.py now documents the unit so
+        # new signals should not need this at all.
+        if 0 < size_pct < 1:
+            logger.warning(
+                "partial_close: size_pct=%s looks like a fraction, reading it as %.1f%% "
+                "(a sub-1%% close is dust) — check the model is honouring the schema unit",
+                size_pct, size_pct * 100.0,
+            )
+            size_pct = size_pct * 100.0
+
+        if size_pct < _MIN_PARTIAL_CLOSE_PCT:
+            logger.warning(
+                "node_guard reject partial_close: size_pct=%.3f is below the %.1f%% floor "
+                "— the round trip costs more than the exposure it removes",
+                size_pct, _MIN_PARTIAL_CLOSE_PCT,
+            )
+            return _reject(state, 'partial_close_too_small')
+
         resolved_size = round(float(position_size) * size_pct / 100.0, 6)
         resolved_size = min(resolved_size, float(position_size))
         if resolved_size <= 0:

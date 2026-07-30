@@ -45,7 +45,13 @@ class LLMSignalOutput(BaseModel):
         'place_limit_long', 'place_limit_short', 'cancel_order', 'amend_order',
     ]
     confidence:      float
-    size_pct:        float
+    size_pct:        float = Field(
+        description=(
+            "For partial_close ONLY: how much of the open position to close, as a "
+            "PERCENT from 1 to 100 — 50 means half the position, NOT 0.5. Use 0 for "
+            "every other action."
+        )
+    )
     stop_loss_pct:   float = Field(description="Distance from entry as a percent, e.g. 1.5 = 1.5%. Use 0 for hold/close actions.")
     take_profit_pct: float = Field(description="Distance from entry as a percent, e.g. 3.0 = 3.0%. Use 0 for hold/close actions.")
     new_sl_price:    Optional[float] = Field(default=None, description="New stop-loss price for adjust_stops, or the re-fitted stop-loss to carry onto the order for amend_order.")

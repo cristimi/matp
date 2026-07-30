@@ -19,6 +19,13 @@ RECONCILE_MISS_THRESHOLD: int = int(os.environ.get("RECONCILE_MISS_THRESHOLD", "
 _SIZE_EPSILON_ABS = Decimal("0.000001")          # absolute floor
 _SIZE_EPSILON_REL = Decimal("0.005")             # 0.5% of db_size — absorbs lot-rounding drift
 
+# How near an externally-detected fill must land to a resting SL/TP before the close
+# is named after that trigger rather than the generic "Closed on exchange". Ordinary
+# trigger slippage is far tighter than this — the 2026-07-30 SOL stop-out filled
+# 0.003% from its trigger — so 0.15% leaves room for a fast market while staying well
+# inside the distance any sane stop keeps from its take-profit.
+_TRIGGER_MATCH_TOL_PCT = 0.15
+
 # Liquidation-safety guard (Phase 3, safety-sl-fix-report.md): when an active SL is
 # found on the wrong side of live liquidation, tighten it to land this fraction of the
 # entry->liquidation distance back from liq, toward entry. 10% is comparable in
@@ -884,6 +891,42 @@ async def _reconcile_pending_orders(pool) -> None:
                 )
 
 
+def classify_external_close(fill_price, sl_price, tp_price) -> Optional[str]:
+    """
+    Name an externally-detected close after the trigger it landed on, or None to
+    keep the generic label.
+
+    Returns "Stop-loss hit" / "Take-profit hit" when the fill is within
+    _TRIGGER_MATCH_TOL_PCT of that resting level, choosing the NEARER level when
+    both somehow qualify. None whenever the answer is not clear-cut — an
+    unnamed exit is merely uninformative, a wrongly-named one is a lie in the
+    trade record.
+
+    Accepts Decimal/str/float for every argument (DB numerics arrive as Decimal).
+    """
+    try:
+        fill = float(fill_price)
+    except (TypeError, ValueError):
+        return None
+    if fill <= 0:
+        return None
+
+    tol   = fill * _TRIGGER_MATCH_TOL_PCT / 100.0
+    cands = []
+    for level, label in ((sl_price, "Stop-loss hit"), (tp_price, "Take-profit hit")):
+        if level is None:
+            continue
+        try:
+            dist = abs(fill - float(level))
+        except (TypeError, ValueError):
+            continue
+        if dist <= tol:
+            cands.append((dist, label))
+    if not cands:
+        return None
+    return min(cands)[1]
+
+
 async def _handle_full_external_close(
     pool,
     strategy: dict,
@@ -939,6 +982,48 @@ async def _handle_full_external_close(
             f"reconciler: pnl_unconfirmed for position {pos_id} ({symbol} {side})"
             f" close_reason={close_reason}"
         )
+
+    # ── Name the exit when the fill lands on a known trigger ─────────────
+    # "Closed on exchange" is accurate but says nothing, and it is what a
+    # stop-out looks like from here: the exchange fires its own trigger, no
+    # order of ours is involved, and the position is simply gone by the next
+    # poll. sol-ai-6486 position c2a2a927 (2026-07-30) filled at 73.87756
+    # against a stop resting at 73.88 and was still labelled "Closed on
+    # exchange", which is why the loss read as unexplained.
+    #
+    # Only ever REFINES the generic label — an exchange-supplied reason
+    # (notably "Liquidated", which the synthetic order keys off below) wins.
+    # Reads the opening order's stops, which the adjust-stops route now keeps
+    # current; before that fix these columns held the entry-time values and
+    # this comparison would have been meaningless.
+    if close_reason == "Closed on exchange" and closing_price:
+        try:
+            async with pool.acquire() as conn:
+                lvl = await conn.fetchrow(
+                    """
+                    SELECT oo.sl_price, oo.tp_price
+                    FROM strategy_positions sp
+                    JOIN orders oo ON oo.id = sp.opening_order_id
+                    WHERE sp.id = $1
+                    """,
+                    pos_id,
+                )
+            if lvl is not None:
+                label = classify_external_close(
+                    closing_price, lvl["sl_price"], lvl["tp_price"]
+                )
+                if label:
+                    close_reason = label
+                    logger.info(
+                        f"reconciler: position {pos_id} ({symbol} {side}) fill "
+                        f"{float(closing_price)} matches its resting "
+                        f"{label.split()[0].lower()} level — labelling '{label}'"
+                    )
+        except Exception as exc:
+            # Naming is cosmetic; never let it block booking the close.
+            logger.warning(
+                f"reconciler: could not classify close for {pos_id}: {exc}"
+            )
 
     # Create a synthetic closing order carrying the real closed size.
     # Always created — even when pnl is unconfirmed — so the timeline has a close row.
