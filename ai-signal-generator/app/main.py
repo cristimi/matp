@@ -431,6 +431,7 @@ async def list_schedulers():
         result.append({
             'strategy_id':    sid,
             'running':        sched._running,
+            **sched.loop_status(),
             'last_trigger':   sched._last_trigger.isoformat() if sched._last_trigger else None,
             'last_interval_s': sched._last_interval,
         })

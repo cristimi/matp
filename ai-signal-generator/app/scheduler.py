@@ -28,6 +28,8 @@ def _row_to_dict(row) -> dict:
 class AdaptiveScheduler:
     """One instance per active AI strategy. Wakes on adaptive interval and triggers a LangGraph cycle."""
 
+    RETRY_BACKOFF_SECONDS = 60
+
     def __init__(self, strategy_id: str, db_pool, graph):
         self.strategy_id    = strategy_id
         self.db_pool        = db_pool
@@ -56,6 +58,22 @@ class AdaptiveScheduler:
                 pass
         logger.info("Scheduler stopped strategy=%s", self.strategy_id)
 
+    def loop_status(self) -> dict:
+        """True health of the loop task, not just the _running flag.
+
+        `running=True` with `loop_alive=False` is the silent-death signature:
+        the scheduler is registered but nothing is scheduling it.
+        """
+        task = self._task
+        if task is None:
+            return {'loop_alive': False, 'loop_error': 'never started'}
+        if not task.done():
+            return {'loop_alive': True, 'loop_error': None}
+        if task.cancelled():
+            return {'loop_alive': False, 'loop_error': 'cancelled'}
+        exc = task.exception()
+        return {'loop_alive': False, 'loop_error': repr(exc) if exc else 'exited'}
+
     def interrupt(self) -> None:
         """Wake up the current sleep so the loop re-reads config from DB immediately."""
         if self._wakeup is not None:
@@ -73,23 +91,45 @@ class AdaptiveScheduler:
             return False  # normal expiry
 
     async def _loop(self):
+        """Never lets an exception end the loop.
+
+        _get_interval() hits the DB, and a transient failure there (a connect
+        that times out while the host is loaded, say) used to propagate out of
+        _loop and kill the task outright. Nothing awaits this task and the
+        scheduler object keeps a reference to it, so the exception was never
+        logged: the strategy simply stopped scheduling and still reported
+        running=True. Catch, log, back off, carry on.
+        """
         while self._running:
-            sleep_seconds = await self._get_interval()
-            self._last_interval = sleep_seconds
-            logger.info(
-                "Scheduler strategy=%s sleeping %.0fs until candle-close+buffer wake (%.1fmin)",
-                self.strategy_id, sleep_seconds, sleep_seconds / 60,
-            )
-            interrupted = await self._sleep(sleep_seconds)
-            if not self._running:
-                break
-            if interrupted:
+            try:
+                sleep_seconds = await self._get_interval()
+                self._last_interval = sleep_seconds
                 logger.info(
-                    "Scheduler strategy=%s config reload — recomputing wake time, no immediate cycle",
-                    self.strategy_id,
+                    "Scheduler strategy=%s sleeping %.0fs until candle-close+buffer wake (%.1fmin)",
+                    self.strategy_id, sleep_seconds, sleep_seconds / 60,
                 )
-                continue
-            await self._trigger_cycle('scheduled')
+                interrupted = await self._sleep(sleep_seconds)
+                if not self._running:
+                    break
+                if interrupted:
+                    logger.info(
+                        "Scheduler strategy=%s config reload — recomputing wake time, no immediate cycle",
+                        self.strategy_id,
+                    )
+                    continue
+                await self._trigger_cycle('scheduled')
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception(
+                    "Scheduler strategy=%s loop iteration failed — retrying in %ds",
+                    self.strategy_id, self.RETRY_BACKOFF_SECONDS,
+                )
+                try:
+                    await self._sleep(self.RETRY_BACKOFF_SECONDS)
+                except asyncio.CancelledError:
+                    raise
+        logger.info("Scheduler strategy=%s loop exited", self.strategy_id)
 
     async def _get_interval(self) -> float:
         """Seconds to sleep until buffer_seconds past the next close of whichever
