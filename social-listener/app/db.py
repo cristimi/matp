@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 import asyncpg
 
 from app.config import settings
+from app.legs import Legs
 
 log = logging.getLogger(__name__)
 _pool: asyncpg.Pool | None = None
@@ -66,37 +67,81 @@ async def load_signal(channel_msg_id: int) -> dict | None:
         return dict(row)
 
 
-async def get_state(asset: str) -> str:
+async def get_legs(asset: str) -> Legs:
+    """Which legs of `asset` the channel is recorded as holding.
+
+    A missing row is a flat leg, so an asset never seen before reads as flat on both
+    sides — the same contract the single-stance `get_state` had.
+    """
     async with pool().acquire() as c:
-        row = await c.fetchrow(
-            "SELECT state FROM public.social_position_state WHERE source=$1 AND asset=$2",
+        rows = await c.fetch(
+            """SELECT side FROM public.social_position_state
+               WHERE source=$1 AND asset=$2 AND state='OPEN'""",
             settings.source_tag, asset,
         )
-        return row["state"] if row else "FLAT"
+    return Legs.from_sides(r["side"] for r in rows)
 
 
-async def set_state(asset: str, state: str, msg_id: int) -> None:
-    """Move the recorded stance. Clears stop_price: the stop we had tightened
-    belonged to the position we just left."""
+async def open_leg(asset: str, side: str, msg_id: int) -> None:
+    """Record a leg as open, with no levels yet.
+
+    Levels are cleared rather than carried: an existing row for this side means a
+    previous trade on it, and its stop belonged to that trade's entry price.
+    """
     async with pool().acquire() as c:
         await c.execute(
-            """INSERT INTO public.social_position_state (source, asset, state, last_msg_id, updated_at)
-               VALUES ($1,$2,$3,$4, now())
-               ON CONFLICT (source, asset) DO UPDATE
-                 SET state=$3, last_msg_id=$4, stop_price=NULL, tp_price=NULL,
+            """INSERT INTO public.social_position_state
+                 (source, asset, side, state, last_msg_id, updated_at)
+               VALUES ($1,$2,$3,'OPEN',$4, now())
+               ON CONFLICT (source, asset, side) DO UPDATE
+                 SET state='OPEN', last_msg_id=$4, stop_price=NULL, tp_price=NULL,
                      stop_mode=NULL, updated_at=now()""",
-            settings.source_tag, asset, state, msg_id,
+            settings.source_tag, asset, side, msg_id,
         )
 
 
-async def get_levels(asset: str) -> dict:
-    """What this listener has set for the current stance: stop, take-profit, and
-    whether a standing 'keep me at break-even' intent is in force."""
+async def close_leg(asset: str, side: str, msg_id: int) -> None:
+    """Record a leg as flat.
+
+    The row is deleted, not set to FLAT: absence IS flat everywhere else here, and
+    keeping a husk around would leave its stale stop_price visible to any query that
+    forgot to filter on state.
+    """
+    async with pool().acquire() as c:
+        await c.execute(
+            """DELETE FROM public.social_position_state
+               WHERE source=$1 AND asset=$2 AND side=$3""",
+            settings.source_tag, asset, side,
+        )
+
+
+async def apply_leg_changes(asset: str, changes: dict, msg_id: int) -> None:
+    """Apply a decision's `advance_legs` — {side: is_open} — in one go.
+
+    Closes run before opens so a flip frees its old leg before the new one lands;
+    they are different rows, so the order only matters for how the intermediate
+    state reads to a concurrent watcher pass.
+    """
+    for side, is_open in sorted(changes.items(), key=lambda kv: kv[1]):
+        if is_open:
+            await open_leg(asset, side, msg_id)
+        else:
+            await close_leg(asset, side, msg_id)
+
+
+async def get_levels(asset: str, side: str) -> dict:
+    """What this listener has set for ONE leg: stop, take-profit, and whether a
+    standing 'keep me at break-even' intent is in force.
+
+    Per leg because a long's break-even and a short's are different numbers — the
+    single-row version could only ever hold one of them.
+    """
     async with pool().acquire() as c:
         row = await c.fetchrow(
             """SELECT stop_price, tp_price, stop_mode
-               FROM public.social_position_state WHERE source=$1 AND asset=$2""",
-            settings.source_tag, asset,
+               FROM public.social_position_state
+               WHERE source=$1 AND asset=$2 AND side=$3""",
+            settings.source_tag, asset, side,
         )
     if row is None:
         return {"stop_price": None, "tp_price": None, "stop_mode": None}
@@ -107,12 +152,12 @@ async def get_levels(asset: str) -> dict:
     }
 
 
-async def set_levels(asset: str, stop_price: float | None = None,
+async def set_levels(asset: str, side: str, stop_price: float | None = None,
                      tp_price: float | None = None,
                      stop_mode: str | None = None) -> None:
-    """Record levels we have just confirmed. Only non-None arguments are written,
-    so setting a take-profit never forgets the stop and vice versa."""
-    sets, args = [], [settings.source_tag, asset]
+    """Record levels we have just confirmed on one leg. Only non-None arguments are
+    written, so setting a take-profit never forgets the stop and vice versa."""
+    sets, args = [], [settings.source_tag, asset, side]
     for col, val in (("stop_price", stop_price), ("tp_price", tp_price),
                      ("stop_mode", stop_mode)):
         if val is not None:
@@ -123,13 +168,13 @@ async def set_levels(asset: str, stop_price: float | None = None,
     async with pool().acquire() as c:
         await c.execute(
             f"""UPDATE public.social_position_state SET {', '.join(sets)}, updated_at=now()
-                WHERE source=$1 AND asset=$2""",
+                WHERE source=$1 AND asset=$2 AND side=$3""",
             *args,
         )
 
 
-async def clear_stop_price(asset: str) -> None:
-    """Forget the stop we had set, keeping any standing intent.
+async def clear_stop_price(asset: str, side: str) -> None:
+    """Forget the stop we had set on one leg, keeping any standing intent.
 
     Used after a scale-in: the blended entry price moved, so a break-even stop now
     means a different number and the watcher must be free to re-assert it.
@@ -137,18 +182,22 @@ async def clear_stop_price(asset: str) -> None:
     async with pool().acquire() as c:
         await c.execute(
             """UPDATE public.social_position_state SET stop_price=NULL, updated_at=now()
-               WHERE source=$1 AND asset=$2""",
-            settings.source_tag, asset,
+               WHERE source=$1 AND asset=$2 AND side=$3""",
+            settings.source_tag, asset, side,
         )
 
 
-async def stances_with_standing_stop() -> list[dict]:
-    """Assets whose trader asked to stay de-risked, for the watcher to re-assert."""
+async def legs_with_standing_stop() -> list[dict]:
+    """Legs whose trader asked to stay de-risked, for the watcher to re-assert.
+
+    Each leg is returned separately: with a long and a short both de-risked, they
+    need two different break-even prices and two separate stop moves.
+    """
     async with pool().acquire() as c:
         rows = await c.fetch(
-            """SELECT asset, state, stop_price, tp_price, last_msg_id
+            """SELECT asset, side, stop_price, tp_price, last_msg_id
                FROM public.social_position_state
-               WHERE source=$1 AND stop_mode='breakeven' AND state <> 'FLAT'""",
+               WHERE source=$1 AND stop_mode='breakeven' AND state='OPEN'""",
             settings.source_tag,
         )
     return [dict(r) for r in rows]
@@ -192,22 +241,31 @@ async def resolve_shadow_order(channel_msg_id: int, decision: str, reason: str,
         )
 
 
-async def open_position(strategy_id: str, asset: str) -> dict | None:
-    """The listener strategy's open position in `asset`, or None.
+async def open_position(strategy_id: str, asset: str, side: str | None = None) -> dict | None:
+    """The listener strategy's open position in `asset` on `side`, or None.
+
+    `side` is LONG/SHORT and is required in practice: with both legs open, the
+    unscoped query returns whichever opened most recently, and every caller here
+    goes on to trim it, add to it, or move its stop. Left optional only so a caller
+    that genuinely means "the one position" (net-mode paths, diagnostics) can say so.
 
     Read from strategy_positions, the same record order-listener clamps a partial
     close against — so the size sent and the size it enforces come from one source.
     No exchange call is made here; every venue call stays in order-executor.
     """
+    where, args = "", [strategy_id, f"{asset.upper()}%"]
+    if side is not None:
+        args.append(side.lower())
+        where = f" AND lower(p.side)=${len(args)}"
     async with pool().acquire() as c:
         row = await c.fetchrow(
-            """SELECT p.id, p.symbol, p.side, p.size, p.entry_price, p.opened_at,
-                      o.tp_price, o.sl_price
-               FROM public.strategy_positions p
-               LEFT JOIN public.orders o ON o.id = p.opening_order_id
-               WHERE p.strategy_id=$1 AND p.status='open' AND p.symbol LIKE $2
-               ORDER BY p.opened_at DESC LIMIT 1""",
-            strategy_id, f"{asset.upper()}%",
+            f"""SELECT p.id, p.symbol, p.side, p.size, p.entry_price, p.opened_at,
+                       o.tp_price, o.sl_price
+                FROM public.strategy_positions p
+                LEFT JOIN public.orders o ON o.id = p.opening_order_id
+                WHERE p.strategy_id=$1 AND p.status='open' AND p.symbol LIKE $2{where}
+                ORDER BY p.opened_at DESC LIMIT 1""",
+            *args,
         )
     return dict(row) if row else None
 
@@ -314,14 +372,19 @@ async def expire_pending_trims() -> int:
     return int(result.rsplit(" ", 1)[-1] or 0)
 
 
-async def cancel_pending_trims(asset: str, resolution: str) -> int:
-    """Drop parked trims for an asset whose stance has moved on."""
+async def cancel_pending_trims(asset: str, side: str, resolution: str) -> int:
+    """Drop parked trims for ONE leg that has closed.
+
+    Scoped to the side: a long closing must not cancel a trim parked against a short
+    that is still running. That was safe when an asset had one stance and is a bug
+    the moment it can have two.
+    """
     async with pool().acquire() as c:
         result = await c.execute(
             """UPDATE public.social_pending_trims
-               SET status='cancelled', resolution=$3, resolved_at=now()
-               WHERE source=$1 AND status='pending' AND asset=$2""",
-            settings.source_tag, asset, resolution[:500],
+               SET status='cancelled', resolution=$4, resolved_at=now()
+               WHERE source=$1 AND status='pending' AND asset=$2 AND side=$3""",
+            settings.source_tag, asset, side, resolution[:500],
         )
     return int(result.rsplit(" ", 1)[-1] or 0)
 
@@ -335,13 +398,34 @@ async def load_execution_strategy(strategy_id: str) -> dict | None:
     """
     async with pool().acquire() as c:
         row = await c.fetchrow(
-            """SELECT id, name, symbol, enabled, is_deleted, account_id, webhook_secret,
-                      capital_allocation, margin_per_trade, default_leverage,
-                      max_leverage, margin_mode
-               FROM public.strategies WHERE id = $1""",
+            """SELECT s.id, s.name, s.symbol, s.enabled, s.is_deleted, s.account_id,
+                      s.webhook_secret, s.capital_allocation, s.margin_per_trade,
+                      s.default_leverage, s.max_leverage, s.margin_mode,
+                      COALESCE(a.position_mode, 'net') AS position_mode
+               FROM public.strategies s
+               LEFT JOIN public.exchange_accounts a ON a.id = s.account_id
+               WHERE s.id = $1""",
             strategy_id,
         )
     return dict(row) if row else None
+
+
+async def account_position_mode(strategy_id: str) -> str:
+    """'hedge' or 'net' for the account behind `strategy_id`, defaulting to 'net'.
+
+    Read separately from load_execution_strategy because SHADOW runs need it too:
+    a shadow decision that assumed hedge while the account is net would record a
+    second leg the live path could never have taken, and the shadow log is what the
+    backtest and every "would we have traded this" question read.
+    """
+    async with pool().acquire() as c:
+        mode = await c.fetchval(
+            """SELECT a.position_mode FROM public.strategies s
+               JOIN public.exchange_accounts a ON a.id = s.account_id
+               WHERE s.id = $1""",
+            strategy_id,
+        )
+    return mode if mode in ("net", "hedge") else "net"
 
 
 async def load_extraction_cache(version: str, days: int) -> dict[int, dict]:

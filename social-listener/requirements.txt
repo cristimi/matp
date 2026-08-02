@@ -10,3 +10,5 @@ langchain-google-genai
 langchain-groq
 python-dotenv
 httpx
+pytest
+pytest-asyncio

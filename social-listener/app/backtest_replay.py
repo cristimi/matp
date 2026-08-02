@@ -120,6 +120,24 @@ async def initial_states(days: int) -> dict[str, str]:
 
 
 def replay(recs: list[dict], px: Prices, label: str, seed: dict[str, str] | None = None) -> dict:
+    """Price the channel as a SINGLE position per asset — net mode.
+
+    Deliberately not multi-position. The P&L walk below assumes one position at a
+    time per asset: it pairs each transition with the next one to find the exit, and
+    a second concurrent leg has no place in that timeline. `evaluate` is therefore
+    called with multi=False, which reproduces exactly what a net account does — an
+    OPEN against the opposite side is a flip. A hedge-mode backtest needs the walk
+    rewritten to track two legs, and until it is, this tool answers the net question
+    only. Any 'LONG+SHORT' seed from a live hedge run is refused rather than
+    silently read as one side.
+    """
+    for asset, stance in (seed or {}).items():
+        if "+" in str(stance):
+            raise ValueError(
+                f"{asset} was holding two legs ({stance}) at the window's open. This "
+                f"replay prices one position per asset and cannot seed from a hedge "
+                f"stance — pick a window that opens with at most one leg per asset."
+            )
     state: dict[str, str] = dict(seed or {})
     transitions: list[dict] = []
     reasons: dict[str, int] = {}
@@ -136,7 +154,7 @@ def replay(recs: list[dict], px: Prices, label: str, seed: dict[str, str] | None
         mark = px.at(d_ms) if asset == "BTC" else None
         implied = px.at(p_ms) if (asset == "BTC" and r.get("reference_price") is None) else None
 
-        d = evaluate(r, "live", cur, mark, implied, now=decided_at)
+        d = evaluate(r, "live", cur, mark, implied, now=decided_at, multi=False)
         reasons[d["reason"]] = reasons.get(d["reason"], 0) + 1
 
         if d["advance"] and asset:

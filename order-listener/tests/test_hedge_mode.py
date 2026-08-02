@@ -10,12 +10,17 @@ Three decisions change when an account holds a long and a short side by side:
   2. the flip-close inference — "this entry came back with PnL, so the exchange
      must have netted away the opposite leg" — is simply false, and acting on it
      would close a live position in the DB while it still runs on the exchange;
-  3. target_position=flat must flatten BOTH legs, not the first one it finds.
+  3. target_position=flat must flatten the leg its signal names, and every leg
+     when no signal names one — not the first one it happens to find.
+
+And adjust-stops must be told which leg it is moving, or it moves whichever
+position opened most recently.
 
 Every one of these fails CLOSED on an unreadable mode: unknown reads as "net".
 
 No live services — pool, executor and helpers are mocked.
 """
+import json
 import uuid
 import pytest
 from decimal import Decimal
@@ -46,7 +51,7 @@ STRATEGY = {
 }
 
 
-def _payload(signal="open_long", side="buy", size="0.5", target_position=None):
+def _payload(signal="open_long", side="buy", size="0.5", target_position=None):  # noqa: D401
     from app.models import WebhookPayload
     return WebhookPayload(
         base_asset="BTC",
@@ -255,6 +260,36 @@ async def test_flat_reports_the_failing_leg_not_the_first_one():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("signal,expected", [("close_long", "long"), ("close_short", "short")])
+async def test_flat_on_a_close_signal_touches_only_that_leg(signal, expected):
+    """target_position=flat means two different things depending on the signal that
+    carries it. On close_long it says "the size field is not what decides the
+    quantity — close this leg whole", and it must not reach across to the short."""
+    pool = _make_pool(open_legs=[
+        {"symbol": "BTC-USDT", "side": "long"},
+        {"symbol": "BTC-USDT", "side": "short"},
+    ])
+    side = "sell" if signal == "close_long" else "buy"
+    _, close_mock = await _run(
+        _payload(signal, side, target_position="flat"), pool, "hedge"
+    )
+    assert close_mock.await_count == 1
+    assert close_mock.await_args.kwargs["side"] == expected
+
+
+@pytest.mark.asyncio
+async def test_flat_on_a_close_signal_with_only_the_other_leg_open_closes_nothing():
+    """A close_long while only a short is open must leave the short alone — under
+    the old code it would have closed whatever single position it found."""
+    pool = _make_pool(open_legs=[{"symbol": "BTC-USDT", "side": "short"}])
+    update_mock, close_mock = await _run(
+        _payload("close_long", "sell", target_position="flat"), pool, "hedge"
+    )
+    assert close_mock.await_count == 0
+    assert _status_of(update_mock) == "no_position"
+
+
+@pytest.mark.asyncio
 async def test_flat_with_a_single_leg_is_unchanged():
     """Regression for net accounts, which only ever have one leg to close."""
     pool = _make_pool(open_legs=[{"symbol": "BTC-USDT", "side": "long"}])
@@ -298,3 +333,75 @@ async def test_hedge_is_read_and_cached():
          patch("app.webhook_handler.cache_set", cache_set):
         assert await _account_position_mode(pool, "acc_test") == "hedge"
     assert cache_set.await_args.args[1] == {"position_mode": "hedge"}
+
+
+# ── adjust-stops must know which leg it is moving ────────────────────────────
+
+async def _run_adjust(body, open_rows, modify=None):
+    """Call the adjust-stops route directly with everything external stubbed."""
+    from app.webhook_handler import adjust_stops_for_strategy
+
+    conn = AsyncMock()
+    conn.fetch    = AsyncMock(return_value=open_rows)
+    conn.fetchrow = AsyncMock(return_value=None)
+    conn.execute  = AsyncMock()
+    pool = MagicMock()
+    pool.acquire.return_value.__aenter__ = AsyncMock(return_value=conn)
+    pool.acquire.return_value.__aexit__  = AsyncMock(return_value=False)
+
+    modify_mock = AsyncMock(return_value=modify or {
+        "success": True, "sl_ok": True, "tp_ok": True, "preserved": [],
+    })
+
+    class _Req:
+        async def body(self):
+            return json.dumps(body).encode()
+
+    with patch("app.webhook_handler.get_pool", lambda: pool), \
+         patch("app.webhook_handler._get_strategy",
+               AsyncMock(return_value={"id": "s1", "webhook_secret": "sec",
+                                       "account_id": "acc"})), \
+         patch("app.webhook_handler._verify_token", AsyncMock(return_value=True)), \
+         patch("app.executor_client.call_executor_modify_stops", modify_mock):
+        result = await adjust_stops_for_strategy("s1", _Req(), x_webhook_token="sec")
+    return result, modify_mock
+
+
+BOTH_LEGS_OPEN = [
+    # Newest first, as the route's ORDER BY opened_at DESC returns them.
+    {"id": "p-short", "symbol": "BTC-USDT", "side": "short", "opening_order_id": None},
+    {"id": "p-long",  "symbol": "BTC-USDT", "side": "long",  "opening_order_id": None},
+]
+
+
+@pytest.mark.asyncio
+async def test_adjust_stops_moves_the_leg_it_was_given():
+    """Without side, this route takes the most recent position. With a long and a
+    short both open that is a coin flip, and the loser is a live stop."""
+    _, modify = await _run_adjust({"sl_price": 61000, "side": "long"}, BOTH_LEGS_OPEN)
+    assert modify.await_args.kwargs["side"] == "long"
+
+
+@pytest.mark.asyncio
+async def test_adjust_stops_without_a_side_still_takes_the_newest():
+    """Regression: every existing caller omits side and holds one position."""
+    _, modify = await _run_adjust({"sl_price": 61000}, BOTH_LEGS_OPEN)
+    assert modify.await_args.kwargs["side"] == "short"
+
+
+@pytest.mark.asyncio
+async def test_adjust_stops_refuses_a_side_that_is_not_open():
+    from fastapi import HTTPException
+    with pytest.raises(HTTPException) as e:
+        await _run_adjust({"sl_price": 61000, "side": "long"},
+                          [BOTH_LEGS_OPEN[0]])
+    assert e.value.status_code == 404
+    assert "long" in e.value.detail
+
+
+@pytest.mark.asyncio
+async def test_adjust_stops_rejects_a_nonsense_side():
+    from fastapi import HTTPException
+    with pytest.raises(HTTPException) as e:
+        await _run_adjust({"sl_price": 61000, "side": "sideways"}, BOTH_LEGS_OPEN)
+    assert e.value.status_code == 400

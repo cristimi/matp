@@ -31,6 +31,10 @@ _STEPS = {
     "close_short":   ["close_short"],
     "flip_to_long":  ["close_short", "open_long"],
     "flip_to_short": ["close_long", "open_short"],
+    # Both legs out. Only reachable on a hedge account holding a long AND a short
+    # when a CLOSE post names no side — see _plan_close for why that reads as "all
+    # out". Longs first is arbitrary; the two closes are independent.
+    "close_all": ["close_long", "close_short"],
     # A partial close is the ordinary close signal carrying an explicit size and
     # no `target_position` — order-listener's close path reduces by that size and
     # clamps it to the size it believes is open, so we can never overshoot into a
@@ -167,8 +171,14 @@ async def emit(signal: str, asset: str, mark: float, strategy: dict,
 async def adjust_levels(strategy: dict,
                         sl_price: float | None = None,
                         tp_price: float | None = None,
-                        dry_run: bool = False) -> tuple[bool, str]:
-    """Set the stop and/or take-profit on the strategy's open position.
+                        dry_run: bool = False,
+                        side: str | None = None) -> tuple[bool, str]:
+    """Set the stop and/or take-profit on one of the strategy's open positions.
+
+    `side` ("LONG"/"SHORT") names the leg. Without it, order-listener picks the most
+    recently opened position for the strategy — fine when there is only one, wrong
+    the moment a long and a short are both open, because the stop would land on
+    whichever happened to be newer.
 
     Uses order-listener's existing `/strategies/{id}/adjust-stops`, which resolves
     the position and hands off to order-executor's modify-stops — so, as everywhere
@@ -193,6 +203,8 @@ async def adjust_levels(strategy: dict,
         body["sl_price"] = float(sl_price)
     if tp_price is not None:
         body["tp_price"] = float(tp_price)
+    if side is not None:
+        body["side"] = side.lower()
     if dry_run:
         body["dry_run"] = True
 
@@ -220,5 +232,6 @@ async def adjust_levels(strategy: dict,
                        f"sl_ok={data.get('sl_ok')}, tp_ok={data.get('tp_ok')}): "
                        f"{data.get('error') or data.get('error_msg')}")
 
-    log.info("levels set sl=%s tp=%s -> %s", sl_price, tp_price, resp.status_code)
-    return True, f"sl={sl_price} tp={tp_price} confirmed"
+    log.info("levels set %s sl=%s tp=%s -> %s", side or "-", sl_price, tp_price,
+             resp.status_code)
+    return True, f"{side or '-'} sl={sl_price} tp={tp_price} confirmed"

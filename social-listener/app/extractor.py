@@ -8,7 +8,10 @@ from pydantic import BaseModel, Field
 from app.config import settings
 
 log = logging.getLogger(__name__)
-EXTRACTOR_VERSION = "v6"  # v6: a complete chart outranks the prose; a size and its price
+EXTRACTOR_VERSION = "v7"  # v7: direction on CLOSE/ADD/STOP is the side being acted on, not
+                          # the resulting one — the trader can hold both sides at once, so a
+                          # side-less management post is unattributable (see legs.py).
+                          # v6: a complete chart outranks the prose; a size and its price
                           #     must come off the SAME annotation. v5 read "TP (Close 30%)"
                           #     at 64,733 off the chart, kept the 30%, and replaced the price
                           #     with "67.7k" from the post's poem — parking a trim the post
@@ -143,9 +146,13 @@ If the levels are ambiguous and the post never states a side, leave direction nu
 lower confidence rather than guessing.
 
 asset           : uppercase base symbol (BTC, ETH). null if none.
-direction       : LONG or SHORT. For OPEN/FLIP/CLOSE it is the NEW resulting direction. For
-                  TRIM it is the side of the position being trimmed (a partial profit on a
-                  short is direction=SHORT). null if none.
+direction       : LONG or SHORT. For OPEN/FLIP it is the NEW resulting direction. For
+                  CLOSE, TRIM, ADD and STOP it is the side of the EXISTING position the
+                  post is acting on — closing a short is direction=SHORT, a partial profit
+                  on a short is direction=SHORT. This matters: the trader can hold a long
+                  and a short in the same coin at once, and a post that does not say which
+                  one it means cannot be acted on. Give the side whenever the post or the
+                  chart makes it recoverable; null only when it genuinely does not.
 reference_price : the entry/exit price the trader cites, as a number ("66.7k" -> 66700). Use a
                   price written in an annotation if the text gives none. null if absent.
 size_fraction   : TRIM only — how much of the position comes off, 0..1. Read it from the

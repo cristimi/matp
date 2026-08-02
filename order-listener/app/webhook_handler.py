@@ -538,9 +538,16 @@ async def adjust_stops_for_strategy(
     x_webhook_token: str = Header(None),
 ):
     """
-    Adjust TP/SL stops for the open position of a given strategy.
+    Adjust TP/SL stops for an open position of a given strategy.
     Auth: same token as webhook (X-Webhook-Token header or body 'token' field).
-    Body: {tp_price?, sl_price?, token?}
+    Body: {tp_price?, sl_price?, side?, token?}
+
+    `side` ("long"|"short") picks the leg. Without it this takes the most recently
+    opened position, which is the right answer only while a strategy holds one
+    position per symbol. On a hedge account holding both sides, an unscoped call
+    would move whichever leg happened to be newer — so callers that know the leg
+    must say so, and one that does not gets a warning in the log rather than a
+    silent coin-flip.
     """
     from app.executor_client import call_executor_modify_stops
 
@@ -567,17 +574,38 @@ async def adjust_stops_for_strategy(
     tp_price = float(tp_price_raw) if tp_price_raw is not None else None
     sl_price = float(sl_price_raw) if sl_price_raw is not None else None
     dry_run  = bool(body_dict.get("dry_run", False))
+    req_side = (body_dict.get("side") or "").lower() or None
+    if req_side is not None and req_side not in ("long", "short"):
+        raise HTTPException(status_code=400, detail=f"side must be long or short, got {req_side!r}")
 
-    # Find open position for this strategy
+    # Find the open position this call is about
     async with pool.acquire() as conn:
-        pos = await conn.fetchrow(
+        open_rows = await conn.fetch(
             """
             SELECT id, symbol, side, opening_order_id FROM strategy_positions
             WHERE strategy_id = $1 AND status = 'open'
-            ORDER BY opened_at DESC LIMIT 1
+            ORDER BY opened_at DESC
             """,
             strategy_id,
         )
+
+    if req_side is not None:
+        matching = [r for r in open_rows if r["side"] == req_side]
+        if not matching:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No open {req_side} position for strategy",
+            )
+        pos = matching[0]
+    else:
+        if len(open_rows) > 1:
+            logger.warning(
+                f"adjust-stops strategy={strategy_id} carries no side but "
+                f"{len(open_rows)} positions are open "
+                f"({', '.join(f'{r['symbol']} {r['side']}' for r in open_rows)}) — "
+                f"acting on the most recent. Pass 'side' to name the leg."
+            )
+        pos = open_rows[0] if open_rows else None
 
     if pos is None:
         raise HTTPException(status_code=404, detail="No open position for strategy")
@@ -1767,9 +1795,9 @@ async def _process_order(
             # Look up open position by execution symbol (not by recency)
             async with pool.acquire() as conn:
                 # Every open leg, not the first one found: on a hedge account a
-                # strategy can hold a long AND a short on this symbol, and "flat"
-                # means flat — closing one and reporting success would leave the
-                # other running with the operator believing it was shut.
+                # strategy can hold a long AND a short on this symbol, and closing
+                # one while reporting success would leave the other running with the
+                # caller believing it was shut.
                 open_legs = await conn.fetch(
                     """
                     SELECT symbol, side
@@ -1780,10 +1808,29 @@ async def _process_order(
                     strategy['id'], flat_symbol,
                 )
 
+            # target_position=flat is two different instructions depending on the
+            # signal it rides on. A close_long/close_short means "close THIS leg
+            # whole" — the flag is there to say the size field is not what decides
+            # the quantity — so it must not reach across to the other leg. Only a
+            # flat carried by an entry signal means "be flat in this symbol", and
+            # that one takes every leg. On a net account there is only ever one leg,
+            # so this distinction changes nothing there.
+            _flat_side = {"close_long": "long", "close_short": "short"}.get(payload.signal)
+            if _flat_side:
+                _other = [l for l in open_legs if l["side"] != _flat_side]
+                open_legs = [l for l in open_legs if l["side"] == _flat_side]
+                if _other:
+                    logger.info(
+                        f"target_position=flat on {payload.signal} for {strategy['id']}: "
+                        f"closing the {_flat_side} leg of {flat_symbol} only, leaving "
+                        f"{', '.join(l['side'] for l in _other)} open"
+                    )
+
             if not open_legs:
                 logger.info(
                     f"target_position=flat for {strategy['id']}: "
-                    f"no open {flat_symbol} position — ignoring"
+                    f"no open {(_flat_side + ' ') if _flat_side else ''}"
+                    f"{flat_symbol} position — ignoring"
                 )
                 await _update_order_status(pool, order_id, "no_position", payload, None, account_id, account_label, strategy_id)
                 return
