@@ -14,12 +14,17 @@ import { ChartIconButton, ChartPanel } from '../components/ExpandableChart';
 const MONO = '"JetBrains Mono", monospace';
 const CLOSED_STEP = 3;
 const HOLD_MS = 500;
+const DOUBLE_MS = 320;
 
-// ---- long-press hook ----
-
-function useLongPress(onTap: () => void, onHold: () => void) {
+// ---- press hook: tap / double-tap / long-press ----
+//
+// A tap fires immediately (no delay, so expanding stays snappy). If a second tap
+// lands within DOUBLE_MS it is treated as a double-tap instead, and the caller is
+// expected to undo whatever the first tap did.
+function useLongPress(onTap: () => void, onHold: () => void, onDoubleTap?: () => void) {
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const held = useRef(false);
+  const lastTap = useRef(0);
 
   const start = useCallback(() => {
     held.current = false;
@@ -28,8 +33,16 @@ function useLongPress(onTap: () => void, onHold: () => void) {
 
   const end = useCallback((fire: boolean) => {
     if (timer.current) { clearTimeout(timer.current); timer.current = null; }
-    if (fire && !held.current) onTap();
-  }, [onTap]);
+    if (!fire || held.current) return;
+    const now = Date.now();
+    if (onDoubleTap && now - lastTap.current < DOUBLE_MS) {
+      lastTap.current = 0;
+      onDoubleTap();
+      return;
+    }
+    lastTap.current = now;
+    onTap();
+  }, [onTap, onDoubleTap]);
 
   return {
     onPointerDown: (e: React.PointerEvent) => {
@@ -416,6 +429,7 @@ function StrategyCard({ strategy: s, onL1Refresh, livePnl }: { strategy: Strateg
   const [detailData, setDetailData] = useState<Record<string, any> | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const lastRefetchedKey = useRef<string | null>(null);
+  const prevExpand = useRef<ExpandState>('collapsed');
 
   const doFetchOpen = useCallback(async () => {
     if (openPositions !== null) return;
@@ -455,6 +469,7 @@ function StrategyCard({ strategy: s, onL1Refresh, livePnl }: { strategy: Strateg
   }, [pidKey, expandState, loadingPos, openPositions, allPositions, s.id]);
 
   const handleTap = useCallback(() => {
+    prevExpand.current = expandState;
     if (expandState === 'collapsed') {
       if (hasOpen) {
         doFetchOpen();
@@ -475,7 +490,14 @@ function StrategyCard({ strategy: s, onL1Refresh, livePnl }: { strategy: Strateg
     setExpandState('collapsed');
   }, []);
 
-  const pressHandlers = useLongPress(handleTap, handleHold);
+  // Double-tap → strategy history page. Undo the expand the first tap triggered
+  // so the card is unchanged when the user comes back.
+  const handleDoubleTap = useCallback(() => {
+    setExpandState(prevExpand.current);
+    navigate(`/strategy/${s.id}`);
+  }, [navigate, s.id]);
+
+  const pressHandlers = useLongPress(handleTap, handleHold, handleDoubleTap);
 
   const handlePauseResume = useCallback(async () => {
     setActionError(null);

@@ -917,6 +917,279 @@ router.get('/:id/webhook-calls', async (req: Request, res: Response) => {
 
 
 
+// GET /strategies/:id/history?period=today|7d|30d|all
+//
+// Everything the strategy history page needs, computed live.
+// The strategy_stats / strategy_performance tables exist but nothing ever writes
+// to them, so they are deliberately NOT used here — the source of truth is
+// strategy_positions (closed trades), orders and signal_log.
+router.get('/:id/history', async (req: Request, res: Response) => {
+  const id = req.params.id;
+  const period = (req.query.period as string) || 'all';
+  const interval = PERIOD_FILTER[period] ? period : 'all';
+  const since = PERIOD_FILTER[interval];
+
+  try {
+    const pool = getPool();
+    const [stratQ, closedQ, ordersQ, signalsQ, recentQ, openQ, reconQ] = await Promise.all([
+      pool.query(`
+        SELECT s.*,
+               ea.exchange AS account_exchange,
+               ea.mode     AS account_mode,
+               ea.label    AS account_label
+        FROM strategies s
+        LEFT JOIN exchange_accounts ea ON ea.id = s.account_id
+        WHERE s.id = $1
+      `, [id]),
+
+      pool.query(`
+        SELECT sp.id, sp.side, sp.symbol, sp.size, sp.entry_price, sp.closing_price,
+               sp.pnl_realized, sp.leverage, sp.close_reason,
+               sp.opened_at, sp.closed_at, sp.mfe_r, sp.mae_r
+        FROM strategy_positions sp
+        WHERE sp.strategy_id = $1
+          AND sp.status = 'closed'
+          AND sp.closed_at >= NOW() - ${since}
+        ORDER BY sp.closed_at ASC
+      `, [id]),
+
+      pool.query(`
+        SELECT COUNT(*)::int                                                AS total,
+               COUNT(*) FILTER (WHERE status = 'filled')::int               AS filled,
+               COUNT(*) FILTER (WHERE status = 'pending')::int              AS pending,
+               COUNT(*) FILTER (WHERE status NOT IN ('filled','pending'))::int AS not_filled,
+               COALESCE(SUM(exchange_fee), 0)::float                        AS fees_total,
+               COUNT(exchange_fee)::int                                     AS fee_rows
+        FROM orders
+        WHERE strategy_id = $1 AND received_at >= NOW() - ${since}
+      `, [id]),
+
+      pool.query(`
+        SELECT COALESCE(outcome, 'unknown') AS outcome, COUNT(*)::int AS count
+        FROM signal_log
+        WHERE strategy_id = $1 AND received_at >= NOW() - ${since}
+        GROUP BY 1
+        ORDER BY 2 DESC
+      `, [id]),
+
+      pool.query(`
+        SELECT received_at, outcome, http_status, error_detail, duration_ms, ai_confidence
+        FROM signal_log
+        WHERE strategy_id = $1
+        ORDER BY received_at DESC
+        LIMIT 20
+      `, [id]),
+
+      pool.query(`
+        SELECT COUNT(*)::int                             AS open_count,
+               COALESCE(SUM(pnl_unrealized), 0)::float   AS open_pnl_db
+        FROM strategy_positions
+        WHERE strategy_id = $1 AND status = 'open'
+      `, [id]),
+
+      pool.query(`
+        SELECT COUNT(*)::int AS divergent
+        FROM strategy_positions
+        WHERE strategy_id = $1 AND reconcile_divergent = true AND status = 'open'
+      `, [id]),
+    ]);
+
+    if (stratQ.rows.length === 0) {
+      return res.status(404).json({ error: `Strategy not found: ${id}` });
+    }
+    const s = stratQ.rows[0];
+
+    // ── closed trades → summary, streaks, equity curve ──────────────────────
+    type Trade = {
+      id: string; side: string; pnl: number; leverage: number | null;
+      close_reason: string | null; opened_at: Date; closed_at: Date;
+      hold_secs: number; mfe_r: number | null; mae_r: number | null;
+    };
+    const trades: Trade[] = closedQ.rows.map((r: any) => ({
+      id: r.id,
+      side: r.side,
+      pnl: Number(r.pnl_realized ?? 0),
+      leverage: r.leverage != null ? Number(r.leverage) : null,
+      close_reason: r.close_reason,
+      opened_at: r.opened_at,
+      closed_at: r.closed_at,
+      hold_secs: Math.max(0, (new Date(r.closed_at).getTime() - new Date(r.opened_at).getTime()) / 1000),
+      mfe_r: r.mfe_r != null ? Number(r.mfe_r) : null,
+      mae_r: r.mae_r != null ? Number(r.mae_r) : null,
+    }));
+
+    const sum = (xs: number[]) => xs.reduce((a, b) => a + b, 0);
+    const avg = (xs: number[]) => (xs.length ? sum(xs) / xs.length : null);
+
+    function summarize(list: Trade[]) {
+      const wins   = list.filter(t => t.pnl > 0);
+      const losses = list.filter(t => t.pnl < 0);
+      const flat   = list.filter(t => t.pnl === 0);
+      const grossWin  = sum(wins.map(t => t.pnl));
+      const grossLoss = Math.abs(sum(losses.map(t => t.pnl)));
+      const decided   = wins.length + losses.length;
+      const holds     = list.map(t => t.hold_secs);
+      const levs      = list.map(t => t.leverage).filter((l): l is number => l != null);
+      return {
+        trades:        list.length,
+        wins:          wins.length,
+        losses:        losses.length,
+        breakeven:     flat.length,
+        win_rate:      decided > 0 ? (wins.length / decided) * 100 : null,
+        pnl_total:     sum(list.map(t => t.pnl)),
+        avg_pnl:       avg(list.map(t => t.pnl)),
+        avg_win:       avg(wins.map(t => t.pnl)),
+        avg_loss:      avg(losses.map(t => t.pnl)),
+        best_trade:    list.length ? Math.max(...list.map(t => t.pnl)) : null,
+        worst_trade:   list.length ? Math.min(...list.map(t => t.pnl)) : null,
+        // undefined when nothing was lost — a ratio against zero says nothing
+        profit_factor: grossLoss > 0 ? grossWin / grossLoss : null,
+        gross_win:     grossWin,
+        gross_loss:    grossLoss,
+        avg_hold_secs: avg(holds),
+        min_hold_secs: holds.length ? Math.min(...holds) : null,
+        max_hold_secs: holds.length ? Math.max(...holds) : null,
+        avg_leverage:  avg(levs),
+      };
+    }
+
+    // streaks (chronological)
+    let curWin = 0, curLoss = 0, maxWinStreak = 0, maxLossStreak = 0;
+    for (const t of trades) {
+      if (t.pnl > 0)      { curWin++; curLoss = 0; maxWinStreak  = Math.max(maxWinStreak,  curWin);  }
+      else if (t.pnl < 0) { curLoss++; curWin = 0; maxLossStreak = Math.max(maxLossStreak, curLoss); }
+    }
+
+    // equity curve + drawdown, expressed against starting capital when known
+    const startEquity = Number(s.initial_allocation ?? s.capital_allocation ?? 0);
+    let cum = 0, peak = 0, maxDd = 0, maxDdPct = 0;
+    const curve = trades.map(t => {
+      cum += t.pnl;
+      if (cum > peak) peak = cum;
+      const dd = peak - cum;
+      const base = startEquity + peak;
+      const ddPct = base > 0 ? (dd / base) * 100 : 0;
+      if (dd > maxDd) maxDd = dd;
+      if (ddPct > maxDdPct) maxDdPct = ddPct;
+      return {
+        id:         t.id,
+        closed_at:  (t.closed_at as Date).toISOString(),
+        pnl:        t.pnl,
+        cumulative: cum,
+        drawdown:   dd,
+      };
+    });
+
+    // close reasons
+    const reasonMap = new Map<string, { count: number; pnl: number }>();
+    for (const t of trades) {
+      const key = t.close_reason ?? 'unknown';
+      const e = reasonMap.get(key) ?? { count: 0, pnl: 0 };
+      e.count += 1;
+      e.pnl   += t.pnl;
+      reasonMap.set(key, e);
+    }
+    const closeReasons = [...reasonMap.entries()]
+      .map(([reason, v]) => ({ reason, ...v }))
+      .sort((a, b) => b.count - a.count);
+
+    // MFE / MAE — only recorded on newer positions, so report the coverage too
+    const withExc = trades.filter(t => t.mfe_r != null || t.mae_r != null);
+    const excursion = withExc.length > 0 ? {
+      count:     withExc.length,
+      coverage:  trades.length ? (withExc.length / trades.length) * 100 : 0,
+      avg_mfe_r: avg(withExc.map(t => t.mfe_r).filter((x): x is number => x != null)),
+      avg_mae_r: avg(withExc.map(t => t.mae_r).filter((x): x is number => x != null)),
+    } : null;
+
+    // live unrealized P&L for the open positions
+    let openPnl: number | null = null;
+    try {
+      const raw = await getRedis().get(SNAPSHOT_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw) as PnlSnapshot;
+        if (isSnapshotFresh(parsed)) openPnl = parsed.strategies[id]?.open_pnl ?? 0;
+      }
+    } catch (e) {
+      console.error(`History: snapshot read failed for ${id}:`, e);
+    }
+    const openRow = openQ.rows[0];
+    if (openPnl === null) openPnl = Number(openRow.open_pnl_db ?? 0);
+    if (Number(openRow.open_count) === 0) openPnl = 0;
+
+    const o = ordersQ.rows[0];
+
+    res.json({
+      period: interval,
+      strategy: {
+        id: s.id,
+        name: s.name,
+        symbol: s.symbol,
+        interval: s.interval,
+        enabled: s.enabled,
+        stop_reason: s.stop_reason ?? null,
+        strategy_source: s.strategy_source,
+        account_id: s.account_id,
+        account_label: s.account_label,
+        account_exchange: s.account_exchange,
+        account_mode: s.account_mode,
+        created_at: s.created_at,
+        last_signal_at: s.last_signal_at,
+        default_leverage: s.default_leverage,
+        max_leverage: s.max_leverage,
+        margin_mode: s.margin_mode,
+        margin_per_trade: Number(s.margin_per_trade),
+        capital_allocation: Number(s.capital_allocation),
+        initial_allocation: s.initial_allocation != null ? Number(s.initial_allocation) : null,
+        allocation_peak:    s.allocation_peak    != null ? Number(s.allocation_peak)    : null,
+        max_drawdown_pct:   Number(s.max_drawdown_pct),
+        entry_trigger: s.entry_trigger,
+      },
+      summary: {
+        ...summarize(trades),
+        max_win_streak:  maxWinStreak,
+        max_loss_streak: maxLossStreak,
+        max_drawdown:     maxDd,
+        max_drawdown_pct: maxDdPct,
+        open_count: Number(openRow.open_count),
+        open_pnl:   openPnl,
+      },
+      by_side: {
+        long:  summarize(trades.filter(t => t.side === 'buy'  || t.side === 'long')),
+        short: summarize(trades.filter(t => t.side === 'sell' || t.side === 'short')),
+      },
+      curve,
+      close_reasons: closeReasons,
+      excursion,
+      fees: {
+        total:        Number(o.fees_total),
+        rows_with_fee: Number(o.fee_rows),
+        rows_total:    Number(o.total),
+        coverage:      Number(o.total) > 0 ? (Number(o.fee_rows) / Number(o.total)) * 100 : 0,
+      },
+      orders: {
+        total:      Number(o.total),
+        filled:     Number(o.filled),
+        pending:    Number(o.pending),
+        not_filled: Number(o.not_filled),
+      },
+      signals: signalsQ.rows.map((r: any) => ({ outcome: r.outcome, count: Number(r.count) })),
+      recent_signals: recentQ.rows.map((r: any) => ({
+        received_at:   (r.received_at as Date).toISOString(),
+        outcome:       r.outcome,
+        http_status:   r.http_status,
+        error_detail:  r.error_detail,
+        duration_ms:   r.duration_ms,
+        ai_confidence: r.ai_confidence != null ? Number(r.ai_confidence) : null,
+      })),
+      reconcile_divergent: Number(reconQ.rows[0].divergent),
+    });
+  } catch (err: any) {
+    console.error(`Error building history for strategy ${id}:`, err);
+    res.status(500).json({ error: 'Database error building strategy history' });
+  }
+});
+
 router.get('/:id/stats', async (req: Request, res: Response) => {
   const period = (req.query.period as string) || '7d';
   const interval = PERIOD_FILTER[period] || PERIOD_FILTER['7d'];
@@ -976,7 +1249,9 @@ router.get('/:id/positions', async (req: Request, res: Response) => {
     const scope  = (req.query.scope  as string) || 'open';
     const limit  = Math.min(parseInt((req.query.limit  as string) || '50'), 200);
     const offset = Math.max(parseInt((req.query.offset as string) || '0'),   0);
-    const scopeFilter = scope === 'open' ? "AND sp.status = 'open'" : '';
+    const scopeFilter =
+      scope === 'open'   ? "AND sp.status = 'open'"   :
+      scope === 'closed' ? "AND sp.status = 'closed'" : '';
 
     const { rows } = await getPool().query(`
       SELECT
@@ -1021,7 +1296,7 @@ router.get('/:id/positions', async (req: Request, res: Response) => {
       LEFT JOIN exchange_accounts ea_s    ON ea_s.id    = s.account_id
       WHERE sp.strategy_id = $1
         ${scopeFilter}
-      ORDER BY sp.opened_at DESC
+      ORDER BY ${scope === 'closed' ? 'sp.closed_at' : 'sp.opened_at'} DESC
       LIMIT $2 OFFSET $3
     `, [req.params.id, limit, offset]);
 

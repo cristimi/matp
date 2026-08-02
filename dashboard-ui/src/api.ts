@@ -277,9 +277,96 @@ export async function fetchStrategyTree(): Promise<StrategyTreeItem[]> {
 
 export async function fetchTreePositions(
   strategyId: string,
-  scope: 'open' | 'all',
+  scope: 'open' | 'all' | 'closed',
+  opts?: { limit?: number; offset?: number },
 ): Promise<TreePosition[]> {
-  return api.get<TreePosition[]>(`/strategies/${strategyId}/positions?scope=${scope}`);
+  const q = new URLSearchParams({ scope });
+  if (opts?.limit  != null) q.set('limit',  String(opts.limit));
+  if (opts?.offset != null) q.set('offset', String(opts.offset));
+  return api.get<TreePosition[]>(`/strategies/${strategyId}/positions?${q}`);
+}
+
+// ---- Strategy history page ----
+
+export interface HistorySummary {
+  trades: number;
+  wins: number;
+  losses: number;
+  breakeven: number;
+  win_rate: number | null;
+  pnl_total: number;
+  avg_pnl: number | null;
+  avg_win: number | null;
+  avg_loss: number | null;
+  best_trade: number | null;
+  worst_trade: number | null;
+  profit_factor: number | null;
+  gross_win: number;
+  gross_loss: number;
+  avg_hold_secs: number | null;
+  min_hold_secs: number | null;
+  max_hold_secs: number | null;
+  avg_leverage: number | null;
+  max_win_streak: number;
+  max_loss_streak: number;
+  max_drawdown: number;
+  max_drawdown_pct: number;
+  open_count: number;
+  open_pnl: number;
+}
+
+export type SideSummary = Omit<
+  HistorySummary,
+  'max_win_streak' | 'max_loss_streak' | 'max_drawdown' | 'max_drawdown_pct' | 'open_count' | 'open_pnl'
+>;
+
+export interface StrategyHistory {
+  period: string;
+  strategy: {
+    id: string;
+    name: string;
+    symbol: string;
+    interval: string;
+    enabled: boolean;
+    stop_reason: string | null;
+    strategy_source: string;
+    account_id: string | null;
+    account_label: string | null;
+    account_exchange: string | null;
+    account_mode: string | null;
+    created_at: string;
+    last_signal_at: string | null;
+    default_leverage: number;
+    max_leverage: number;
+    margin_mode: string;
+    margin_per_trade: number;
+    capital_allocation: number;
+    initial_allocation: number | null;
+    allocation_peak: number | null;
+    max_drawdown_pct: number;
+    entry_trigger: string;
+  };
+  summary: HistorySummary;
+  by_side: { long: SideSummary; short: SideSummary };
+  curve: { id: string; closed_at: string; pnl: number; cumulative: number; drawdown: number }[];
+  close_reasons: { reason: string; count: number; pnl: number }[];
+  excursion: { count: number; coverage: number; avg_mfe_r: number | null; avg_mae_r: number | null } | null;
+  fees: { total: number; rows_with_fee: number; rows_total: number; coverage: number };
+  orders: { total: number; filled: number; pending: number; not_filled: number };
+  signals: { outcome: string; count: number }[];
+  recent_signals: {
+    received_at: string;
+    outcome: string | null;
+    http_status: number | null;
+    error_detail: string | null;
+    duration_ms: number | null;
+    ai_confidence: number | null;
+  }[];
+  reconcile_divergent: number;
+}
+
+export async function fetchStrategyHistory(id: string, period: string): Promise<StrategyHistory> {
+  return api.get<StrategyHistory>(`/strategies/${id}/history?period=${period}`);
 }
 
 export async function fetchPositionOrders(positionId: string): Promise<TreeOrder[]> {
