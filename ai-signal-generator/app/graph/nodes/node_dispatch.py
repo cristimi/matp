@@ -209,9 +209,13 @@ async def node_dispatch(state: AgentState) -> AgentState:
                     llm_provider, llm_model, geometry_data,
                     input_tokens, output_tokens, total_tokens, missing_inputs,
                     llm_tier, scout_input_tokens, scout_output_tokens,
-                    scout_total_tokens, fallback_attempts, regime_snapshot
+                    scout_total_tokens, fallback_attempts, regime_snapshot,
+                    prompt_version
                 ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16::jsonb,
-                          $17,$18,$19,$20,$21,$22,$23,$24,$25::jsonb,$26::jsonb)
+                          $17,$18,$19,$20,$21,$22,$23,$24,$25::jsonb,$26::jsonb,
+                          -- which wording this cycle actually ran on, so an old
+                          -- signal can be read against the text that produced it
+                          (SELECT version FROM ai_prompt_templates WHERE id = $5))
                 RETURNING id
                 """,
                 state['strategy_id'],

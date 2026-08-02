@@ -369,6 +369,38 @@ export async function fetchStrategyHistory(id: string, period: string): Promise<
   return api.get<StrategyHistory>(`/strategies/${id}/history?period=${period}`);
 }
 
+// ---- change tracking ----
+
+export interface StrategyChange {
+  id: number;
+  changed_at: string;
+  entity: 'strategy' | 'ai_config' | 'risk_config' | 'prompt_template';
+  template_id: string | null;
+  action: 'create' | 'update' | 'delete';
+  field: string;
+  old_value: string | null;
+  new_value: string | null;
+  changed_by: string;
+}
+
+export interface PromptVersion {
+  template_id: string;
+  version: number;
+  name: string;
+  captured_at: string;
+  note: string | null;
+  text: string;
+  previous: { version: number; text: string } | null;
+}
+
+export async function fetchStrategyChanges(id: string, limit = 100): Promise<StrategyChange[]> {
+  return api.get<StrategyChange[]>(`/strategies/${id}/changes?limit=${limit}`);
+}
+
+export async function fetchPromptVersion(templateId: string, version: number): Promise<PromptVersion> {
+  return api.get<PromptVersion>(`/ai/templates/${templateId}/versions/${version}`);
+}
+
 export async function fetchPositionOrders(positionId: string): Promise<TreeOrder[]> {
   return api.get<TreeOrder[]>(`/positions/${positionId}/orders`);
 }

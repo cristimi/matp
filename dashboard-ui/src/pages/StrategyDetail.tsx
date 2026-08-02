@@ -5,8 +5,9 @@ import {
   ReferenceLine, Cell,
 } from 'recharts';
 import {
-  fetchStrategyHistory, fetchTreePositions,
+  fetchStrategyHistory, fetchTreePositions, fetchStrategyChanges, fetchPromptVersion,
   type StrategyHistory, type SideSummary, type TreePosition,
+  type StrategyChange, type PromptVersion,
 } from '../api';
 import { HeaderPill } from '../components/shared';
 import { formatPnl, pnlColor } from '../utils/pnl';
@@ -50,6 +51,63 @@ function duration(secs: number | null | undefined): string {
   if (h < 24) return `${h}h ${m % 60}m`;
   const d = Math.floor(h / 24);
   return `${d}d ${h % 24}h`;
+}
+
+// Field names as stored vs. what they mean. Anything not listed falls back to the
+// raw name with the underscores taken out.
+const FIELD_LABELS: Record<string, string> = {
+  enabled:                 'Running',
+  name:                    'Name',
+  symbol:                  'Coin',
+  interval:                'Timeframe',
+  account_id:              'Account',
+  default_leverage:        'Leverage',
+  max_leverage:            'Max leverage',
+  margin_mode:             'Margin mode',
+  margin_per_trade:        'Margin per trade',
+  max_drawdown_pct:        'Auto-stop drawdown',
+  initial_allocation:      'Starting capital',
+  stop_reason:             'Stop reason',
+  entry_trigger:           'Entry trigger',
+  webhook_secret:          'Webhook secret',
+  template_id:             'Prompt template',
+  system_prompt:           'Prompt text',
+  custom_instructions:     'Extra instructions',
+  llm_model:               'AI model',
+  llm_provider:            'AI provider',
+  llm_scout_provider:      'Scout provider',
+  llm_fallback_chain:      'Fallback models',
+  confidence_threshold:    'Confidence needed',
+  dry_run:                 'Test mode',
+  interval_no_position:    'Check interval (flat)',
+  interval_position_open:  'Check interval (in trade)',
+  interval_at_risk:        'Check interval (at risk)',
+  cooldown_entry_minutes:  'Cooldown after entry',
+  lookback_days:           'History window',
+  max_concurrent_trades:   'Max trades at once',
+  sizing_mode:             'Sizing mode',
+  risk_per_trade:          'Risk per trade',
+  '(created)':             'Created',
+};
+
+function fieldLabel(f: string): string {
+  return FIELD_LABELS[f] ?? f.replace(/_/g, ' ');
+}
+
+// Changes that plausibly alter how the strategy trades — these get a marker on the
+// equity chart. Volume settings and renames do not.
+function isBehaviourChange(c: StrategyChange): boolean {
+  if (c.entity === 'prompt_template') return true;
+  return ['template_id', 'llm_model', 'llm_provider', 'custom_instructions',
+          'confidence_threshold', 'enabled', 'default_leverage', 'sizing_mode',
+          'risk_per_trade', 'margin_per_trade'].includes(c.field);
+}
+
+function shortValue(v: string | null): string {
+  if (v === null || v === '') return '—';
+  if (v === 'true')  return 'on';
+  if (v === 'false') return 'off';
+  return v.length > 60 ? `${v.slice(0, 60)}…` : v;
 }
 
 function reasonLabel(r: string | null): string {
@@ -160,6 +218,13 @@ export default function StrategyDetail() {
   const [moreTrades, setMore]   = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
 
+  const [changes, setChanges]   = useState<StrategyChange[]>([]);
+  const [showAllChanges, setShowAllChanges] = useState(false);
+  const [prompt, setPrompt]     = useState<PromptVersion | null>(null);
+  const [promptOpen, setPromptOpen] = useState(false);
+  const [promptPrev, setPromptPrev] = useState(false);
+  const [promptLoading, setPromptLoading] = useState(false);
+
   useEffect(() => {
     if (!id) return;
     let cancelled = false;
@@ -188,6 +253,28 @@ export default function StrategyDetail() {
       .catch(() => {});
     return () => { cancelled = true; };
   }, [id]);
+
+  useEffect(() => {
+    if (!id) return;
+    let cancelled = false;
+    fetchStrategyChanges(id, 200)
+      .then(c => { if (!cancelled) setChanges(c); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [id]);
+
+  const openPrompt = useCallback(async (templateId: string, version: number) => {
+    setPromptOpen(true);
+    setPromptPrev(false);
+    setPromptLoading(true);
+    try {
+      setPrompt(await fetchPromptVersion(templateId, version));
+    } catch {
+      setPrompt(null);
+    } finally {
+      setPromptLoading(false);
+    }
+  }, []);
 
   const loadMore = useCallback(async () => {
     if (!id || loadingMore) return;
@@ -234,6 +321,19 @@ export default function StrategyDetail() {
     drawdown: -p.drawdown,
     pnl: p.pnl,
   }));
+
+  // Put a marker on the equity chart at the first trade that closed after each
+  // behaviour change, so "before / after I changed this" is readable at a glance.
+  const markerIdx = new Set<number>();
+  for (const c of changes) {
+    if (!isBehaviourChange(c)) continue;
+    const t = new Date(c.changed_at).getTime();
+    const idx = data.curve.findIndex(p => new Date(p.closed_at).getTime() >= t);
+    if (idx >= 0) markerIdx.add(idx);
+  }
+  const markers = [...markerIdx];
+
+  const shownChanges = showAllChanges ? changes : changes.slice(0, 10);
 
   const netAfterFees = m.pnl_total - data.fees.total;
   const totalReturn = s.initial_allocation && s.initial_allocation > 0
@@ -424,6 +524,9 @@ export default function StrategyDetail() {
                   <XAxis dataKey="i" hide />
                   <YAxis width={44} tick={{ fontSize: 10, fill: 'var(--dim)' }} tickFormatter={(v) => `$${v}`} />
                   <ReferenceLine y={0} stroke="var(--border-hi)" />
+                  {markers.map(x => (
+                    <ReferenceLine key={x} x={x} stroke="var(--yellow)" strokeDasharray="3 3" />
+                  ))}
                   <Tooltip
                     contentStyle={tooltipStyle}
                     labelFormatter={(_, p) => (p?.[0]?.payload?.label ?? '')}
@@ -450,6 +553,7 @@ export default function StrategyDetail() {
             </div>
             <div style={{ fontSize: 10.5, color: 'var(--dim)', marginTop: 2 }}>
               Bottom line: how far below the best point the strategy was.
+              {markers.length > 0 && ' Dashed yellow lines mark settings changes.'}
             </div>
           </>
         )}
@@ -476,6 +580,69 @@ export default function StrategyDetail() {
               </BarChart>
             </ResponsiveContainer>
           </div>
+        )}
+      </Card>
+
+      {/* ── change history ── */}
+      <Card title="What was changed" sub="Settings and prompt edits, newest first">
+        {changes.length === 0 ? (
+          <Empty text="No changes recorded yet. Tracking started when this feature was installed — anything changed before that was never saved." />
+        ) : (
+          <>
+            {shownChanges.map(c => {
+              const isPrompt = c.entity === 'prompt_template';
+              // new_value looks like "v4 · 5278 chars"
+              const version = isPrompt && c.new_value
+                ? parseInt(c.new_value.replace(/^v/, ''), 10)
+                : null;
+              return (
+                <div key={c.id} style={{ padding: '8px 0', borderTop: '1px solid var(--border)' }}>
+                  <div style={{
+                    display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'baseline',
+                  }}>
+                    <span style={{ fontSize: 12.5, color: 'var(--text)', fontWeight: 600 }}>
+                      {isPrompt ? 'Prompt text' : fieldLabel(c.field)}
+                      {isPrompt && c.template_id && (
+                        <span style={{ color: 'var(--dim)', fontWeight: 400 }}> · {c.template_id}</span>
+                      )}
+                    </span>
+                    <span style={{ fontFamily: MONO, fontSize: 11, color: 'var(--dim)', flexShrink: 0 }}>
+                      {formatRelative(c.changed_at)}
+                    </span>
+                  </div>
+                  <div style={{
+                    display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 6,
+                    marginTop: 3, fontSize: 11.5, fontFamily: MONO,
+                  }}>
+                    <span style={{ color: 'var(--red)' }}>{shortValue(c.old_value)}</span>
+                    <span style={{ color: 'var(--dim)' }}>→</span>
+                    <span style={{ color: 'var(--green)' }}>{shortValue(c.new_value)}</span>
+                    <span style={{ color: 'var(--dim)' }}>· {c.changed_by}</span>
+                    {isPrompt && version != null && !isNaN(version) && (
+                      <button
+                        onClick={() => openPrompt(c.template_id!, version)}
+                        style={{
+                          border: '1px solid var(--border)', background: 'var(--bg3)',
+                          borderRadius: 6, padding: '1px 7px', fontSize: 10.5,
+                          color: 'var(--blue)', cursor: 'pointer',
+                        }}
+                      >read the text</button>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+            {changes.length > 10 && (
+              <button
+                onClick={() => setShowAllChanges(v => !v)}
+                style={{
+                  marginTop: 10, width: '100%', padding: '7px 0', borderRadius: 9,
+                  border: '1px solid var(--border)', background: 'var(--bg3)',
+                  color: 'var(--muted)', fontSize: 12, fontWeight: 600, cursor: 'pointer',
+                }}
+              >{showAllChanges ? 'Show less' : `Show all ${changes.length}`}</button>
+            )}
+          </>
         )}
       </Card>
 
@@ -700,6 +867,74 @@ export default function StrategyDetail() {
         <KV k="Created" v={formatRelative(s.created_at)} />
         <KV k="Last signal" v={formatRelative(s.last_signal_at)} />
       </Card>
+
+      {/* ── prompt text viewer ── */}
+      {promptOpen && (
+        <div
+          onClick={() => setPromptOpen(false)}
+          style={{
+            position: 'fixed', inset: 0, background: 'rgba(15,23,42,.55)',
+            display: 'flex', alignItems: 'flex-end', justifyContent: 'center', zIndex: 50,
+          }}
+        >
+          <div
+            onClick={e => e.stopPropagation()}
+            style={{
+              background: 'var(--bg2)', borderRadius: '14px 14px 0 0', width: '100%',
+              maxWidth: 880, maxHeight: '85vh', display: 'flex', flexDirection: 'column',
+              border: '1px solid var(--border)',
+            }}
+          >
+            <div style={{
+              display: 'flex', alignItems: 'center', gap: 10, padding: '13px 15px',
+              borderBottom: '1px solid var(--border)',
+            }}>
+              <div style={{ minWidth: 0, flex: 1 }}>
+                <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--text)' }}>
+                  {prompt ? `${prompt.name} — version ${prompt.version}` : 'Prompt text'}
+                </div>
+                {prompt && (
+                  <div style={{ fontSize: 11, color: 'var(--dim)', marginTop: 2 }}>
+                    {formatRelative(prompt.captured_at)}
+                    {prompt.note && ` · ${prompt.note}`}
+                  </div>
+                )}
+              </div>
+              {prompt?.previous && (
+                <button
+                  onClick={() => setPromptPrev(v => !v)}
+                  style={{
+                    border: '1px solid var(--border)', background: 'var(--bg3)', borderRadius: 8,
+                    padding: '5px 10px', fontSize: 11.5, color: 'var(--blue)', cursor: 'pointer',
+                    flexShrink: 0,
+                  }}
+                >{promptPrev ? `Show v${prompt.version}` : `Show v${prompt.previous.version}`}</button>
+              )}
+              <button
+                onClick={() => setPromptOpen(false)}
+                style={{
+                  border: '1px solid var(--border)', background: 'var(--bg3)', borderRadius: 8,
+                  width: 30, height: 30, fontSize: 15, color: 'var(--muted)', cursor: 'pointer',
+                  flexShrink: 0, lineHeight: 1,
+                }}
+                aria-label="Close"
+              >×</button>
+            </div>
+            <div style={{ overflow: 'auto', padding: '12px 15px 20px' }}>
+              {promptLoading && <Empty text="Loading…" />}
+              {!promptLoading && !prompt && <Empty text="Could not load this version." />}
+              {!promptLoading && prompt && (
+                <pre style={{
+                  fontFamily: MONO, fontSize: 11.5, lineHeight: 1.55, color: 'var(--text)',
+                  whiteSpace: 'pre-wrap', wordBreak: 'break-word', margin: 0,
+                }}>
+                  {promptPrev && prompt.previous ? prompt.previous.text : prompt.text}
+                </pre>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
     </div>
   );

@@ -1,6 +1,6 @@
 import { Router, Request, Response } from 'express';
 import crypto from 'crypto';
-import { getPool } from '../db';
+import { getPool, queryAsActor } from '../db';
 import { getRedis } from '../redis';
 import { SNAPSHOT_KEY, isSnapshotFresh, type PnlSnapshot } from '../livePnl';
 
@@ -733,7 +733,8 @@ router.put('/:id', async (req: Request, res: Response) => {
   }
 
   try {
-    const result = await getPool().query(
+    const result = await queryAsActor(
+      'dashboard',
       `UPDATE strategies SET
          name                       = COALESCE($1, name),
          symbol                     = COALESCE($2, symbol),
@@ -1187,6 +1188,49 @@ router.get('/:id/history', async (req: Request, res: Response) => {
   } catch (err: any) {
     console.error(`Error building history for strategy ${id}:`, err);
     res.status(500).json({ error: 'Database error building strategy history' });
+  }
+});
+
+// GET /strategies/:id/changes?limit=100
+//
+// The strategy's own settings history (from the change-log triggers, migration 075)
+// merged with the edit history of every prompt template it has ever run on. A
+// template is shared, so its edits are not "this strategy's" changes — but they do
+// change this strategy's behaviour, which is the question being asked.
+router.get('/:id/changes', async (req: Request, res: Response) => {
+  const id = req.params.id;
+  const limit = Math.min(parseInt((req.query.limit as string) || '100'), 500);
+  try {
+    const { rows } = await getPool().query(`
+      WITH used_templates AS (
+        SELECT template_id AS t FROM ai_strategy_config WHERE strategy_id = $1
+        UNION
+        SELECT DISTINCT prompt_template FROM ai_signal_log
+        WHERE strategy_id = $1 AND prompt_template IS NOT NULL
+      )
+      SELECT id, changed_at, entity, template_id, action, field_name,
+             old_value, new_value, changed_by
+      FROM strategy_change_log
+      WHERE strategy_id = $1
+         OR (entity = 'prompt_template' AND template_id IN (SELECT t FROM used_templates))
+      ORDER BY changed_at DESC, id DESC
+      LIMIT $2
+    `, [id, limit]);
+
+    res.json(rows.map((r: any) => ({
+      id:         Number(r.id),
+      changed_at: (r.changed_at as Date).toISOString(),
+      entity:     r.entity,
+      template_id: r.template_id,
+      action:     r.action,
+      field:      r.field_name,
+      old_value:  r.old_value,
+      new_value:  r.new_value,
+      changed_by: r.changed_by,
+    })));
+  } catch (err) {
+    console.error(`Error fetching change log for ${id}:`, err);
+    res.status(500).json({ error: 'Database error fetching change log' });
   }
 });
 

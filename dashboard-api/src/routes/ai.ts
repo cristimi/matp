@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express';
-import { getPool } from '../db';
+import { getPool, queryAsActor } from '../db';
 import { buildSignalChart, clampLimit, normalizeTimeframe } from '../chartData';
 
 const router = Router();
@@ -81,6 +81,66 @@ router.get('/templates', async (_req: Request, res: Response) => {
       'SELECT id, name, description, system_prompt FROM ai_prompt_templates ORDER BY name'
     );
     res.json(rows);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── GET /templates/:id/versions ───────────────────────────────────────────────
+// Every recorded version of a prompt's text, newest first. Text is omitted here so
+// the list stays small; fetch one version to read it.
+
+router.get('/templates/:id/versions', async (req: Request, res: Response) => {
+  try {
+    const { rows } = await getPool().query(
+      `SELECT version, name, captured_at, note, length(system_prompt) AS chars
+       FROM ai_prompt_template_versions
+       WHERE template_id = $1
+       ORDER BY version DESC`,
+      [req.params.id]
+    );
+    res.json(rows.map((r: any) => ({
+      version:     r.version,
+      name:        r.name,
+      captured_at: (r.captured_at as Date).toISOString(),
+      note:        r.note,
+      chars:       Number(r.chars),
+    })));
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// GET /templates/:id/versions/:version — the actual words, plus the previous
+// version's words so the two can be read against each other.
+router.get('/templates/:id/versions/:version', async (req: Request, res: Response) => {
+  const version = parseInt(req.params.version, 10);
+  if (!Number.isInteger(version)) {
+    return res.status(400).json({ error: 'version must be a number' });
+  }
+  try {
+    const { rows } = await getPool().query(
+      `SELECT version, name, captured_at, note, system_prompt
+       FROM ai_prompt_template_versions
+       WHERE template_id = $1 AND version IN ($2, $2 - 1)
+       ORDER BY version DESC`,
+      [req.params.id, version]
+    );
+    const current = rows.find((r: any) => r.version === version);
+    if (!current) return res.status(404).json({ error: 'Version not found' });
+    const previous = rows.find((r: any) => r.version === version - 1);
+    res.json({
+      template_id: req.params.id,
+      version:     current.version,
+      name:        current.name,
+      captured_at: (current.captured_at as Date).toISOString(),
+      note:        current.note,
+      text:        current.system_prompt,
+      previous: previous ? {
+        version: previous.version,
+        text:    previous.system_prompt,
+      } : null,
+    });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
@@ -560,14 +620,16 @@ router.put('/strategies/:id/config', async (req: Request, res: Response) => {
       const cols = ['strategy_id', ...updates.map(([f]) => f)];
       const vals: any[] = [strategyId, ...updates.map(([, v]) => v)];
       const placeholders = vals.map((_, i) => `$${i + 1}`).join(', ');
-      await getPool().query(
+      await queryAsActor(
+        'dashboard',
         `INSERT INTO ai_strategy_config (${cols.join(', ')}, updated_at)
          VALUES (${placeholders}, NOW())`,
         vals
       );
     } else if (updates.length > 0) {
       const setClauses = updates.map(([f], i) => `${f} = $${i + 2}`).join(', ');
-      await getPool().query(
+      await queryAsActor(
+        'dashboard',
         `UPDATE ai_strategy_config SET ${setClauses}, updated_at = NOW()
          WHERE strategy_id = $1`,
         [strategyId, ...updates.map(([, v]) => v)]
@@ -642,39 +704,28 @@ router.put('/strategies/:id/risk-config', async (req: Request, res: Response) =>
     );
     const currentRow = (existing.rowCount ?? 0) > 0 ? existing.rows[0] : null;
 
-    // Baseline values for diff comparison
-    const baseline: Record<string, number> = currentRow ? {
-      max_concurrent_trades: Number(currentRow.max_concurrent_trades),
-    } : { ...RISK_DEFAULTS };
-
+    // The before/after record is written by the log_risk_config_changes trigger
+    // (migration 075), which diffs every column rather than the single field the
+    // old hand-rolled audit block covered. Passing the actor is all this route
+    // still has to do.
     if (!currentRow) {
       const cols = ['strategy_id', ...updates.map(([f]) => f)];
       const vals: any[] = [strategyId, ...updates.map(([, v]) => v)];
       const placeholders = vals.map((_, i) => `$${i + 1}`).join(', ');
-      await pool.query(
+      await queryAsActor(
+        changedBy,
         `INSERT INTO ai_risk_config (${cols.join(', ')}, updated_at, updated_by)
          VALUES (${placeholders}, NOW(), $${vals.length + 1})`,
         [...vals, changedBy]
       );
     } else {
       const setClauses = updates.map(([f], i) => `${f} = $${i + 2}`).join(', ');
-      await pool.query(
+      await queryAsActor(
+        changedBy,
         `UPDATE ai_risk_config SET ${setClauses}, updated_at = NOW(), updated_by = $${updates.length + 2}
          WHERE strategy_id = $1`,
         [strategyId, ...updates.map(([, v]) => v), changedBy]
       );
-    }
-
-    // Audit: one row per changed field
-    for (const [field, newVal] of updates) {
-      const oldNum = baseline[field];
-      if (oldNum !== newVal) {
-        await pool.query(
-          `INSERT INTO ai_risk_config_audit (strategy_id, changed_by, field_name, old_value, new_value)
-           VALUES ($1, $2, $3, $4, $5)`,
-          [strategyId, changedBy, field, String(oldNum), String(newVal)]
-        );
-      }
     }
 
     const { rows } = await pool.query(
