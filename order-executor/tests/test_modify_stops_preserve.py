@@ -29,11 +29,19 @@ class _StubAdapter:
         self.resting        = list(resting)
         self.cancelled      = []
         self.place_calls    = []
+        # Net account: the route must NOT scope trigger calls to a leg, because a
+        # net position is labelled "net" on the exchange and a long/short filter
+        # would match nothing and read back as "no stops resting".
+        self.hedge          = False
+        self.last_position_side = "unset"
 
     async def get_open_positions(self):
         return [_Pos("SOL-USDT", "short", 2.66)]
 
-    async def list_trigger_orders(self, symbol):
+    async def list_trigger_orders(self, symbol, position_side=None):
+        # position_side is recorded rather than applied: this stub models a net
+        # account (hedge=False below), where the route passes None.
+        self.last_position_side = position_side
         return list(self.resting)
 
     async def cancel_order(self, symbol, oid):
@@ -41,8 +49,10 @@ class _StubAdapter:
         self.resting = [t for t in self.resting if t["oid"] != oid]
         return {"success": True}
 
-    async def place_trigger_orders(self, symbol, trigger_side, size, tp_price, sl_price):
-        self.place_calls.append({"tp": tp_price, "sl": sl_price, "size": size})
+    async def place_trigger_orders(self, symbol, trigger_side, size, tp_price, sl_price,
+                                   position_side=None):
+        self.place_calls.append({"tp": tp_price, "sl": sl_price, "size": size,
+                                 "position_side": position_side})
         placed = []
         if sl_price is not None:
             self.resting.append({"oid": "new-sl", "tpsl": "sl", "triggerPx": str(sl_price)})
@@ -117,7 +127,8 @@ def test_both_legs_priced_is_unchanged():
     ))
 
     assert result["success"] is True
-    assert adapter.place_calls[0] == {"tp": 71.0, "sl": 73.5, "size": 2.66}
+    assert adapter.place_calls[0] == {"tp": 71.0, "sl": 73.5, "size": 2.66,
+                                      "position_side": None}
     assert result["preserved"] == []
 
 
@@ -129,6 +140,27 @@ def test_no_legs_requested_and_none_resting_touches_nothing():
     assert result["success"] is True
     assert adapter.cancelled == []
     assert adapter.place_calls == []
+
+
+def test_net_account_scopes_nothing_to_a_leg():
+    """A net position is labelled 'net' on the exchange. Filtering its triggers by
+    'short' would return nothing and the route would read that as 'no stops'."""
+    adapter = _StubAdapter(BOTH_LEGS)
+    _run(adapter, ModifyStopsRequest(symbol="SOL-USDT", side="short", sl_price=73.5))
+
+    assert adapter.last_position_side is None
+    assert adapter.place_calls[0]["position_side"] is None
+
+
+def test_hedge_account_scopes_every_trigger_call_to_the_leg_being_modified():
+    """Step 3 cancels everything step 2 read. On a hedge account an unscoped read
+    would hand the short's stop to the long's cancel loop and leave it naked."""
+    adapter = _StubAdapter(BOTH_LEGS)
+    adapter.hedge = True
+    _run(adapter, ModifyStopsRequest(symbol="SOL-USDT", side="short", sl_price=73.5))
+
+    assert adapter.last_position_side == "short"
+    assert adapter.place_calls[0]["position_side"] == "short"
 
 
 def test_unknown_trigger_read_still_refuses_to_proceed():

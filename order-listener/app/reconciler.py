@@ -501,7 +501,7 @@ async def _guard_liquidation_safety(
                 liq_price, row["id"],
             )
 
-        trigger_orders = await get_trigger_orders(acct_id, symbol)
+        trigger_orders = await get_trigger_orders(acct_id, symbol, side=side)
         if trigger_orders is None:
             logger.warning(
                 f"reconciler: trigger-orders UNKNOWN for {acct_id}/{symbol} "
@@ -940,7 +940,7 @@ async def _handle_full_external_close(
 ) -> None:
     from app.webhook_handler import close_strategy_position
 
-    history = await get_position_history(acct_id, symbol, opened_at)
+    history = await get_position_history(acct_id, symbol, opened_at, side=side)
 
     close_reason   = history.get("close_reason") or "Closed on exchange"
     closing_price  = history.get("closing_price")
@@ -1169,7 +1169,7 @@ async def _recover_manual_close_pnl(pool) -> None:
         open_fee         = float(row["open_fee"]) if row["open_fee"] is not None else 0.0
 
         try:
-            history = await get_position_history(acct_id, symbol, opened_at)
+            history = await get_position_history(acct_id, symbol, opened_at, side=side)
         except Exception as e:
             logger.warning(f"reconciler: history fetch failed for {pos_id} ({symbol}): {e}")
             continue

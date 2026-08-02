@@ -230,6 +230,35 @@ async def _get_account_label(pool, account_id: str) -> str:
     return label
 
 
+async def _account_position_mode(pool, account_id: str) -> str:
+    """Return the account's position mode: "hedge" or "net" (the safe default).
+
+    "hedge" means the exchange holds a long leg and a short leg per symbol side by
+    side, so an opposite-side entry neither collides with an existing position nor
+    nets it away. Two decisions downstream turn on it — the same-symbol guard and
+    the flip-close bookkeeping — and both must fail closed: an unreadable or absent
+    mode reads as "net", which only ever rejects a trade or skips an inference,
+    never opens exposure the account cannot hold.
+    """
+    if not account_id:
+        return "net"
+    cache_key = f"config:account_position_mode:{account_id}"
+    cached = await cache_get(cache_key)
+    if cached is not None:
+        return cached.get("position_mode", "net")
+    try:
+        async with pool.acquire() as conn:
+            mode = await conn.fetchval(
+                "SELECT position_mode FROM exchange_accounts WHERE id = $1", account_id
+            )
+    except Exception as e:
+        logger.warning(f"position mode lookup failed for {account_id} (assuming net): {e}")
+        return "net"
+    mode = mode if mode in ("net", "hedge") else "net"
+    await cache_set(cache_key, {"position_mode": mode}, ttl=_ACCOUNT_LABEL_TTL)
+    return mode
+
+
 async def _get_strategy(pool, strategy_id: str):
     """Retrieve strategy configuration, Redis-cached with 5s TTL."""
     cache_key = f"config:strategy_cache:{strategy_id}"
@@ -1309,7 +1338,7 @@ async def close_strategy_position(
     pre_tp = pre_sl = None
     pre_read_failed = False
     if not is_full:
-        existing_triggers = await get_trigger_orders(acct_id, symbol)
+        existing_triggers = await get_trigger_orders(acct_id, symbol, side=side)
         if existing_triggers is None:
             pre_read_failed = True
         else:
@@ -1737,16 +1766,21 @@ async def _process_order(
 
             # Look up open position by execution symbol (not by recency)
             async with pool.acquire() as conn:
-                open_pos = await conn.fetchrow(
+                # Every open leg, not the first one found: on a hedge account a
+                # strategy can hold a long AND a short on this symbol, and "flat"
+                # means flat — closing one and reporting success would leave the
+                # other running with the operator believing it was shut.
+                open_legs = await conn.fetch(
                     """
                     SELECT symbol, side
                     FROM strategy_positions
                     WHERE strategy_id = $1 AND symbol = $2 AND status = 'open'
+                    ORDER BY side
                     """,
                     strategy['id'], flat_symbol,
                 )
 
-            if open_pos is None:
+            if not open_legs:
                 logger.info(
                     f"target_position=flat for {strategy['id']}: "
                     f"no open {flat_symbol} position — ignoring"
@@ -1754,17 +1788,27 @@ async def _process_order(
                 await _update_order_status(pool, order_id, "no_position", payload, None, account_id, account_label, strategy_id)
                 return
 
-            close_result = await close_strategy_position(
-                pool, strategy,
-                symbol=open_pos["symbol"],
-                side=open_pos["side"],
-                closing_order_id=order_id,
-                reason="signal_flat",
+            leg_results = []
+            for leg in open_legs:
+                leg_results.append(await close_strategy_position(
+                    pool, strategy,
+                    symbol=leg["symbol"],
+                    side=leg["side"],
+                    closing_order_id=order_id,
+                    reason="signal_flat",
+                ))
+
+            # The order row can only carry one outcome, so it carries the honest
+            # worst case: a partly-failed flatten must not be recorded as filled.
+            close_result = next(
+                (r for r in leg_results if not r.get("success")), leg_results[0]
             )
 
             logger.info(
                 f"Flat signal processed for strategy {strategy['id']}: "
-                f"close result = {close_result.get('status')}"
+                f"{len(leg_results)} leg(s) on {flat_symbol}, results = "
+                + ", ".join(f"{l['side']}:{r.get('status')}"
+                            for l, r in zip(open_legs, leg_results))
             )
 
             flat_order_result = None
@@ -1866,8 +1910,23 @@ async def _process_order(
                     _open_sides = {r['side'] for r in _conflict_rows}
                     _our_side   = "long" if payload.signal == "open_long" else "short"
                     _opposite   = "short" if _our_side == "long" else "long"
-                    # status must fit varchar(20); "same_symbol_conflict"=19, "opp_pos_conflict"=16
-                    _conflict_reason = "opp_pos_conflict" if _opposite in _open_sides else "same_symbol_conflict"
+                    _hedge      = await _account_position_mode(pool, account_id) == "hedge"
+                    # On a hedge account the opposite side is no longer a conflict —
+                    # it is a second, independently-managed leg on the exchange, which
+                    # is the whole point of the mode. The SAME side still is: two
+                    # strategies long the same coin still merge into one exchange
+                    # position with no way to tell whose size is whose, in hedge mode
+                    # exactly as in net mode.
+                    if _hedge:
+                        _conflict_reason = (
+                            "same_symbol_conflict" if _our_side in _open_sides else None
+                        )
+                    else:
+                        # status must fit varchar(20); "same_symbol_conflict"=19, "opp_pos_conflict"=16
+                        _conflict_reason = (
+                            "opp_pos_conflict" if _opposite in _open_sides
+                            else "same_symbol_conflict"
+                        )
             except Exception as e:
                 logger.warning(f"Same-symbol guard DB query failed (continuing): {e}")
 
@@ -2014,8 +2073,19 @@ async def _process_order(
                             )
 
                 # ── Flip: if exchange netted an opposite position, close its DB leg ──
+                # Netting is exactly what hedge mode abolishes: there, an entry that
+                # comes back carrying realised PnL did NOT eat the opposite leg (which
+                # is alive and separately tracked), so running this would close a live
+                # position in the DB while it still sits on the exchange. The inference
+                # is only valid on a net account.
                 flip_pnl = exec_result.get("pnl") or exec_result.get("realized_pnl")
-                if flip_pnl is not None and float(flip_pnl) != 0:
+                if await _account_position_mode(pool, account_id) == "hedge":
+                    if flip_pnl is not None and float(flip_pnl) != 0:
+                        logger.info(
+                            f"Hedge account {account_id}: entry on {pos_symbol} reported "
+                            f"pnl={flip_pnl} — not treating it as a flip, both legs stand"
+                        )
+                elif flip_pnl is not None and float(flip_pnl) != 0:
                     opposite_side = "short" if pos_side == "long" else "long"
                     try:
                         async with pool.acquire() as conn:

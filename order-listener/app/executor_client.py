@@ -125,11 +125,16 @@ async def get_maintenance_margin(
     return float(mmr) if mmr is not None else None
 
 
-async def get_trigger_orders(account_id: str, symbol: str) -> Optional[list]:
+async def get_trigger_orders(account_id: str, symbol: str, side: str | None = None) -> Optional[list]:
     """
     Fetch resting TP/SL trigger orders for a symbol from the executor. This is the
     authoritative source for a position's CURRENTLY-active SL — see the executor
     route's docstring for why the DB can't be trusted for this.
+
+    Pass `side` ("long"/"short") whenever the caller is reasoning about one specific
+    position. On a hedge account both legs of a symbol rest their own triggers, so an
+    unscoped read mixes them: the long's stop would be read as the short's, and a
+    guard acting on it would move the wrong leg's protection.
 
     Returns:
       - list (possibly empty): a CONFIRMED read — the executor's adapters distinguish
@@ -141,6 +146,8 @@ async def get_trigger_orders(account_id: str, symbol: str) -> Optional[list]:
     Never raises.
     """
     url = f"{EXECUTOR_URL}/accounts/{account_id}/trigger-orders/{symbol}"
+    if side in ("long", "short"):
+        url += f"?side={side}"
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.get(url)
@@ -247,11 +254,14 @@ async def call_executor_amend_order(
         return {"success": False, "error": str(e)}
 
 
-async def get_position_history(account_id: str, symbol: str, opened_at=None) -> dict:
+async def get_position_history(account_id: str, symbol: str, opened_at=None, side=None) -> dict:
     """
     Fetch closed-position history for a symbol from the executor.
     When opened_at is provided, the lookup is scoped (via ?since=) to this position's lifetime
     so PnL is not summed across the coin's entire close history.
+    When side ("long"/"short") is provided, the lookup is scoped to that leg — on a hedge
+    account the same symbol closes two positions with two different PnLs, and booking the
+    wrong one mis-books both.
     Returns the history dict or {} on any error. Never raises.
     """
     path = f"/accounts/{account_id}/positions/history?symbol={symbol}"
@@ -261,6 +271,8 @@ async def get_position_history(account_id: str, symbol: str, opened_at=None) -> 
         except AttributeError:
             since_ms = int(opened_at)
         path += f"&since={since_ms}"
+    if side in ("long", "short"):
+        path += f"&side={side}"
     return await call_executor_get(path)
 
 

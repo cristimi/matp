@@ -763,7 +763,11 @@ class HyperliquidAdapter(ExchangeAdapter):
                 "error":             str(e),
             }
 
-    async def get_closed_position_details(self, symbol: str, since_ms: int | None = None) -> dict | None:
+    async def get_closed_position_details(
+        self, symbol: str, since_ms: int | None = None, side: str | None = None
+    ) -> dict | None:
+        # `side` is interface parity only: Hyperliquid has no hedge mode, so a
+        # symbol only ever has one position to report on.
         try:
             coin = symbol.replace("-USDT", "").replace("-USD", "").upper()
             resp = await self._client.post(
@@ -995,7 +999,10 @@ class HyperliquidAdapter(ExchangeAdapter):
             logger.error(f"HyperliquidAdapter.amend_order({symbol}, {order_id}) failed: {e}")
             return {"success": False, "error": str(e)}
 
-    async def list_trigger_orders(self, symbol: str) -> Optional[list[dict]]:
+    async def list_trigger_orders(
+        self, symbol: str, position_side: Optional[str] = None
+    ) -> Optional[list[dict]]:
+        # position_side: interface parity only — Hyperliquid has no hedge mode.
         """
         Return all open TP/SL trigger orders for a symbol.
         Each entry: {oid, tpsl, triggerPx, sz, side}
@@ -1107,9 +1114,11 @@ class HyperliquidAdapter(ExchangeAdapter):
         size: float,
         tp_price: Optional[float] = None,
         sl_price: Optional[float] = None,
+        position_side: Optional[str] = None,
     ) -> dict:
         """
         Place standalone TP and/or SL reduce-only trigger orders for an existing position.
+        `position_side` is interface parity only — Hyperliquid has no hedge mode.
         Uses grouping="na" so each trigger is independent (no entry order required).
         trigger_side: side of the trigger order (opposite to position side).
         """

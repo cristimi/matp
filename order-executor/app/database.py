@@ -39,7 +39,7 @@ async def fetch_account(account_id: str):
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             """
-            SELECT id, exchange, mode, label, credentials, is_active
+            SELECT id, exchange, mode, label, credentials, is_active, position_mode
             FROM exchange_accounts
             WHERE id = $1
             """,

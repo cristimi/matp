@@ -34,8 +34,8 @@ class BlofinAdapter(ExchangeAdapter):
     _position_tiers: Dict[str, Dict[str, list]] = {}
     _position_tiers_ts: Dict[str, Dict[str, float]] = {}
 
-    def __init__(self, credentials: dict, mode: str):
-        super().__init__(credentials, mode)
+    def __init__(self, credentials: dict, mode: str, position_mode: str = "net"):
+        super().__init__(credentials, mode, position_mode)
         self.api_key        = credentials["api_key"]
         self.api_secret     = credentials["api_secret"]
         self.api_passphrase = credentials["api_passphrase"]
@@ -202,7 +202,8 @@ class BlofinAdapter(ExchangeAdapter):
             return None
 
     async def _recover_close_fill(
-        self, symbol: str, close_side: str, size: Optional[Decimal], since_ms: int
+        self, symbol: str, close_side: str, size: Optional[Decimal], since_ms: int,
+        position_side: Optional[str] = None,
     ) -> Optional[dict]:
         """
         Recover a close's fill from orders-history/fills-history when the close
@@ -215,7 +216,9 @@ class BlofinAdapter(ExchangeAdapter):
         Matches candidates by instId + reduceOnly=true + side=close_side + state=
         filled + createTime in [since_ms, since_ms + _RECOVERY_WINDOW_MS], and (if
         size is known) filledSize within _RECOVERY_SIZE_TOLERANCE of size, converted
-        to contracts. Exactly one match wins. Multiple matches are narrowed by
+        to contracts. On a hedge account position_side narrows it further to the leg
+        being closed, so the opposite leg's own exits can never be mistaken for this
+        one. Exactly one match wins. Multiple matches are narrowed by
         tightest time delta, then exact filledSize; if still tied (e.g. two
         strategies closing the same instrument at the same size in the same window),
         this returns None rather than guessing, and logs the tied orderIds.
@@ -252,6 +255,9 @@ class BlofinAdapter(ExchangeAdapter):
                         continue
                     if it.get("state") != "filled":
                         continue
+                    if position_side and position_side != "net":
+                        if (it.get("positionSide") or "").lower() != position_side:
+                            continue
                     create_ms = int(it.get("createTime") or 0)
                     if not (since_ms <= create_ms <= since_ms + _RECOVERY_WINDOW_MS):
                         continue
@@ -402,14 +408,40 @@ class BlofinAdapter(ExchangeAdapter):
             logger.warning(f"BlofinAdapter.get_mark_price({symbol}) failed: {e}")
             return None
 
-    async def _set_leverage(self, inst_id: str, leverage: int, margin_mode: str) -> None:
-        """Set leverage for an instrument before placing an order."""
+    def _position_side(self, side: Optional[str]) -> str:
+        """The value BloFin's positionSide field must carry for a call about `side`.
+
+        Net accounts have exactly one position per instrument and it is always
+        addressed as "net". Hedge accounts have two, addressed as "long"/"short" —
+        and the API rejects the wrong one either way, so this is never a cosmetic
+        choice. `side` is the POSITION's side ("long"/"short"), never the order's
+        buy/sell direction: closing a long is a sell order against positionSide
+        "long".
+        """
+        if not self.hedge:
+            return "net"
+        s = (side or "").lower()
+        if s not in ("long", "short"):
+            raise ValueError(
+                f"BlofinAdapter: hedge account needs an explicit long/short "
+                f"position side, got {side!r}"
+            )
+        return s
+
+    async def _set_leverage(
+        self, inst_id: str, leverage: int, margin_mode: str, position_side: str = "net"
+    ) -> None:
+        """Set leverage for an instrument before placing an order.
+
+        In hedge mode each leg carries its own leverage, so this sets only the leg
+        named by position_side and leaves the opposite leg untouched.
+        """
         path = "/api/v1/account/set-leverage"
         body_data = {
             "instId":       inst_id,
             "leverage":     str(leverage),
             "marginMode":   margin_mode,
-            "positionSide": "net",
+            "positionSide": position_side,
         }
         body_str = json.dumps(body_data, separators=(",", ":"))
         headers  = self._headers("POST", path, body_str)
@@ -422,6 +454,73 @@ class BlofinAdapter(ExchangeAdapter):
                 logger.info(f"BlofinAdapter: leverage set to {leverage}x for {inst_id} ({margin_mode})")
         except Exception as e:
             logger.warning(f"BlofinAdapter: set-leverage error for {inst_id}: {e}")
+
+    async def get_position_mode(self) -> Optional[str]:
+        """Read the account's live position mode from BloFin: "net" | "hedge".
+
+        Returns None if the read failed — callers must not treat that as "net",
+        which is the whole reason the mode is stored rather than inferred.
+        """
+        path = "/api/v1/account/position-mode"
+        headers = self._headers("GET", path, "")
+        try:
+            resp = await self._client.get(path, headers=headers)
+            data = resp.json()
+            if str(data.get("code")) not in ("0", "200"):
+                logger.warning(f"BlofinAdapter: position-mode read failed: {data.get('msg')}")
+                return None
+            raw = ((data.get("data") or {}).get("positionMode") or "").strip()
+            if raw == "long_short_mode":
+                return "hedge"
+            if raw == "net_mode":
+                return "net"
+            logger.warning(f"BlofinAdapter: unrecognised positionMode {raw!r}")
+            return None
+        except Exception as e:
+            logger.warning(f"BlofinAdapter: position-mode read error: {e}")
+            return None
+
+    async def set_position_mode(self, position_mode: str) -> dict:
+        """Switch the account between net and hedge on BloFin, then read it back.
+
+        BloFin refuses the switch while any position or order is open, and that
+        refusal is the point: it is what stops a live netted position from being
+        reinterpreted as one leg of a hedge pair. The error is passed through
+        verbatim rather than retried.
+
+        Returns {"success": bool, "position_mode": str|None, "error": str|None}.
+        Only ever reports success when the read-back agrees with what was asked.
+        """
+        if position_mode not in ("net", "hedge"):
+            return {"success": False, "position_mode": None,
+                    "error": f"invalid position mode: {position_mode}"}
+        wire = "long_short_mode" if position_mode == "hedge" else "net_mode"
+        path = "/api/v1/account/set-position-mode"
+        body_str = json.dumps({"positionMode": wire}, separators=(",", ":"))
+        headers  = self._headers("POST", path, body_str)
+        try:
+            resp = await self._client.post(path, content=body_str, headers=headers)
+            data = resp.json()
+            if str(data.get("code")) not in ("0", "200"):
+                return {"success": False, "position_mode": None,
+                        "error": data.get("msg") or f"BloFin returned {resp.status_code}"}
+        except Exception as e:
+            return {"success": False, "position_mode": None, "error": str(e)}
+
+        confirmed = await self.get_position_mode()
+        if confirmed != position_mode:
+            return {
+                "success": False,
+                "position_mode": confirmed,
+                "error": (f"BloFin accepted the switch to {position_mode} but reads back "
+                          f"as {confirmed or 'unknown'} — not persisting"),
+            }
+        # The adapter instance keeps trading until the registry evicts it; without
+        # this it would keep signing orders with the old mode and every one would
+        # be rejected.
+        self.position_mode = position_mode
+        logger.info(f"BlofinAdapter: position mode switched to {position_mode}")
+        return {"success": True, "position_mode": position_mode, "error": None}
 
     async def submit_order(self, order: OrderRequest) -> OrderResult:
         """
@@ -441,11 +540,16 @@ class BlofinAdapter(ExchangeAdapter):
                 logger.warning(f"BlofinAdapter: {msg}")
                 return OrderResult(success=False, status="rejected", error_msg=msg)
 
-            # Blofin ignores the lever field in order placement; must set it explicitly first
-            await self._set_leverage(order.symbol, leverage, margin_mode)
-
             path = "/api/v1/trade/order"
             is_close = order.signal in ("close_long", "close_short")
+            # The signal names the POSITION being opened or closed, so it is also
+            # the leg this order belongs to — "net" on a one-way account.
+            pos_side = self._position_side(
+                "long" if order.signal in ("open_long", "close_long") else "short"
+            )
+
+            # Blofin ignores the lever field in order placement; must set it explicitly first
+            await self._set_leverage(order.symbol, leverage, margin_mode, pos_side)
             # Entry limits go out as post_only: BloFin cancels the order if it
             # would execute immediately as taker — a taker fill would land at
             # market, at/beyond the SL computed from the intended limit price
@@ -466,7 +570,12 @@ class BlofinAdapter(ExchangeAdapter):
                 # Belt-and-suspenders: close signals must never open a net position.
                 # Without reduceOnly, an oversized close flips the position on BloFin.
                 body_data["reduceOnly"] = "true"
-                body_data["positionSide"] = "net"
+                body_data["positionSide"] = pos_side
+            elif self.hedge:
+                # Hedge mode requires positionSide on entries too — without it the
+                # exchange cannot tell which leg a buy is meant to grow, and rejects
+                # the order. Net accounts keep omitting it (the documented default).
+                body_data["positionSide"] = pos_side
 
             if order.price:
                 body_data["price"] = str(await self._round_to_tick(order.symbol, order.price))
@@ -617,11 +726,21 @@ class BlofinAdapter(ExchangeAdapter):
             # (reconciler, dashboard, modify-stops) gets the same unit the DB stores.
             base_size = await self._to_base(inst_id, Decimal(str(abs(size_val))))
 
+            # In hedge mode BOTH legs report a positive quantity, so the sign no
+            # longer identifies the side — positionSide does, and it is present on
+            # every account. Sign is the fallback for net accounts, where
+            # positionSide is the literal "net".
+            raw_pos_side = (p.get("positionSide") or "").lower()
+            if raw_pos_side in ("long", "short"):
+                side = raw_pos_side
+            else:
+                side = "long" if size_val > 0 else "short"
+
             mark_raw = p.get("markPrice") or p.get("last") or p.get("averagePrice", "0")
             liq_px = p.get("liquidationPrice")
             mapped_positions.append(Position(
                 symbol=inst_id,
-                side="long" if size_val > 0 else "short",
+                side=side,
                 size=base_size,
                 entry_price=Decimal(p.get("averagePrice", "0")),
                 leverage=int(p.get("lever") or p.get("leverage") or 10),
@@ -659,7 +778,10 @@ class BlofinAdapter(ExchangeAdapter):
         body_data = {
             "instId": symbol,
             "marginMode": margin_mode,
-            "positionSide": "net",
+            # On a hedge account this is the ONLY thing distinguishing the two
+            # legs — close-position takes no size and no position id, so naming
+            # the wrong side here would flatten the wrong half of the pair.
+            "positionSide": self._position_side(side),
         }
 
         body_str = json.dumps(body_data, separators=(",", ":"))
@@ -702,7 +824,10 @@ class BlofinAdapter(ExchangeAdapter):
                 reduce_side = "sell" if side == "long" else "buy"
                 try:
                     await asyncio.sleep(2.0)
-                    details = await self._recover_close_fill(symbol, reduce_side, position_size_before, since_ms)
+                    details = await self._recover_close_fill(
+                        symbol, reduce_side, position_size_before, since_ms,
+                        position_side=self._position_side(side),
+                    )
                     if details:
                         exchange_order_id = details.get("orderId")
                         logger.info(
@@ -751,7 +876,7 @@ class BlofinAdapter(ExchangeAdapter):
             "orderType":    "market",
             "size":         str(order_size),
             "reduceOnly":   "true",
-            "positionSide": "net",
+            "positionSide": self._position_side(side),
         }
         body_str = json.dumps(body_data, separators=(",", ":"))
         headers  = self._headers("POST", path, body_str)
@@ -794,7 +919,10 @@ class BlofinAdapter(ExchangeAdapter):
         else:
             try:
                 await asyncio.sleep(2.0)
-                details = await self._recover_close_fill(symbol, reduce_side, size, since_ms)
+                details = await self._recover_close_fill(
+                    symbol, reduce_side, size, since_ms,
+                    position_side=self._position_side(side),
+                )
                 if details:
                     exchange_order_id = details.get("orderId")
                     logger.info(
@@ -932,7 +1060,9 @@ class BlofinAdapter(ExchangeAdapter):
             logger.warning(f"BlofinAdapter.get_min_order_size({symbol}) failed: {e}")
             return 0.0
 
-    async def get_closed_position_details(self, symbol: str, since_ms: int | None = None) -> dict | None:
+    async def get_closed_position_details(
+        self, symbol: str, since_ms: int | None = None, side: str | None = None
+    ) -> dict | None:
         try:
             path = f"/api/v1/account/positions-history?instId={symbol}&limit=5"
             headers = self._headers("GET", path, "")
@@ -945,6 +1075,15 @@ class BlofinAdapter(ExchangeAdapter):
                 entries = [e for e in entries if int(e.get("updateTime") or 0) >= since_ms]
                 if not entries:
                     return None
+            # A hedge account closes two positions on one instrument, and this
+            # function's answer is booked as realised PnL — handing back the
+            # opposite leg's number would mis-book both. Only filter when the
+            # caller named a side AND the history says which leg it was.
+            if side in ("long", "short"):
+                sided = [e for e in entries
+                         if (e.get("positionSide") or "").lower() in (side, "", "net")]
+                if sided:
+                    entries = sided
             entry = entries[0]
             is_liquidation = int(entry.get("liquidationPositions") or 0) > 0
             close_ts = int(entry.get("updateTime") or 0)
@@ -1096,10 +1235,17 @@ class BlofinAdapter(ExchangeAdapter):
             logger.error(f"BlofinAdapter.amend_order failed: {e}")
             return {"success": False, "error": str(e)}
 
-    async def list_trigger_orders(self, symbol: str) -> Optional[list[dict]]:
+    async def list_trigger_orders(
+        self, symbol: str, position_side: Optional[str] = None
+    ) -> Optional[list[dict]]:
         """
         Return pending TP/SL orders for a symbol.
         Each entry: {oid, tpsl, triggerPx, sz}
+
+        position_side scopes the answer to one leg of a hedge pair. This matters
+        because the caller (modify-stops) CANCELS everything this returns before
+        re-placing: unscoped on a hedge account, moving the long's stop would
+        silently delete the short's stop and leave that leg naked.
 
         Returns None (not []) on a genuine exchange-call failure — callers must not
         treat None as "confirmed no trigger orders."
@@ -1110,6 +1256,11 @@ class BlofinAdapter(ExchangeAdapter):
             resp = await self._client.get(path, headers=headers)
             data = resp.json()
             entries = data.get("data") or []
+            if position_side and position_side != "net":
+                entries = [
+                    o for o in entries
+                    if (o.get("positionSide") or "").lower() == position_side
+                ]
             result = []
             for o in entries:
                 tp_px = o.get("tpTriggerPrice") or o.get("tpTriggerPx")
@@ -1159,8 +1310,14 @@ class BlofinAdapter(ExchangeAdapter):
         size: float,
         tp_price: Optional[float] = None,
         sl_price: Optional[float] = None,
+        position_side: Optional[str] = None,
     ) -> dict:
-        """Place standalone TP/SL orders for an existing position via order-tpsl endpoint."""
+        """Place standalone TP/SL orders for an existing position via order-tpsl endpoint.
+
+        position_side names the leg these triggers protect; required on a hedge
+        account, where BloFin rejects an order-tpsl call that does not say which
+        position it reduces.
+        """
         try:
             contract_size = await self._to_contracts(symbol, Decimal(str(size)))
             placed = []
@@ -1176,6 +1333,12 @@ class BlofinAdapter(ExchangeAdapter):
                     "size":       str(contract_size),
                     "reduceOnly": "true",
                 }
+                if self.hedge:
+                    # trigger_side is the CLOSING direction, so the leg it protects
+                    # is the opposite one: a sell trigger guards a long.
+                    body_data["positionSide"] = self._position_side(
+                        position_side or ("long" if trigger_side == "sell" else "short")
+                    )
                 # Blofin's order-tpsl endpoint is position-aware:
                 # sl_price → slTriggerPrice fires on adverse move for either side
                 # tp_price → tpTriggerPrice fires on favorable move for either side

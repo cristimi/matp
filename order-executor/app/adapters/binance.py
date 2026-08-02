@@ -689,7 +689,12 @@ class BinanceAdapter(ExchangeAdapter):
             logger.error(f"BinanceAdapter.get_account_meta failed: {e}")
             return {}
 
-    async def get_closed_position_details(self, symbol: str, since_ms: int | None = None) -> dict | None:
+    async def get_closed_position_details(
+        self, symbol: str, since_ms: int | None = None, side: str | None = None
+    ) -> dict | None:
+        # `side` is interface parity only: Binance accounts are refused at
+        # credential validation unless they are in one-way mode, so a symbol
+        # never has two legs to choose between here.
         """Most recent close for `symbol`, reconstructed from user trades.
 
         `realizedPnl` on a Binance trade excludes commission, so summing it gives
@@ -816,7 +821,11 @@ class BinanceAdapter(ExchangeAdapter):
 
     # ── trigger orders (TP/SL) ─────────────────────────────────────────────────
 
-    async def list_trigger_orders(self, symbol: str) -> Optional[list[dict]]:
+    async def list_trigger_orders(
+        self, symbol: str, position_side: Optional[str] = None
+    ) -> Optional[list[dict]]:
+        # position_side: interface parity only — one-way accounts only (see
+        # _check_position_mode), so there is never a second leg to filter out.
         """Pending TP/SL orders as {oid, tpsl, triggerPx, sz}.
 
         Returns None — never [] — on a failed read: callers treat [] as "confirmed
@@ -872,8 +881,11 @@ class BinanceAdapter(ExchangeAdapter):
         size: float,
         tp_price: Optional[float] = None,
         sl_price: Optional[float] = None,
+        position_side: Optional[str] = None,
     ) -> dict:
         """Standalone TP/SL for an existing position.
+
+        `position_side` is interface parity only — one-way accounts only.
 
         `size` is accepted for interface parity but deliberately not sent: these go
         out with `closePosition=true`, so each trigger covers the whole position

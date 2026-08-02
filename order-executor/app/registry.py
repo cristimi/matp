@@ -41,10 +41,11 @@ class AccountRegistry:
 
         exchange = record["exchange"]
         mode = record["mode"]
+        position_mode = record["position_mode"] or "net"
 
         if exchange == "blofin":
             from app.adapters.blofin import BlofinAdapter
-            return BlofinAdapter(credentials, mode)
+            return BlofinAdapter(credentials, mode, position_mode)
 
         elif exchange == "hyperliquid":
             from app.adapters.hyperliquid import HyperliquidAdapter

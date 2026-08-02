@@ -10,7 +10,7 @@ const EXECUTOR_URL = process.env.EXECUTOR_URL || 'http://order-executor:8004';
 router.get('/', async (_req: Request, res: Response) => {
   try {
     const result = await getPool().query(
-      `SELECT id, exchange, mode, label, is_active, created_at, updated_at
+      `SELECT id, exchange, mode, label, is_active, position_mode, created_at, updated_at
        FROM exchange_accounts
        WHERE is_active = true
        ORDER BY exchange ASC, mode ASC, label ASC`
@@ -97,6 +97,71 @@ router.put('/:id', async (req: Request, res: Response) => {
     res.json(result.rows[0]);
   } catch (e: any) {
     res.status(500).json({ error: e.message });
+  }
+});
+
+// ── GET /accounts/:id/position-mode ──────────────────────────────────
+// Report the stored mode alongside what the exchange currently reports, so a mode
+// changed by hand in the exchange's own app shows up here rather than as a wall of
+// rejected orders.
+router.get('/:id/position-mode', async (req: Request, res: Response) => {
+  try {
+    const response = await fetch(
+      `${EXECUTOR_URL}/accounts/${req.params.id}/position-mode`,
+      { signal: AbortSignal.timeout(15000) }
+    );
+    if (!response.ok) {
+      return res.status(502).json({ error: `Executor returned ${response.status}` });
+    }
+    res.json(await response.json());
+  } catch (e: any) {
+    res.status(502).json({ error: 'Could not reach order-executor', detail: e.message });
+  }
+});
+
+// ── POST /accounts/:id/position-mode ─────────────────────────────────
+// Switch an account between net (one position per coin) and hedge (a long and a
+// short side by side). The executor flips it on the exchange, reads it back, and
+// only then writes the column — so this route never persists a mode the exchange
+// did not accept. The exchange refuses while any position or order is open; that
+// refusal is passed straight through.
+router.post('/:id/position-mode', async (req: Request, res: Response) => {
+  const { position_mode } = req.body;
+  if (position_mode !== 'net' && position_mode !== 'hedge') {
+    return res.status(400).json({ error: "position_mode must be 'net' or 'hedge'" });
+  }
+
+  try {
+    const acct = await getPool().query(
+      `SELECT exchange FROM exchange_accounts WHERE id = $1`, [req.params.id]
+    );
+    if (acct.rowCount === 0) {
+      return res.status(404).json({ error: `Account not found: ${req.params.id}` });
+    }
+    if (position_mode === 'hedge' && acct.rows[0].exchange !== 'blofin') {
+      return res.status(400).json({
+        error: `Hedge mode is BloFin-only; ${acct.rows[0].exchange} accounts stay in net mode`,
+      });
+    }
+
+    const response = await fetch(
+      `${EXECUTOR_URL}/accounts/${req.params.id}/position-mode`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ position_mode }),
+        signal: AbortSignal.timeout(20000),
+      }
+    );
+    const data = await response.json() as { success?: boolean; error?: string };
+    if (!response.ok || !data.success) {
+      return res.status(response.ok ? 400 : 502).json({
+        error: data.error || `Executor returned ${response.status}`,
+      });
+    }
+    res.json(data);
+  } catch (e: any) {
+    res.status(502).json({ error: 'Could not reach order-executor', detail: e.message });
   }
 });
 

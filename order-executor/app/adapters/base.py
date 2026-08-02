@@ -23,13 +23,25 @@ MMR_CONSERVATISM_BUFFER = 0.0015
 
 
 class ExchangeAdapter(ABC):
-    def __init__(self, credentials: dict, mode: str):
+    def __init__(self, credentials: dict, mode: str, position_mode: str = "net"):
         """
         credentials: decrypted dict (keys vary by exchange)
         mode: "live" | "demo"
+        position_mode: "net" | "hedge" — mirrors exchange_accounts.position_mode.
+            "hedge" means the account holds a long leg AND a short leg per
+            instrument, and every order must name which leg it belongs to. Only
+            the BloFin adapter implements it; the others ignore it and stay net,
+            because Binance accounts in dual-position mode are refused at
+            credential-validation time and Hyperliquid has no equivalent mode.
         """
         self.credentials = credentials
         self.mode = mode
+        self.position_mode = position_mode
+
+    @property
+    def hedge(self) -> bool:
+        """True when this account holds long and short legs side by side."""
+        return self.position_mode == "hedge"
 
     async def close(self) -> None:
         """Release any held resources (e.g. a pooled HTTP client). Called by the
@@ -76,9 +88,13 @@ class ExchangeAdapter(ABC):
         pass
 
     @abstractmethod
-    async def get_closed_position_details(self, symbol: str, since_ms: int | None = None) -> dict | None:
+    async def get_closed_position_details(
+        self, symbol: str, since_ms: int | None = None, side: str | None = None
+    ) -> dict | None:
         """
         Query the exchange for the most recent closed position for the given symbol.
+        `side` ("long"/"short") picks a leg on a hedge account, where two positions
+        on one symbol close independently; net-mode adapters ignore it.
         Returns a dict with keys:
             close_reason:   str   — 'Liquidated' or 'Closed on exchange'
             closing_price:  Decimal

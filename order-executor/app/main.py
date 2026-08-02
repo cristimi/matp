@@ -10,7 +10,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.database import init_db
+from app.database import init_db, get_pool
 from app.models import OrderRequest
 from app.registry import registry
 from app.adapters.base import ExchangeUnavailableError
@@ -228,13 +228,19 @@ async def encrypt_credentials(request: EncryptRequest):
 
 
 @app.get("/accounts/{account_id}/positions/history")
-async def get_position_history(account_id: str, symbol: str, since: int | None = None):
+async def get_position_history(
+    account_id: str, symbol: str, since: int | None = None, side: str | None = None
+):
     """Return the most recent closed position details for a symbol (for stale-position recovery).
     `since` (epoch ms) scopes the exchange lookup to a single position's lifetime so PnL is not
-    summed across the coin's entire history."""
+    summed across the coin's entire history. `side` (long|short) picks the leg on a hedge
+    account, where the same symbol closes two positions with two different PnLs."""
     try:
         adapter = await registry.get(account_id)
-        details = await adapter.get_closed_position_details(symbol, since_ms=since)
+        details = await adapter.get_closed_position_details(
+            symbol, since_ms=since,
+            side=side if side in ("long", "short") else None,
+        )
         return details or {}
     except Exception as e:
         logger.error(f"get_position_history failed for {account_id}/{symbol}: {e}")
@@ -527,6 +533,16 @@ async def modify_stops(account_id: str, request: ModifyStopsRequest):
     try:
         adapter = await registry.get(account_id)
 
+        # On a hedge account both legs of this symbol have their own triggers, and
+        # step 3 cancels everything step 2 read. Scope every trigger call to the leg
+        # being modified or moving the long's stop would delete the short's. On a net
+        # account the exchange labels the single position "net", so passing a
+        # long/short filter there would match nothing — hence None.
+        # Named leg_side, not leg: the retry loop below already binds `leg` to each
+        # placed trigger, and reusing that name here silently fed a trigger dict
+        # into the verify read as its position filter.
+        leg_side = request.side if getattr(adapter, "hedge", False) else None
+
         # 1. Resolve position size (needed for trigger order sizing)
         positions = await adapter.get_open_positions()
         target = next(
@@ -545,7 +561,7 @@ async def modify_stops(account_id: str, request: ModifyStopsRequest):
         # cancel anything. An unknown (None) read means we cannot safely proceed:
         # we'd be cancelling stops we can't actually see, on doubt. Nothing has been
         # touched yet, so failing here leaves the position exactly as it was.
-        existing = await adapter.list_trigger_orders(request.symbol)
+        existing = await adapter.list_trigger_orders(request.symbol, position_side=leg_side)
         if existing is None:
             logger.error(
                 f"modify-stops {account_id}/{request.symbol}: could not confirm existing "
@@ -664,6 +680,7 @@ async def modify_stops(account_id: str, request: ModifyStopsRequest):
                 size         = position_size,
                 tp_price     = place_tp,
                 sl_price     = place_sl,
+                position_side= leg_side,
             )
             placed_this_attempt = place_result.get("placed", [])
             all_placed.extend(placed_this_attempt)
@@ -680,7 +697,7 @@ async def modify_stops(account_id: str, request: ModifyStopsRequest):
             # genuinely-missing leg.
             verify = None
             for read_attempt in range(_MODIFY_STOPS_READ_RETRIES + 1):
-                verify = await adapter.list_trigger_orders(request.symbol)
+                verify = await adapter.list_trigger_orders(request.symbol, position_side=leg_side)
                 if verify is not None:
                     break
                 if read_attempt < _MODIFY_STOPS_READ_RETRIES:
@@ -761,8 +778,11 @@ async def modify_stops(account_id: str, request: ModifyStopsRequest):
 
 
 @app.get("/accounts/{account_id}/trigger-orders/{symbol}")
-async def get_trigger_orders(account_id: str, symbol: str):
+async def get_trigger_orders(account_id: str, symbol: str, side: str | None = None):
     """Return open TP/SL trigger orders for a symbol.
+
+    On a hedge account pass `side` (long|short) — without it the caller gets both
+    legs' triggers mixed together and cannot tell whose stop is whose.
 
     This is the only authoritative source for the CURRENTLY-active SL on a position:
     strategy_positions has no sl_price column, and the /adjust-stops management route
@@ -775,11 +795,99 @@ async def get_trigger_orders(account_id: str, symbol: str):
     must not treat `null` as 'no stops', only as 'unknown, nothing to check this pass'."""
     try:
         adapter = await registry.get(account_id)
-        orders = await adapter.list_trigger_orders(symbol)
+        leg_side = side if (side in ("long", "short") and getattr(adapter, "hedge", False)) else None
+        orders = await adapter.list_trigger_orders(symbol, position_side=leg_side)
         return orders
     except Exception as e:
         logger.error(f"get_trigger_orders failed for {account_id}/{symbol}: {e}")
         return None
+
+
+class SetPositionModeRequest(PydanticBaseModel):
+    position_mode: str        # "net" | "hedge"
+
+
+@app.get("/accounts/{account_id}/position-mode")
+async def get_position_mode(account_id: str):
+    """Report the account's position mode as stored AND as the exchange sees it.
+
+    They can only diverge if a human flipped the mode in the exchange's own app,
+    which would make every subsequent order fail (a net account rejects
+    positionSide=long, a hedge account rejects positionSide=net). This endpoint is
+    how that gets spotted before the next trade rather than during it.
+
+    `live` is null when the exchange could not be read, or when the exchange has no
+    concept of position modes — neither case means agreement, hence `agrees: null`.
+    """
+    try:
+        adapter = await registry.get(account_id)
+        stored = getattr(adapter, "position_mode", "net")
+        live = None
+        if hasattr(adapter, "get_position_mode"):
+            live = await adapter.get_position_mode()
+        return {
+            "account_id":    account_id,
+            "position_mode": stored,
+            "live":          live,
+            "agrees":        None if live is None else (live == stored),
+        }
+    except Exception as e:
+        logger.error(f"get_position_mode failed for {account_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/accounts/{account_id}/position-mode")
+async def set_position_mode(account_id: str, request: SetPositionModeRequest):
+    """Switch an account between net and hedge, on the exchange first.
+
+    Order matters and is not negotiable: flip it on the exchange, read it back, and
+    only persist to the DB once the exchange agrees. Writing the column first would
+    leave the executor signing hedge-shaped orders at a net-mode account — every one
+    rejected — if the exchange refused the switch.
+
+    The exchange refuses while anything is open, which is the safety property that
+    makes this switch survivable at all: a live netted position can never be
+    silently reinterpreted as one leg of a hedge pair.
+    """
+    mode = request.position_mode
+    if mode not in ("net", "hedge"):
+        raise HTTPException(status_code=400, detail=f"position_mode must be net or hedge, got {mode!r}")
+
+    try:
+        adapter = await registry.get(account_id)
+    except Exception as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    if not hasattr(adapter, "set_position_mode"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"{type(adapter).__name__} has no position mode to set — only BloFin does",
+        )
+
+    result = await adapter.set_position_mode(mode)
+    if not result.get("success"):
+        return {"success": False, "position_mode": None, "error": result.get("error")}
+
+    try:
+        pool = get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE exchange_accounts SET position_mode = $1, updated_at = NOW() WHERE id = $2",
+                mode, account_id,
+            )
+    except Exception as e:
+        # The exchange is already switched; the column is not. Say so loudly rather
+        # than reporting success — the next restart would reload the stale mode.
+        logger.error(f"set_position_mode: exchange switched to {mode} but DB write failed: {e}")
+        return {
+            "success": False,
+            "position_mode": mode,
+            "error": (f"Exchange is now in {mode} mode but the database write failed ({e}). "
+                      f"Set exchange_accounts.position_mode='{mode}' by hand before trading."),
+        }
+
+    logger.info(f"Account {account_id} position mode set to {mode} (exchange confirmed)")
+    return {"success": True, "position_mode": mode, "error": None}
 
 
 @app.get("/health")
