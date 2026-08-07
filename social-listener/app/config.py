@@ -145,6 +145,11 @@ class Settings(BaseSettings):
     pending_trim_check_seconds: int = 30
     pending_trim_ttl_hours: int = 48
 
+    # A recorded leg is only declared stale after it has had this long to settle.
+    # An entry writes the leg and the position row through two different services,
+    # so a sweep landing in between would clear a leg that is about to be real.
+    closed_leg_grace_seconds: int = 180
+
     # When a post cites no price, reconstruct one from the 1m bar covering
     # posted_at so the staleness gate can still run, instead of entering blind.
     implied_ref_lookback_ms: int = 600_000  # how far back to scan the stream

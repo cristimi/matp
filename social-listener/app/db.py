@@ -82,6 +82,24 @@ async def get_legs(asset: str) -> Legs:
     return Legs.from_sides(r["side"] for r in rows)
 
 
+async def recorded_open_legs() -> list[dict]:
+    """Every leg this listener currently believes it holds, across all assets.
+
+    `get_legs` answers the same question for one asset and returns a `Legs`; this
+    returns the rows themselves, because the reconcile sweep needs `updated_at` to
+    tell a leg that has gone stale from one that was opened a second ago.
+    """
+    async with pool().acquire() as c:
+        rows = await c.fetch(
+            """SELECT asset, side, last_msg_id, updated_at
+               FROM public.social_position_state
+               WHERE source=$1 AND state='OPEN'
+               ORDER BY updated_at""",
+            settings.source_tag,
+        )
+    return [dict(r) for r in rows]
+
+
 async def open_leg(asset: str, side: str, msg_id: int) -> None:
     """Record a leg as open, with no levels yet.
 

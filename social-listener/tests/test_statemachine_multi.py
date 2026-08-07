@@ -152,6 +152,57 @@ def test_add_picks_the_named_leg():
     assert d["leg"] == LONG
 
 
+# ── an ADD with nothing open is an entry, not a scale-in ─────────────────────
+
+def test_add_with_nothing_open_becomes_an_entry():
+    """A trade can end without a post — a stop fires, and the next thing the channel
+    says is "back to full size on the short". Found on 2026-08-07: msg 9821 said
+    exactly that, the BTC short had been stopped out four days earlier, and the add
+    was dropped for having nothing to scale into."""
+    for multi in (False, True):
+        d = dec(rec("ADD", SHORT, add_multiple=1.0, ref=60000.0), FLAT, multi=multi)
+        assert d["decision"] == "acted"
+        assert d["reason"] == "add_as_open:ok"
+        assert d["intended_signal"] == "open_short"
+        assert d["advance_legs"] == {SHORT: True}
+        assert d["to_state"] == "SHORT"
+        # An entry, so it is sized as one — not as a multiple of a standard entry.
+        assert d["is_add"] is False
+
+
+def test_add_with_nothing_open_and_no_named_side_is_still_refused():
+    """With both legs flat there is nothing to infer a direction from, and guessing
+    which way a fresh entry goes is not a near miss."""
+    d = dec(rec("ADD", None, add_multiple=1.0), FLAT, multi=True)
+    assert d["decision"] == "skipped"
+    assert d["reason"] == "no_position_to_add"
+
+
+def test_add_to_a_side_not_open_while_the_other_runs_is_still_refused():
+    """Only the flat case converts. Holding a long and being told to add to a short
+    is a state disagreement, not a re-entry, and must not silently open a leg."""
+    d = dec(rec("ADD", SHORT, add_multiple=1.0), LONG_ONLY, multi=True)
+    assert d["decision"] == "skipped"
+    assert d["reason"] == "add_side_mismatch"
+
+
+def test_an_add_turned_entry_keeps_every_entry_gate():
+    stale = dec(rec("ADD", SHORT, add_multiple=1.0, age_s=100_000), FLAT, multi=True)
+    assert stale["reason"] == "add_as_open:signal_too_old"
+
+    chased = dec(rec("ADD", SHORT, add_multiple=1.0, ref=63000.0), FLAT,
+                 multi=True, mark=59850.0)
+    assert chased["reason"] == "add_as_open:stale_price"
+    assert chased["advance_legs"] == {}
+
+
+def test_an_add_that_can_still_scale_in_is_untouched():
+    d = dec(rec("ADD", SHORT, add_multiple=1.0), SHORT_ONLY, multi=True)
+    assert d["is_add"] is True
+    assert d["intended_signal"] == "add_short"
+    assert d["reason"] == "add_at_market"
+
+
 def test_trim_on_a_leg_that_is_not_open_is_refused():
     d = dec(rec("TRIM", LONG, size_fraction=0.5), SHORT_ONLY, multi=True)
     assert d["reason"] == "trim_side_mismatch"

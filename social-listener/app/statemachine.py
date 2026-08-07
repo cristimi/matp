@@ -371,7 +371,13 @@ def evaluate(
     conf  = rec.get("confidence") or 0.0
     ref   = rec.get("reference_price")
 
+    # Set when an ADD post is being judged as an entry instead of a scale-in, so
+    # every reason it produces says so and the audit row can be read back.
+    add_as_open = False
+
     def base(decision, reason, to_legs, sig, advance_legs, emit, **extra):
+        if add_as_open:
+            reason = f"add_as_open:{reason}"
         advance_legs = dict(advance_legs or {})
         if to_legs is None:
             to_legs = legs
@@ -407,7 +413,21 @@ def evaluate(
         return _evaluate_trim(rec, phase, legs, mark, now, base, skip)
 
     if action == "ADD":
-        return _evaluate_add(rec, phase, legs, mark, now, base, skip)
+        # An ADD with nothing open is not a scale-in — it is the trader getting back
+        # in. It happens because a trade can end without a post: a stop takes us out
+        # and the next thing the channel says is "back to full size on the short".
+        # Refusing that (the old `no_position_to_add`) meant sitting out a trade the
+        # author had clearly re-entered.
+        #
+        # Handled by falling through to the OPEN path rather than by teaching
+        # `_evaluate_add` to open, so the entry inherits every gate a real entry has
+        # — age, chase, implied reference price — with no second copy to drift.
+        # Requires a named side: with both legs flat there is nothing to infer one
+        # from, and guessing the direction of a fresh entry is not a near miss.
+        if legs.flat and _direction(rec) is not None:
+            action, add_as_open = "OPEN", True
+        else:
+            return _evaluate_add(rec, phase, legs, mark, now, base, skip)
 
     # A stop-only post moves no position. It still reaches the caller's stop
     # handling, which is keyed off the record, not off this decision.

@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from datetime import datetime, timezone
 
 from telethon import events
 
@@ -193,6 +194,40 @@ async def fire_add(asset: str, side: str, multiple: float,
     return ok, detail, (size if ok else None)
 
 
+async def _sweep_closed_legs() -> None:
+    """Forget legs the exchange has already closed.
+
+    `social_position_state` is written by posts, and a post is not the only thing
+    that ends a trade: a stop-loss, a take-profit or a liquidation closes the
+    position with no message at all. Without this the listener goes on managing a
+    trade that no longer exists — on 2026-08-03 a break-even stop took the BTC short
+    out, the state still read SHORT four days later, and the "back to full size"
+    post of 2026-08-07 was refused because there was nothing to scale into.
+
+    Only the OPEN->flat direction is swept. A recorded leg with no position is
+    provably stale. The reverse — a position with no recorded leg — is deliberately
+    left alone: it may be a manual trade or another strategy on the same account,
+    and adopting it would let this listener manage a position it never opened.
+    """
+    if _STRATEGY is None:
+        return   # shadow mode holds no real position to compare against
+    now = datetime.now(timezone.utc)
+    for row in await db.recorded_open_legs():
+        # An entry writes the leg here and the position row in order-listener, so a
+        # sweep landing between the two would clear a leg that is about to be real.
+        if (now - row["updated_at"]).total_seconds() < settings.closed_leg_grace_seconds:
+            continue
+        asset, side = row["asset"], row["side"]
+        if await db.open_position(settings.execution_strategy_id, asset, side):
+            continue
+        await db.close_leg(asset, side, row["last_msg_id"])
+        n = await db.cancel_pending_trims(
+            asset, side, "position closed on the exchange")
+        log.warning("RECONCILE %s %s: no open position — leg cleared "
+                    "(recorded open since %s)%s", asset, side, row["updated_at"],
+                    f", {n} parked trim(s) cancelled" if n else "")
+
+
 async def _sweep_standing_stops() -> None:
     """Re-assert break-even for legs whose trader asked to be de-risked.
 
@@ -291,6 +326,12 @@ async def _sweep_pending_trims() -> None:
 async def _pending_trim_loop() -> None:
     while True:
         await asyncio.sleep(settings.pending_trim_check_seconds)
+        # Reconcile first: a trim or a break-even move against a leg the exchange
+        # has already closed is work that can only fail.
+        try:
+            await _sweep_closed_legs()
+        except Exception:  # noqa: BLE001
+            log.exception("closed leg sweep error")
         try:
             await _sweep_pending_trims()
         except Exception:  # noqa: BLE001
@@ -715,6 +756,13 @@ async def main():
 
     _STRATEGY = await _load_execution_strategy()
     _MULTI_POSITION = await _resolve_multi_position()
+
+    # Before judging a single post, make sure what we think we hold is what the
+    # account actually holds. A stop can fire while this process is down.
+    try:
+        await _sweep_closed_legs()
+    except Exception:  # noqa: BLE001
+        log.exception("startup closed leg sweep error")
 
     client = build_client()
     await client.start()  # StringSession is pre-authorized -> non-interactive
