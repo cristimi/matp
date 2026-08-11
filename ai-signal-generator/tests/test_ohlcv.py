@@ -15,7 +15,7 @@ import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from app.data.ohlcv import _split_closed_candles, fetch_ohlcv
+from app.data.ohlcv import _split_closed_candles, fetch_ohlcv, resolve_timeframe
 
 
 def _candle(timestamp_s: float, close: float, volume: float = 10.0) -> dict:
@@ -87,6 +87,7 @@ class _FakeExchange:
         self.markets = {m['symbol']: m for m in markets}
 
     async def fetch_ohlcv(self, symbol, timeframe, limit):
+        self.asked_timeframe = timeframe
         return self._raw
 
     async def close(self):
@@ -114,3 +115,63 @@ def test_fetch_ohlcv_separates_closed_candles_from_live_price(monkeypatch):
     assert len(result['closed_candles']) == 2    # forming candle dropped
     assert result['current_price'] == 108        # live price, from the forming candle
     assert result['closed_candles'][-1]['close'] == 104
+
+
+# ── resolve_timeframe ───────────────────────────────────────────────────────
+#
+# A strategy's cycle_interval is a polling cadence that doubles as the candle
+# timeframe. '10m' is selectable in the UI and no exchange lists a 10-minute
+# candle, so hyperliquid answered every BTC fetch with 422 and the strategy ran
+# with no price data at all. Unsupported cadences now round down to a real one.
+
+class _Venue:
+    """Just the attributes resolve_timeframe reads off a ccxt exchange."""
+    def __init__(self, id_, timeframes):
+        self.id = id_
+        self.timeframes = {tf: tf for tf in timeframes}
+
+
+_HYPERLIQUID = ['1m', '3m', '5m', '15m', '30m', '1h', '2h', '4h', '8h', '12h', '1d']
+
+
+def test_supported_timeframe_passes_through():
+    assert resolve_timeframe(_Venue('hyperliquid', _HYPERLIQUID), '15m') == '15m'
+
+
+def test_10m_rounds_down_to_5m():
+    # down, not up: a 5m candle has always closed by the next 10m wake, while a
+    # 15m one would be handed back unchanged on every other cycle
+    assert resolve_timeframe(_Venue('hyperliquid', _HYPERLIQUID), '10m') == '5m'
+
+
+def test_rounds_down_to_nearest_the_venue_actually_has():
+    sparse = _Venue('sparse', ['1m', '1h', '1d'])
+    assert resolve_timeframe(sparse, '10m') == '1m'
+    assert resolve_timeframe(sparse, '4h') == '1h'
+
+
+def test_unknown_string_is_left_for_ccxt_to_reject():
+    assert resolve_timeframe(_Venue('hyperliquid', _HYPERLIQUID), '7x') == '7x'
+
+
+def test_no_shorter_candle_available_leaves_request_untouched():
+    assert resolve_timeframe(_Venue('coarse', ['1d']), '5m') == '5m'
+
+
+def test_fetch_ohlcv_asks_the_venue_for_a_candle_it_has(monkeypatch):
+    now = time.time()
+    raw = [
+        [int((now - 1200) * 1000), 100, 100, 100, 100, 10],
+        [int((now - 600) * 1000),  104, 104, 104, 104, 12],
+    ]
+    fake = _FakeExchange(raw)
+    fake.timeframes = {tf: tf for tf in _HYPERLIQUID}
+    monkeypatch.setattr('app.data.ohlcv._make_exchange', lambda ex_id: fake)
+    monkeypatch.setattr('app.data.ohlcv._markets_cache', {})
+    monkeypatch.setattr('app.data.ohlcv._markets_locks', {})
+
+    result = asyncio.run(fetch_ohlcv('binance', 'BTC/USDT', '10m', lookback_days=1))
+
+    assert result is not None                  # used to be None: 422 from the venue
+    assert fake.asked_timeframe == '5m'
+    assert result['timeframe'] == '5m'         # reported honestly, not as '10m'

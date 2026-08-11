@@ -214,8 +214,11 @@ async def node_dispatch(state: AgentState) -> AgentState:
                 ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16::jsonb,
                           $17,$18,$19,$20,$21,$22,$23,$24,$25::jsonb,$26::jsonb,
                           -- which wording this cycle actually ran on, so an old
-                          -- signal can be read against the text that produced it
-                          (SELECT version FROM ai_prompt_templates WHERE id = $5))
+                          -- signal can be read against the text that produced it.
+                          -- $27 repeats $5 on purpose: reusing $5 here makes Postgres
+                          -- deduce it as both varchar (the column) and text (the =),
+                          -- which it refuses to do — every insert then fails.
+                          (SELECT version FROM ai_prompt_templates WHERE id = $27))
                 RETURNING id
                 """,
                 state['strategy_id'],
@@ -244,6 +247,7 @@ async def node_dispatch(state: AgentState) -> AgentState:
                 scout_usage.get('total_tokens'),
                 fallback_attempts_json,
                 regime_snapshot_json,
+                sc.get('template_id', 'trend_following'),
             )
     except Exception as exc:
         logger.error("Failed to write ai_signal_log: %s", exc)

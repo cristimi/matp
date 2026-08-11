@@ -43,9 +43,44 @@ async def load_markets_cached(exchange, exchange_id: str) -> None:
         exchange.set_markets(raw_markets)
 
 _TIMEFRAME_SECONDS = {
-    '1m': 60, '3m': 180, '5m': 300, '15m': 900, '30m': 1800,
-    '1h': 3600, '2h': 7200, '4h': 14400, '8h': 28800, '1d': 86400,
+    '1m': 60, '3m': 180, '5m': 300, '10m': 600, '15m': 900, '30m': 1800,
+    '1h': 3600, '2h': 7200, '4h': 14400, '6h': 21600, '8h': 28800,
+    '12h': 43200, '1d': 86400,
 }
+
+
+def resolve_timeframe(exchange, timeframe: str) -> str:
+    """Return `timeframe` if the venue has that candle, else the nearest shorter one.
+
+    A strategy's cycle_interval doubles as the candle timeframe (see
+    node_ingest.py), but it is really a *polling cadence* and may be a value no
+    exchange lists — '10m' is offered in the UI and no venue has a 10-minute
+    candle, so every fetch for it came back 422 and the strategy ran blind.
+
+    We round *down* (10m → 5m), never up: a shorter candle has always closed by
+    the time we wake, whereas a longer one would hand back the same stale candle
+    on consecutive cycles.
+    """
+    supported = getattr(exchange, 'timeframes', None) or {}
+    if timeframe in supported:
+        return timeframe
+
+    want = _TIMEFRAME_SECONDS.get(timeframe)
+    if want is None:
+        return timeframe  # unknown string — let ccxt raise, as before
+
+    shorter = [
+        (secs, name) for name, secs in _TIMEFRAME_SECONDS.items()
+        if name in supported and secs <= want
+    ]
+    if not shorter:
+        return timeframe
+    chosen = max(shorter)[1]
+    logger.info(
+        "resolve_timeframe: %s has no %s candle — using %s",
+        getattr(exchange, 'id', '?'), timeframe, chosen,
+    )
+    return chosen
 
 
 def _candles_needed(timeframe: str, lookback_days: int) -> int:
@@ -121,6 +156,7 @@ async def fetch_ohlcv(
         exchange = _make_exchange(exchange_id)
         await load_markets_cached(exchange, exchange_id)
         symbol = resolve_ccxt_symbol(exchange, symbol)
+        timeframe = resolve_timeframe(exchange, timeframe)
 
         # Request enough candles for all indicators (EMA200 needs 200+).
         # Do NOT pass `since` — exchanges cap limit (Binance: 1000) so a
