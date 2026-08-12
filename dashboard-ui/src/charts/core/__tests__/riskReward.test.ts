@@ -495,4 +495,42 @@ describe('computeGeometryModel', () => {
       geometry: geometry({ bar_seconds: null }), candles: series, barSeconds: null,
     })).toBeNull();
   });
+
+  it('refuses to draw a shape:no_pattern read even when it carries boundaries', () => {
+    // A no-pattern verdict still ships the two regression boundaries it computed on
+    // the way to that verdict. Drawing them showed ai-btc-6f8c an inverted "range".
+    expect(computeGeometryModel({
+      geometry: geometry({ shape: 'no_pattern' }),
+      candles: series, barSeconds: 3600,
+    })).toBeNull();
+  });
+
+  it('pins the boundary where the read was taken, not on the newest bar', () => {
+    // Read taken 10 bars before the series end. The boundary value belongs THERE, so
+    // the line must continue past it at the fitted slope instead of being dragged
+    // back so the value lands on the last bar. Getting this wrong slid a 10-day-old
+    // fit 1648 points away from the bars it was measured on.
+    const takenAt = series[series.length - 11].time;
+    const m = computeGeometryModel({
+      geometry:   geometry(),
+      candles:    series,
+      barSeconds: 3600,
+      geometryAt: takenAt,
+    })!;
+    const upper = m.lines.find(l => l.id === 'upper')!;
+
+    // start = first swing at bar 5; the read sits on bar 19 → 14 bars back at 0.5/bar
+    expect(upper.points[0].price).toBeCloseTo(130 - 0.5 * 14, 6);
+    // end = series end at bar 29, ten bars AFTER the read, so the line carries on
+    expect(upper.points[1].time).toBe(lastTime);
+    expect(upper.points[1].price).toBeCloseTo(130 + 0.5 * 10, 6);
+  });
+
+  it('still anchors on the newest bar when the payload carries no geometry_at', () => {
+    const m = computeGeometryModel({
+      geometry: geometry(), candles: series, barSeconds: 3600, geometryAt: null,
+    })!;
+    const upper = m.lines.find(l => l.id === 'upper')!;
+    expect(upper.points[1].price).toBe(130);
+  });
 });

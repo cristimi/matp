@@ -55,6 +55,13 @@ class AgentState(TypedDict):
     resolved_size:         Optional[float]
     resolved_sl_price:     Optional[float]
     resolved_tp_price:     Optional[float]
+    # Market entries send DISTANCES, not prices: the candles here come from the
+    # venue's public (mainnet) market, while the order fills at the account's own
+    # market — 1% apart on a demo account — so order-listener does the pct→price
+    # conversion against the price the fill will really happen at. See
+    # docs/process/reports/btc-ai-position-chart-investigation.md.
+    resolved_sl_pct:       Optional[float]
+    resolved_tp_pct:       Optional[float]
     resolved_limit_price:     Optional[float]     # place_limit_* entry price / amend_order new price
     resolved_target_order_id: Optional[str]        # cancel_order / amend_order target
     sizing_meta:              Optional[dict]       # sizing audit: mode, margin_usd, risk figures

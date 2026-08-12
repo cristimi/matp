@@ -172,6 +172,7 @@ export function ChartPanel({ path, onStats }: {
         geometry:   payload.geometry,
         candles:    payload.candles,
         barSeconds: payload.bar_seconds,
+        geometryAt: payload.geometry_at,
       }),
     };
   }, [payload]);

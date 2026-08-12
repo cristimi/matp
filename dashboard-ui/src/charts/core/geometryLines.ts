@@ -25,18 +25,34 @@ export interface GeometryLinesInput {
   candles:    Candle[];
   /** Falls back to this when geometry_data has no bar_seconds of its own. */
   barSeconds: number | null;
+  /**
+   * When the read was taken (payload `geometry_at`). The boundary values belong to
+   * the last bar of the window the fit analysed, which ends here — so this is where
+   * they are pinned before the slope projects them across the chart. Assuming the
+   * newest bar on screen instead silently slides an older read's whole range: a
+   * 2026-08-02 fit drawn over 2026-08-12 bars was carried 1648 points away from
+   * where it was measured and ended up below every candle.
+   */
+  geometryAt?: number | null;
 }
 
 export function computeGeometryModel({
   geometry,
   candles,
   barSeconds,
+  geometryAt,
 }: GeometryLinesInput): GeometryModel | null {
   if (!geometry || !candles.length) return null;
 
+  // "No pattern" is a verdict: the fit found no range. The read still carries the
+  // two regression boundaries it computed on the way to that verdict, and drawing
+  // them presents a non-finding as a finding — ai-btc-6f8c showed an inverted
+  // "range" whose upper line started below its lower one. Trust the verdict.
+  if (geometry.shape === 'no_pattern') return null;
+
   const { upper_boundary, lower_boundary } = geometry;
   if (!Number.isFinite(upper_boundary) || !Number.isFinite(lower_boundary)) return null;
-  // A no-pattern read reports both boundaries as 0 — nothing to draw.
+  // An empty read reports both boundaries as 0 — nothing to draw.
   if (upper_boundary === 0 && lower_boundary === 0) return null;
 
   const bars = geometry.bar_seconds ?? barSeconds;
@@ -45,11 +61,11 @@ export function computeGeometryModel({
   const seriesStart = candles[0].time;
   const seriesEnd   = candles[candles.length - 1].time;
 
-  // The fit's own end: geometry was computed at geometry-time, which may be a few
-  // bars behind the newest candle. anchor_ts + pattern span is not recorded, so
-  // the boundary values are treated as belonging to the last bar of the analysed
-  // window — approximated by the series end, which is where the LLM's read applies.
-  const boundaryAt = seriesEnd;
+  // The fit's own end. anchor_ts + pattern span is not recorded, so the boundary
+  // values are treated as belonging to the bar the read was taken on. The series end
+  // is only the fallback for a payload with no geometry_at; for a fresh read the two
+  // are the same bar anyway.
+  const boundaryAt = geometryAt ?? seriesEnd;
 
   // geometry_data is computed on the strategy's cycle interval, which need not be
   // the timeframe being charted, so its timestamps are snapped onto real bars of
@@ -61,17 +77,23 @@ export function computeGeometryModel({
 
   if (start >= seriesEnd) return null;   // single-bar series — nothing to draw
 
+  // Both endpoints are projected from where the boundary was measured, not just the
+  // start: a read taken before the newest bar has to keep sloping across the bars
+  // that came after it. Pinning the end to the raw boundary value while sloping the
+  // start away from it would bend the line to a value the fit never reported.
+  // Identical to the old behaviour whenever boundaryAt is the last bar.
   const build = (
     id: 'upper' | 'lower',
-    endValue: number,
+    boundaryValue: number,
     slope: number | null | undefined,
   ): GeometryLine => {
-    const s = slope ?? 0;
+    const s     = slope ?? 0;
+    const at    = (t: number) => boundaryValue + s * barsBetween(boundaryAt, t, bars);
     return {
       id,
       points: [
-        { time: start,      price: endValue + s * barsBetween(boundaryAt, start, bars) },
-        { time: seriesEnd,  price: endValue },
+        { time: start,     price: at(start) },
+        { time: seriesEnd, price: at(seriesEnd) },
       ],
     };
   };

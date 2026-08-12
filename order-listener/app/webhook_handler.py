@@ -52,6 +52,13 @@ def _infer_price_decimals(price: float) -> int:
     return 6
 
 
+# Reward/risk floor for an entry that carries both a target and a stop. 1.0 means
+# the target must be at least as far from the entry as the stop is: below that the
+# trade needs a win rate above 50% just to break even, and a bracket that lands
+# there is usually a symptom (a bracket priced against the wrong market), not a plan.
+_MIN_RISK_REWARD = 1.0
+
+
 def compute_guaranteed_sl(
     entry_ref: float,
     effective_leverage: int,
@@ -1073,6 +1080,49 @@ async def receive_webhook(
                     f"(margin={_margin_per_trade}, lev={effective_leverage}, price={_ref_price})"
                 )
 
+    # ── Distance-form bracket → prices, at the venue's own price ──────────────
+    # A caller that sent tp_pct/sl_pct is describing distances, not levels, and
+    # deliberately left the pricing to here: `_ref_price` above is the account's own
+    # exchange mark, which is the market this order will actually fill in. The AI
+    # engine's own candle feed is the venue's PUBLIC market, ~1% away on a demo
+    # account, and pricing the bracket there is what turned a requested 1.0% stop /
+    # 1.5% target into a live R:R of 0.25 on 2026-08-11.
+    _stops_from_pct = False
+    if payload.signal in ("open_long", "open_short") and not resolved.price_stripped \
+       and (payload.tp_pct is not None or payload.sl_pct is not None):
+        if _ref_price <= 0:
+            # Unreachable for opens (the block above rejects a priceless open), but
+            # a bracket priced off 0 would be catastrophic, so it is refused here too.
+            _detail = (
+                f"Cannot price a distance-based bracket for strategy {strategy_id}: "
+                f"no reference price for {resolved.execution_symbol}."
+            )
+            logger.error(_detail)
+            await _finalize_signal_log(pool, signal_log_id, 422, "no_reference_price", _detail, start_ms)
+            raise HTTPException(status_code=422, detail=_detail)
+
+        _dp   = _infer_price_decimals(_ref_price)
+        _long = payload.signal == "open_long"
+        if payload.sl_pct is not None:
+            _d       = abs(float(payload.sl_pct)) / 100.0
+            sl_price = Decimal(str(round(_ref_price * (1 - _d if _long else 1 + _d), _dp)))
+            payload.sl_price = sl_price
+        if payload.tp_pct is not None:
+            _d       = abs(float(payload.tp_pct)) / 100.0
+            tp_price = Decimal(str(round(_ref_price * (1 + _d if _long else 1 - _d), _dp)))
+            payload.tp_price = tp_price
+        _stops_from_pct = True
+        _meta = dict(payload.signal_metadata or {})
+        _meta["stops_from_pct"]  = True
+        _meta["sl_pct_asked"]    = float(payload.sl_pct) if payload.sl_pct is not None else None
+        _meta["tp_pct_asked"]    = float(payload.tp_pct) if payload.tp_pct is not None else None
+        payload.signal_metadata  = _meta
+        logger.info(
+            f"Bracket priced at the venue: strategy={strategy_id} "
+            f"ref={_ref_price} sl_pct={payload.sl_pct} → {sl_price} "
+            f"tp_pct={payload.tp_pct} → {tp_price}"
+        )
+
     # ── End Risk Guards ───────────────────────────────────────────────
 
     # ── Guaranteed SL injection (opening signals, not price-stripped) ─────────
@@ -1119,6 +1169,46 @@ async def receive_webhook(
                 f"entry={_entry_ref} sl={_sl_final} source={_sl_source} "
                 f"distance={_sl_dist_pct:.3f}% mmr={_mmr:.4%} ({_mmr_source})"
             )
+
+    # ── Guard: reward/risk floor (opening signals carrying a full bracket) ────
+    # Last line of defence before the exchange. A bracket whose target is nearer
+    # than its stop is a losing shape by construction, and it is exactly what a
+    # mispriced bracket looks like from the outside: the 2026-08-11 BTC AI entry
+    # reached the exchange with 0.50% of reward against 1.98% of risk. Both legs
+    # are measured against the same reference the bracket was priced from, and the
+    # distances are SIGNED, so a target on the wrong side of entry fails here too
+    # instead of hiding behind an absolute value.
+    #
+    # Only orders carrying BOTH legs are judged — reward/risk is meaningless
+    # without a target, and most TradingView strategies send a stop only.
+    if payload.signal in ("open_long", "open_short") \
+       and tp_price is not None and sl_price is not None and _ref_price > 0:
+        _long   = payload.signal == "open_long"
+        _reward = (float(tp_price) - _ref_price) if _long else (_ref_price - float(tp_price))
+        _risk   = (_ref_price - float(sl_price)) if _long else (float(sl_price) - _ref_price)
+        if _reward <= 0 or _risk <= 0:
+            _detail = (
+                f"Rejected {payload.signal} for strategy {strategy_id}: bracket is on the "
+                f"wrong side of the entry (ref={_ref_price} tp={tp_price} sl={sl_price})."
+            )
+            logger.warning(_detail)
+            await _finalize_signal_log(pool, signal_log_id, 422, "guard_rejected", _detail, start_ms)
+            raise HTTPException(status_code=422, detail=_detail)
+        _rr = _reward / _risk
+        if _rr < _MIN_RISK_REWARD:
+            _detail = (
+                f"Rejected {payload.signal} for strategy {strategy_id}: reward/risk "
+                f"{_rr:.2f} is below the {_MIN_RISK_REWARD:.2f} floor "
+                f"(ref={_ref_price} tp={tp_price} reward={_reward:.4f} "
+                f"sl={sl_price} risk={_risk:.4f})."
+            )
+            logger.warning(_detail)
+            await _finalize_signal_log(pool, signal_log_id, 422, "guard_rejected", _detail, start_ms)
+            raise HTTPException(status_code=422, detail=_detail)
+        logger.info(
+            f"Reward/risk check passed: strategy={strategy_id} rr={_rr:.2f} "
+            f"(ref={_ref_price} tp={tp_price} sl={sl_price})"
+        )
 
     order_id = uuid.uuid4()
 
@@ -2079,9 +2169,17 @@ async def _process_order(
                         (payload.signal_metadata or {}).get("entry_ref")
                         or payload.indicator_price or price or result.actual_fill_price
                     )
+                    # A bracket asked for in distances (AI market entries) is
+                    # re-anchored on any material slippage, not only when a leg
+                    # ends up wrong-side: the distances ARE the request, and
+                    # letting them drift silently rewrites the reward/risk the
+                    # position was sized for.
                     _sl_final, _tp_final, _stop_changes = revalidate_stops_for_fill(
                         pos_side, _stop_ref, result.actual_fill_price,
                         sl_price=sl_price, tp_price=tp_price,
+                        distance_based=bool(
+                            (payload.signal_metadata or {}).get("stops_from_pct")
+                        ),
                     )
                     if _stop_changes:
                         from app.executor_client import call_executor_modify_stops

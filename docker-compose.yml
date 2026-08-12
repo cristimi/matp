@@ -1,3 +1,21 @@
+# Rotation for every service's stdout log. Two reasons, both learned the hard way
+# on 2026-08-11: the host stopped uncleanly at 09:27 and every container's json log
+# was left with a few hundred NUL bytes where the unflushed tail had been. `docker
+# logs` reads a log file sequentially and gives up at that hole, so it kept replaying
+# the hours BEFORE the crash and showed nothing after it — 33 hours of logs that
+# existed on disk but could not be read, which is why the 2026-08-12 chart
+# investigation had no service logs to work from (`--tail` seeks from the end and
+# still worked, which is what made the loss so easy to miss).
+#
+# With rotation a hole can only ruin the segment it lands in, and that segment ages
+# out on its own. Unbounded was also a real risk in itself: order-listener's single
+# log file had reached 43 MB with no ceiling at all.
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "5"
+
 networks:
   matp_net:
 
@@ -9,6 +27,7 @@ volumes:
 services:
 
   nginx:
+    logging: *default-logging
     image: nginx:alpine
     ports:
       - "80:80"
@@ -31,6 +50,7 @@ services:
     restart: unless-stopped
 
   postgres:
+    logging: *default-logging
     image: postgres:16-alpine
     environment:
       POSTGRES_DB: matp
@@ -48,6 +68,7 @@ services:
       retries: 5
 
   redis:
+    logging: *default-logging
     image: redis:7-alpine
     networks: [matp_net]
     restart: unless-stopped
@@ -58,6 +79,7 @@ services:
       retries: 5
 
   order-listener:
+    logging: *default-logging
     build: ./order-listener
     environment:
       DATABASE_URL: postgresql://matp:matp@postgres:5432/matp
@@ -82,6 +104,7 @@ services:
       retries: 5
 
   order-generator:
+    logging: *default-logging
     build: ./order-generator
     environment:
       DATABASE_URL: postgresql://matp:matp@postgres:5432/matp
@@ -98,6 +121,7 @@ services:
     restart: unless-stopped
 
   order-executor:
+    logging: *default-logging
     build: ./order-executor
     environment:
       DATABASE_URL: postgresql://matp:matp@postgres:5432/matp
@@ -117,6 +141,7 @@ services:
       retries: 5
 
   dashboard-api:
+    logging: *default-logging
     build: ./dashboard-api
     environment:
       DATABASE_URL: postgresql://matp:matp@postgres:5432/matp
@@ -143,6 +168,7 @@ services:
       retries: 5
 
   dashboard-ui:
+    logging: *default-logging
     build: ./dashboard-ui
     environment:
       VITE_API_BASE: /api/dashboard
@@ -154,6 +180,7 @@ services:
     restart: unless-stopped
 
   ai-signal-generator:
+    logging: *default-logging
     build: ./ai-signal-generator
     environment:
       DATABASE_URL: ${DATABASE_URL:-postgresql://matp:matp@postgres:5432/matp}
@@ -186,6 +213,7 @@ services:
       retries: 3
 
   strategy-tester:
+    logging: *default-logging
     build:
       context: .
       dockerfile: strategy-tester/Dockerfile
@@ -216,6 +244,7 @@ services:
       retries: 3
 
   tester-ui:
+    logging: *default-logging
     build: ./tester-ui
     depends_on:
       strategy-tester:
@@ -224,6 +253,7 @@ services:
     restart: unless-stopped
 
   market-ingestion:
+    logging: *default-logging
     build: ./market-ingestion
     environment:
       REDIS_URL: redis://redis:6379
@@ -256,6 +286,7 @@ services:
     restart: unless-stopped
 
   signal-engine:
+    logging: *default-logging
     build: ./signal-engine
     environment:
       DATABASE_URL: postgresql://matp:matp@postgres:5432/matp
@@ -271,6 +302,7 @@ services:
     restart: unless-stopped
 
   notification-service:
+    logging: *default-logging
     build: ./notification-service
     environment:
       DATABASE_URL: postgresql://matp:matp@postgres:5432/matp
@@ -295,6 +327,7 @@ services:
       retries: 5
 
   social-listener:
+    logging: *default-logging
     build: ./social-listener
     environment:
       DATABASE_URL: ${DATABASE_URL:-postgresql://matp:matp@postgres:5432/matp}

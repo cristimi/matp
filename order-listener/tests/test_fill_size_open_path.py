@@ -35,7 +35,8 @@ async def test_create_position_uses_actual_fill_size_when_provided():
 
     conn = AsyncMock()
     conn.fetchrow = AsyncMock(return_value=None)  # no pair found → pair_id=None
-    conn.execute  = AsyncMock()
+    # The INSERT returns the new position id, so it goes through fetchval, not execute.
+    conn.fetchval = AsyncMock(return_value="pos-1")
     pool = _make_pool_with_conn(conn)
 
     payload = WebhookPayload(
@@ -59,8 +60,8 @@ async def test_create_position_uses_actual_fill_size_when_provided():
         fill_size=result.actual_fill_size,
     )
 
-    conn.execute.assert_called_once()
-    args = conn.execute.call_args.args
+    conn.fetchval.assert_called_once()
+    args = conn.fetchval.call_args.args
     # $7 positional arg is db_size in the INSERT
     assert Decimal("1.5") in args, (
         f"Expected fill_size=1.5 in INSERT args, got: {args}"
@@ -78,7 +79,7 @@ async def test_create_position_falls_back_to_payload_size_when_fill_size_none():
 
     conn = AsyncMock()
     conn.fetchrow = AsyncMock(return_value=None)
-    conn.execute  = AsyncMock()
+    conn.fetchval = AsyncMock(return_value="pos-2")
     pool = _make_pool_with_conn(conn)
 
     payload = WebhookPayload(
@@ -98,7 +99,7 @@ async def test_create_position_falls_back_to_payload_size_when_fill_size_none():
         fill_size=None,
     )
 
-    args = conn.execute.call_args.args
+    args = conn.fetchval.call_args.args
     assert Decimal("1.45598556") in args, (
         f"Expected payload.size=1.45598556 in INSERT args (fallback), got: {args}"
     )

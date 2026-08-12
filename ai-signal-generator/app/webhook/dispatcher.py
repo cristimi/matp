@@ -45,6 +45,13 @@ async def build_payload(state: AgentState) -> dict:
         'size':        str(state['resolved_size']),
         'sl_price':    str(state['resolved_sl_price']) if state.get('resolved_sl_price') else None,
         'tp_price':    str(state['resolved_tp_price']) if state.get('resolved_tp_price') else None,
+        # Market entries carry DISTANCES instead of prices: only order-listener
+        # knows the price this order will fill at (the account's own market, which
+        # for a demo account is not the market these candles came from), so it
+        # prices the bracket. A limit entry keeps absolute prices — there the limit
+        # price is the entry, so the bracket is already anchored correctly.
+        'sl_pct':      str(state['resolved_sl_pct']) if state.get('resolved_sl_pct') else None,
+        'tp_pct':      str(state['resolved_tp_pct']) if state.get('resolved_tp_pct') else None,
         'signal':      sig,
         'timestamp':   datetime.utcnow().isoformat() + 'Z',
         'token':       sc.get('webhook_secret', ''),

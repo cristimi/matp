@@ -52,6 +52,17 @@ class WebhookPayload(BaseModel):
     margin_mode:     Optional[Literal["cross", "isolated"]] = None
     tp_price:        Optional[Decimal] = None
     sl_price:        Optional[Decimal] = None
+    # Distance form of the bracket, in percent of the entry (2.5 = 2.5%). A caller
+    # that thinks in distances rather than levels sends these instead of
+    # tp_price/sl_price, and the handler prices them against the account's own
+    # exchange — the only price the order will really fill at. The AI engine sends
+    # these for market entries: its candles come from the venue's public market,
+    # which on a demo account is ~1% away from the market that fills the order, and
+    # pricing the bracket there collapsed a 1.5 R:R into 0.25 (see
+    # docs/process/reports/btc-ai-position-chart-investigation.md).
+    # When both forms arrive, the distance wins — it is the intent.
+    tp_pct:          Optional[Decimal] = None
+    sl_pct:          Optional[Decimal] = None
     signal:          Literal["open_long", "close_long", "open_short", "close_short"]
     target_position: Optional[Literal["long", "short", "flat"]] = None
     timestamp:       datetime

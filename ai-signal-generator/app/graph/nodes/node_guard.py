@@ -420,20 +420,23 @@ async def node_guard(state: AgentState) -> AgentState:
 
             base_qty, sizing_meta = _resolve_entry_sizing(sc, current_price, sl_pct)
 
-            if action == 'open_long':
-                sl_price = round(current_price * (1 - sl_pct / 100.0), 4)
-                tp_price = round(current_price * (1 + tp_pct / 100.0), 4)
-            else:
-                sl_price = round(current_price * (1 + sl_pct / 100.0), 4)
-                tp_price = round(current_price * (1 - tp_pct / 100.0), 4)
-
+            # Deliberately NOT turned into prices here. `current_price` comes from
+            # this service's own candle feed — the venue's public market — while the
+            # order fills at the account's own market, which on a demo account is a
+            # separate simulated market: 1% apart on 2026-08-11, which turned a
+            # requested 1.0%/1.5% bracket into a real R:R of 0.25. order-listener
+            # holds the price the fill will actually happen at, so it does the
+            # conversion. See docs/process/reports/
+            # btc-ai-position-chart-investigation.md.
             return {
                 **state,
                 'gate_passed':           True,
                 'gate_rejection_reason': None,
                 'resolved_size':         base_qty,
-                'resolved_sl_price':     sl_price,
-                'resolved_tp_price':     tp_price,
+                'resolved_sl_price':     None,
+                'resolved_tp_price':     None,
+                'resolved_sl_pct':       sl_pct,
+                'resolved_tp_pct':       tp_pct,
                 'sizing_meta':           sizing_meta,
             }
 

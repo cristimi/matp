@@ -41,11 +41,14 @@ SAFE_STRATEGY = {
     "webhook_secret":            WEBHOOK_SECRET,
     "allow_quote_variants":      False,
     "allow_cross_charting":      False,
-    "max_daily_signals":         500,
-    "signals_today":             0,
     "max_leverage":              20,
     "pnl_today":                 0.0,
 }
+
+# Every market open is sized and bracketed against the account's own exchange mark,
+# so a test that expects an open to be accepted has to supply one — without it the
+# handler correctly refuses to place an unsized entry.
+MARK_PRICE = 63000.0
 
 
 def make_mock_db(strategy_override=None):
@@ -95,6 +98,7 @@ async def test_valid_token_passes_auth():
     from app.main import app
     pool, _ = make_mock_db()
     with patch("app.webhook_handler.get_pool", return_value=pool), \
+         patch("app.webhook_handler.get_mark_price", AsyncMock(return_value=MARK_PRICE)), \
          patch("app.executor_client.call_executor",
                AsyncMock(return_value=make_executor_result())), \
          patch("app.webhook_handler.publish", AsyncMock()):
@@ -149,8 +153,9 @@ async def test_symbol_mismatch_returns_422():
 async def test_quote_variant_accepted_when_flag_on():
     from app.main import app
     pool, _ = make_mock_db({"allow_quote_variants": True})
-    
+
     with patch("app.webhook_handler.get_pool", return_value=pool), \
+         patch("app.webhook_handler.get_mark_price", AsyncMock(return_value=MARK_PRICE)), \
          patch("app.executor_client.call_executor",
                AsyncMock(return_value=make_executor_result())), \
          patch("app.webhook_handler.publish", AsyncMock()):
@@ -164,22 +169,8 @@ async def test_quote_variant_accepted_when_flag_on():
         assert resp.status_code == 200
 
 
-# ── Risk Guard 1: Daily signal cap ────────────────────────────────────
-
-@pytest.mark.asyncio
-async def test_daily_signal_cap_returns_429():
-    from app.main import app
-    pool, _ = make_mock_db({"signals_today": 500, "max_daily_signals": 500})
-
-    with patch("app.webhook_handler.get_pool", return_value=pool):
-        async with AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            resp = await client.post(
-                f"/webhook/{STRATEGY_ID}", json=BASE_PAYLOAD
-            )
-        assert resp.status_code == 429
-        assert "daily signal limit" in resp.json().get("detail", "").lower()
+# (The daily signal cap that used to be tested here was removed as broken —
+#  db/migrations/030_drop_dead_columns.sql dropped signals_today/max_daily_signals.)
 
 
 # ── Risk Guard 3: Max leverage ────────────────────────────────────────
@@ -217,3 +208,113 @@ async def test_stopped_strategy_returns_403():
             )
         assert resp.status_code == 403
         assert "stopped" in resp.json().get("detail", "").lower()
+
+
+# ── Distance-form bracket (tp_pct / sl_pct) ───────────────────────────
+#
+# The AI engine sends distances instead of levels for market entries, because its
+# own candle feed is the venue's PUBLIC market while the order fills at the
+# account's own market — ~1% apart on a demo account. Pricing the bracket here,
+# against the exchange mark, is what keeps the asked reward/risk intact.
+
+async def _post_open(payload_extra: dict, *, mark=MARK_PRICE, strategy_override=None):
+    """POST an opening webhook and return (response, payload seen by _log_order)."""
+    from app.main import app
+    pool, _ = make_mock_db(strategy_override)
+    logged = {}
+
+    async def _capture_log_order(pool_, payload_, *a, **kw):
+        logged["payload"] = payload_
+
+    with patch("app.webhook_handler.get_pool", return_value=pool), \
+         patch("app.webhook_handler.get_mark_price", AsyncMock(return_value=mark)), \
+         patch("app.webhook_handler._log_order", AsyncMock(side_effect=_capture_log_order)), \
+         patch("app.executor_client.call_executor",
+               AsyncMock(return_value=make_executor_result())), \
+         patch("app.webhook_handler.publish", AsyncMock()):
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.post(
+                f"/webhook/{STRATEGY_ID}", json={**BASE_PAYLOAD, **payload_extra}
+            )
+    return resp, logged.get("payload")
+
+
+@pytest.mark.asyncio
+async def test_pct_bracket_is_priced_from_the_exchange_mark():
+    """sl_pct/tp_pct become prices measured from the account's own mark, not from
+    whatever price the caller was looking at."""
+    resp, payload = await _post_open({"sl_pct": "1.0", "tp_pct": "1.5"})
+
+    assert resp.status_code == 200
+    # 63000 → stop 1% below, target 1.5% above
+    assert float(payload.sl_price) == pytest.approx(62370.0)
+    assert float(payload.tp_price) == pytest.approx(63945.0)
+    # and the ask is recorded, so a later re-anchor knows what was intended
+    assert payload.signal_metadata["stops_from_pct"] is True
+    assert payload.signal_metadata["sl_pct_asked"] == 1.0
+    assert payload.signal_metadata["tp_pct_asked"] == 1.5
+
+
+@pytest.mark.asyncio
+async def test_pct_bracket_mirrors_for_a_short():
+    resp, payload = await _post_open(
+        {"side": "sell", "signal": "open_short", "sl_pct": "1.0", "tp_pct": "1.5"}
+    )
+
+    assert resp.status_code == 200
+    assert float(payload.sl_price) == pytest.approx(63630.0)   # above entry
+    assert float(payload.tp_price) == pytest.approx(62055.0)   # below entry
+
+
+# ── Risk Guard: reward/risk floor ─────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_reward_risk_below_floor_is_rejected():
+    """The exact shape of the 2026-08-11 BTC AI entry: 0.5% of reward against
+    2% of risk. It must not reach the exchange."""
+    resp, _ = await _post_open({"sl_pct": "2.0", "tp_pct": "0.5"})
+
+    assert resp.status_code == 422
+    detail = resp.json().get("detail", "").lower()
+    assert "reward/risk" in detail and "0.25" in detail
+
+
+@pytest.mark.asyncio
+async def test_reward_risk_exactly_one_is_allowed():
+    """The floor is 1.0 inclusive — equal reward and risk is a plan, not a symptom."""
+    resp, payload = await _post_open({"sl_pct": "1.0", "tp_pct": "1.0"})
+
+    assert resp.status_code == 200
+    assert float(payload.tp_price) == pytest.approx(63630.0)
+
+
+@pytest.mark.asyncio
+async def test_reward_risk_floor_also_judges_absolute_prices():
+    """The floor is the last line of defence, so it applies to a caller that sends
+    levels (TradingView) and not only to distance-form brackets."""
+    resp, _ = await _post_open({"sl_price": "61000", "tp_price": "63500"})
+
+    assert resp.status_code == 422
+    assert "reward/risk" in resp.json().get("detail", "").lower()
+
+
+@pytest.mark.asyncio
+async def test_target_on_the_wrong_side_is_rejected():
+    """A long whose target sits below its entry: caught as a wrong-side bracket
+    rather than passed through by an absolute value."""
+    resp, _ = await _post_open({"sl_price": "62000", "tp_price": "62500"})
+
+    assert resp.status_code == 422
+    assert "wrong side" in resp.json().get("detail", "").lower()
+
+
+@pytest.mark.asyncio
+async def test_stop_only_open_is_not_judged_on_reward_risk():
+    """Most TradingView strategies send a stop and no target — reward/risk cannot
+    be computed, so the guard must stay out of the way."""
+    resp, payload = await _post_open({"sl_price": "62000"})
+
+    assert resp.status_code == 200
+    assert payload.tp_price is None

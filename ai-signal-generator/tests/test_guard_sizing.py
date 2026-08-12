@@ -112,8 +112,13 @@ def test_open_long_risk_mode_end_to_end(monkeypatch):
     assert out['gate_passed'] is True
     assert out['resolved_size'] == 5.0          # $500 notional = 5 / 0.01 / 100
     assert out['sizing_meta']['effective_risk_usd'] == 5.0
-    assert out['resolved_sl_price'] == 99.0
-    assert out['resolved_tp_price'] == 102.0
+    # A market entry hands on the DISTANCES, not prices: the candles here come from
+    # the venue's public market, the fill happens in the account's own market, and
+    # order-listener is the one holding that price. See node_guard's own note.
+    assert out['resolved_sl_price'] is None
+    assert out['resolved_tp_price'] is None
+    assert out['resolved_sl_pct'] == 1.0
+    assert out['resolved_tp_pct'] == 2.0
 
 
 def test_open_long_margin_mode_unchanged(monkeypatch):

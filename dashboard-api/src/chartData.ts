@@ -318,18 +318,42 @@ async function readExchangeCandles(
   }
 }
 
-/** Newest geometry read for a strategy — what the LLM saw on its last cycle. */
+// A geometry read describes a range fitted to the bars up to the moment it was
+// taken. Two things make an old one worthless rather than merely dated, and both
+// were on screen on 2026-08-12: a read from 2026-08-02 was drawn over bars starting
+// 2026-08-09, so all 25 of its swing points fell outside the window and its two
+// boundaries — projected across ten days of slope — landed below every candle, the
+// "upper" one starting below the "lower". So a read is only offered when it is
+// recent in absolute terms AND falls inside the window being charted.
+//
+// The absolute cap also stands in for the strategy's own switch: the generator
+// writes geometry_data only while use_geometry is on, so a strategy that has it off
+// (ai-btc-6f8c) simply has nothing newer than the cap.
+const GEOMETRY_MAX_AGE_HOURS = 24;
+
+/**
+ * Newest geometry read for a strategy — what the LLM saw on its last cycle —
+ * provided it is still describing the window on screen. `windowStartMs` is the
+ * first charted bar; a read older than that is about bars nobody is looking at.
+ */
 async function latestGeometry(
   strategyId: string,
+  windowStartMs: number | null,
 ): Promise<{ data: Record<string, any>; at: number | null } | null> {
   const { rows } = await getPool().query(
     `SELECT geometry_data, triggered_at
        FROM ai_signal_log
       WHERE strategy_id = $1
         AND geometry_data IS NOT NULL
+        AND triggered_at >= NOW() - ($2 || ' hours')::interval
+        AND ($3::timestamptz IS NULL OR triggered_at >= $3::timestamptz)
       ORDER BY triggered_at DESC
       LIMIT 1`,
-    [strategyId],
+    [
+      strategyId,
+      String(GEOMETRY_MAX_AGE_HOURS),
+      windowStartMs != null ? new Date(windowStartMs).toISOString() : null,
+    ],
   );
   if (!rows.length) return null;
   return { data: rows[0].geometry_data, at: toMs(rows[0].triggered_at) };
@@ -467,9 +491,11 @@ async function assemble(
     }
   }
 
+  // An AI-log chart passes its own row's geometry deliberately — that chart exists
+  // to show the range that signal saw — so it is never age-filtered.
   const geo = opts.geometry !== undefined
     ? (opts.geometry ? { data: opts.geometry, at: opts.geometryAt ?? null } : null)
-    : await latestGeometry(strategyId);
+    : await latestGeometry(strategyId, candles.length ? candles[0].time : null);
   const last = candles[candles.length - 1];
 
   const payload: ChartPayload = {

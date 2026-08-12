@@ -261,6 +261,8 @@ class AdaptiveScheduler:
             'resolved_size':         None,
             'resolved_sl_price':     None,
             'resolved_tp_price':     None,
+            'resolved_sl_pct':       None,
+            'resolved_tp_pct':       None,
             'resolved_limit_price':     None,
             'resolved_target_order_id': None,
             'webhook_fired':         False,
