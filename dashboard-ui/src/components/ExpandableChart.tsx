@@ -257,7 +257,8 @@ export function ChartPanel({ path, onStats }: {
 
   return (
     <div style={{ borderTop: '1px solid var(--border)', background: 'var(--bg2)' }}>
-      {/* Context strip: the timeframe picker, plus what the AI saw */}
+      {/* Context strip: the timeframe picker, which market the bars are from,
+          plus what the AI saw */}
       <div style={{
         display: 'flex', flexWrap: 'wrap', gap: '10px 18px',
         padding: '10px 12px 8px 18px', alignItems: 'center',
@@ -267,6 +268,16 @@ export function ChartPanel({ path, onStats }: {
           active={payload.timeframe}
           busy={busy}
           onPick={setTimeframe}
+        />
+        {/* Always shown: a demo account trades in its own market, so which market
+            these bars came from decides whether the lines below mean anything. Red
+            when they are borrowed from somewhere other than the trade's own venue. */}
+        <Stat
+          label="Candles from"
+          value={payload.candle_source === 'exchange'
+            ? [payload.exchange, payload.mode].filter(Boolean).join(' · ')
+            : `${payload.exchange} (not this account)`}
+          color={payload.candle_source === 'exchange' ? undefined : 'var(--red)'}
         />
         {geo && (
           <Stat label="AI range" value={`${geo.shape.replace(/_/g, ' ')} · ${geo.fitQuality}`} />

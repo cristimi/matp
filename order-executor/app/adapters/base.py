@@ -22,6 +22,15 @@ class ExchangeUnavailableError(Exception):
 MMR_CONSERVATISM_BUFFER = 0.0015
 
 
+# Bar duration of every timeframe the chart ladder offers. Adapters use it to turn
+# a bar count into a time window, and to reject a timeframe they cannot serve.
+CANDLE_BAR_SECONDS = {
+    "1m": 60, "3m": 180, "5m": 300, "15m": 900, "30m": 1800,
+    "1h": 3600, "2h": 7200, "4h": 14400, "6h": 21600, "8h": 28800,
+    "12h": 43200, "1d": 86400,
+}
+
+
 class ExchangeAdapter(ABC):
     def __init__(self, credentials: dict, mode: str, position_mode: str = "net"):
         """
@@ -158,6 +167,33 @@ class ExchangeAdapter(ABC):
         """Return the current mark price for `symbol`, or None if unavailable.
         Subclasses should override. Must never raise."""
         return None
+
+    async def get_candles(
+        self, symbol: str, timeframe: str, limit: int = 300, end_ms: int | None = None
+    ) -> list[dict]:
+        """
+        OHLCV bars for `symbol` from THIS account's venue **and mode**.
+
+        The mode matters as much as the venue: a demo/testnet account trades in a
+        simulated market whose prices drift away from the real one (Hyperliquid
+        testnet was observed 1% off mainnet — see docs/process/reports/
+        btc-ai-position-chart-investigation.md). Charting a position against any
+        other market draws entry/stop/target lines that never touch the candles,
+        so this is the only candle source a chart of a trade may use.
+
+        `timeframe` is a chart-ladder string (1m 5m 15m 30m 1h 4h 1d); a venue
+        that does not offer it returns []. `end_ms` windows the series on a past
+        moment (the newest bar returned opens at or before it) instead of "now".
+
+        Returns bars OLDEST-FIRST, each:
+            { "time": int (bar open, epoch ms), "open": float, "high": float,
+              "low": float, "close": float, "volume": float (base asset) }
+        The last bar may still be forming — a chart wants the live price.
+
+        Empty list means unavailable; callers must not read that as "no market".
+        Must never raise. Subclasses should override.
+        """
+        return []
 
     async def get_instrument_specs(self) -> dict:
         """Return per-symbol precision descriptors. Must never raise.

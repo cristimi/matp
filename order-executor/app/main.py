@@ -387,6 +387,40 @@ async def get_min_order_size(account_id: str, symbol: str):
         return {"symbol": symbol, "min_base_size": 0.0, "error": str(e)}
 
 
+@app.get("/accounts/{account_id}/candles/{symbol}")
+async def get_candles(
+    account_id: str,
+    symbol: str,
+    tf: str = "1h",
+    limit: int = 300,
+    end_ms: int | None = None,
+):
+    """
+    OHLCV bars for `symbol` from this account's own venue AND mode.
+
+    This exists so the dashboard can chart a trade against the market it actually
+    filled in. A demo/testnet account is a separate market with its own prices, so
+    borrowing candles from anywhere else puts the entry/stop/target lines on bars
+    they never touched. `mode` is echoed back so the caller can label the chart
+    honestly.
+
+    Never raises: `candles: []` plus an `error` string means unavailable, which the
+    caller must not read as "no market".
+    """
+    try:
+        adapter = await registry.get(account_id)
+        candles = await adapter.get_candles(symbol, tf, limit, end_ms)
+        return {
+            "symbol":    symbol,
+            "timeframe": tf,
+            "mode":      adapter.mode,
+            "candles":   candles,
+        }
+    except Exception as e:
+        logger.error(f"get_candles failed for {account_id}/{symbol} {tf}: {e}")
+        return {"symbol": symbol, "timeframe": tf, "candles": [], "error": str(e)}
+
+
 @app.get("/accounts/{account_id}/mark-price/{symbol}")
 async def get_mark_price(account_id: str, symbol: str):
     """Return the current exchange mark price for the given symbol."""

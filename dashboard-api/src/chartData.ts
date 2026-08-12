@@ -19,6 +19,13 @@ import { getRedis } from './redis';
 // (exchange_accounts.exchange) and falls back to the ingestion default.
 const INGESTION_EXCHANGE = process.env.INGESTION_EXCHANGE || 'blofin';
 
+const EXECUTOR_URL = process.env.EXECUTOR_URL || 'http://order-executor:8004';
+
+// The executor hop plus an exchange round-trip is slow when this host is loaded.
+// Chart opens are lazy and user-driven, so waiting is far better than silently
+// falling back to another market's candles.
+const EXECUTOR_TIMEOUT_MS = 12000;
+
 // Tried in order when the strategy's own interval has no stream ingested.
 const TIMEFRAME_FALLBACKS = ['1h', '4h', '15m', '1m'];
 
@@ -81,6 +88,16 @@ export interface ChartOverlay {
 export interface ChartPayload {
   symbol:              string;
   exchange:            string;
+  /** The account's trading mode ('live' | 'demo'), when the candles came from it. */
+  mode:                string | null;
+  /**
+   * Where the candles came from:
+   *   'exchange' — the account's own venue AND mode, via order-executor. The only
+   *                source whose prices the overlay lines can be trusted against.
+   *   'stream'   — market-ingestion's Redis stream, a DIFFERENT market. A fallback
+   *                for when the exchange could not be reached; `note` says so.
+   */
+  candle_source:       'exchange' | 'stream' | 'none';
   timeframe:           string | null;   // null when nothing is ingested for this symbol
   timeframe_requested: string | null;
   /** Ladder rungs that actually have a stream — what the picker may offer. */
@@ -241,6 +258,66 @@ async function readCandles(
   return candles.filter(c => Number.isFinite(c.time) && Number.isFinite(c.close));
 }
 
+/**
+ * Candles from the account's own venue **and mode**, via order-executor.
+ *
+ * This is the source a chart of a trade must use. A demo/testnet account fills in
+ * a simulated market with its own prices — Hyperliquid testnet was 1% away from
+ * the real market on 2026-08-11, which put an entry line 640 above the bar it
+ * opened on and showed candles crossing a take-profit the exchange never
+ * triggered (docs/process/reports/btc-ai-position-chart-investigation.md).
+ *
+ * Returns null when the venue could not be reached or does not serve this
+ * timeframe, which is the only case the Redis-stream fallback is for. Every
+ * exchange call stays inside order-executor's adapters; this stays venue-agnostic.
+ */
+async function readExchangeCandles(
+  accountId: string,
+  symbol: string,
+  timeframe: string,
+  limit: number,
+  endMs?: number,
+): Promise<{ candles: Candle[]; mode: string | null } | null> {
+  const params = new URLSearchParams({ tf: timeframe, limit: String(limit) });
+  if (endMs != null) params.set('end_ms', String(Math.round(endMs)));
+
+  try {
+    const resp = await fetch(
+      `${EXECUTOR_URL}/accounts/${encodeURIComponent(accountId)}` +
+      `/candles/${encodeURIComponent(symbol)}?${params}`,
+      { signal: AbortSignal.timeout(EXECUTOR_TIMEOUT_MS) },
+    );
+    if (!resp.ok) {
+      console.warn(`[chartData] executor candles HTTP ${resp.status} for ${accountId}/${symbol} ${timeframe}`);
+      return null;
+    }
+    const body = await resp.json() as any;
+    const raw  = Array.isArray(body?.candles) ? body.candles : [];
+    const candles: Candle[] = raw
+      .map((c: any) => ({
+        time:   Number(c.time),
+        open:   Number(c.open),
+        high:   Number(c.high),
+        low:    Number(c.low),
+        close:  Number(c.close),
+        volume: Number(c.volume),
+      }))
+      .filter((c: Candle) => Number.isFinite(c.time) && Number.isFinite(c.close));
+
+    if (!candles.length) {
+      console.warn(
+        `[chartData] executor returned no candles for ${accountId}/${symbol} ${timeframe}` +
+        (body?.error ? `: ${body.error}` : ''),
+      );
+      return null;
+    }
+    return { candles, mode: body?.mode ?? null };
+  } catch (err: any) {
+    console.warn(`[chartData] executor candles failed for ${accountId}/${symbol} ${timeframe}: ${err?.message || err}`);
+    return null;
+  }
+}
+
 /** Newest geometry read for a strategy — what the LLM saw on its last cycle. */
 async function latestGeometry(
   strategyId: string,
@@ -303,9 +380,19 @@ interface AssembleOptions {
   endMs?:      number;
 }
 
-/** Shared tail: resolve the stream, read candles, attach geometry and overlay. */
+/**
+ * Shared tail: read candles, attach geometry and overlay.
+ *
+ * Candle sourcing is a strict priority, not a preference: the account's own venue
+ * and mode first, always, because those are the only bars the overlay's entry,
+ * stop and target were ever measured against. market-ingestion's Redis stream is
+ * a fallback for when that venue cannot be reached, and it is a DIFFERENT market —
+ * possibly a different mode of the same venue — so it is labelled loudly rather
+ * than passed off as the trade's own chart.
+ */
 async function assemble(
   symbol: string,
+  accountId: string | null,
   accountExchange: string | null,
   preferredTimeframe: string | null,
   strategyId: string,
@@ -314,13 +401,71 @@ async function assemble(
   opts: AssembleOptions = {},
 ): Promise<ChartPayload> {
   const accountVenue = accountExchange ? accountExchange.toLowerCase() : null;
-  const stream = await pickStream(
-    [accountVenue, INGESTION_EXCHANGE], symbol, preferredTimeframe,
-  );
+  const wanted = preferredTimeframe ?? TIMEFRAME_FALLBACKS[0];
 
-  const candles = stream
-    ? await readCandles(stream.exchange, symbol, stream.timeframe, limit, opts.endMs)
-    : [];
+  const notes: string[] = [];
+
+  // ── First choice: the market the trade actually lives in ───────────────────
+  const own = accountId
+    ? await readExchangeCandles(accountId, symbol, wanted, limit, opts.endMs)
+    : null;
+
+  let candles: Candle[]  = [];
+  let source: ChartPayload['candle_source'] = 'none';
+  let exchange           = accountVenue ?? INGESTION_EXCHANGE;
+  let mode: string | null = null;
+  let timeframe: string | null = null;
+  let available: string[] = [];
+
+  if (own) {
+    candles   = own.candles;
+    source    = 'exchange';
+    mode      = own.mode;
+    timeframe = wanted;
+    // Every venue behind an adapter serves the whole ladder, so the picker offers
+    // all of it — unlike the stream path, where a rung with no stream is a dead
+    // button.
+    available = [...CHART_TIMEFRAMES];
+    if (mode === 'demo') {
+      notes.push(
+        `Candles from this account's own ${exchange} demo market. A demo market ` +
+        `has its own prices, so they will not match public charts of ${symbol}.`,
+      );
+    }
+  } else {
+    // ── Fallback: ingested stream. Another market — say so. ──────────────────
+    const stream = await pickStream(
+      [accountVenue, INGESTION_EXCHANGE], symbol, preferredTimeframe,
+    );
+    if (stream) {
+      candles   = await readCandles(stream.exchange, symbol, stream.timeframe, limit, opts.endMs);
+      source    = 'stream';
+      exchange  = stream.exchange;
+      timeframe = stream.timeframe;
+      available = await availableTimeframes(stream.exchange, symbol);
+      notes.push(
+        accountVenue
+          ? `Could not reach ${accountVenue} for candles — showing ingested ` +
+            `${stream.exchange} bars instead. This is a different market, so the ` +
+            `entry, stop and target lines may not line up with them.`
+          : `Showing ingested ${stream.exchange} bars — this row has no account, ` +
+            `so its own market is unknown.`,
+      );
+      if (preferredTimeframe && preferredTimeframe !== stream.timeframe) {
+        notes.push(`${preferredTimeframe} is not ingested — showing ${stream.timeframe}.`);
+      }
+    } else if (accountId) {
+      notes.push(
+        `Could not reach ${accountVenue ?? 'the exchange'} for ${symbol} ${wanted} ` +
+        `candles, and no stream is ingested for it either.`,
+      );
+    } else {
+      notes.push(
+        `No candle stream ingested for ${symbol}. ` +
+        `Add "${symbol}:${preferredTimeframe || '1h'}" to INGESTION_SUBSCRIPTIONS.`,
+      );
+    }
+  }
 
   const geo = opts.geometry !== undefined
     ? (opts.geometry ? { data: opts.geometry, at: opts.geometryAt ?? null } : null)
@@ -329,31 +474,19 @@ async function assemble(
 
   const payload: ChartPayload = {
     symbol,
-    exchange:            stream?.exchange ?? accountVenue ?? INGESTION_EXCHANGE,
-    timeframe:           stream?.timeframe ?? null,
+    exchange,
+    mode,
+    candle_source:       source,
+    timeframe,
     timeframe_requested: preferredTimeframe,
-    available_timeframes: stream ? await availableTimeframes(stream.exchange, symbol) : [],
-    bar_seconds:         stream ? (TIMEFRAME_SECONDS[stream.timeframe] ?? null) : null,
+    available_timeframes: available,
+    bar_seconds:         timeframe ? (TIMEFRAME_SECONDS[timeframe] ?? null) : null,
     candles,
     geometry:            geo?.data ?? null,
     geometry_at:         geo?.at   ?? null,
     overlay: { ...overlay, current_price: last ? last.close : null },
   };
 
-  const notes: string[] = [];
-  if (!stream) {
-    notes.push(
-      `No candle stream ingested for ${symbol}. ` +
-      `Add "${symbol}:${preferredTimeframe || '1h'}" to INGESTION_SUBSCRIPTIONS.`,
-    );
-  } else {
-    if (accountVenue && accountVenue !== stream.exchange) {
-      notes.push(`Candles from ${stream.exchange} — ${accountVenue} is not ingested.`);
-    }
-    if (preferredTimeframe && preferredTimeframe !== stream.timeframe) {
-      notes.push(`${preferredTimeframe} is not ingested — showing ${stream.timeframe}.`);
-    }
-  }
   if (notes.length) payload.note = notes.join(' ');
 
   return payload;
@@ -381,6 +514,7 @@ export async function buildPositionChart(
             sp.closed_at,
             sp.closing_price,
             s.interval        AS strategy_interval,
+            s.account_id      AS account_id,
             ea.exchange       AS account_exchange,
             o.received_at     AS received_at,
             o.sl_price,
@@ -402,6 +536,7 @@ export async function buildPositionChart(
 
   return assemble(
     r.symbol,
+    r.account_id,
     r.account_exchange,
     requestedTimeframe ?? defaultTimeframe(r.strategy_interval),
     r.strategy_id,
@@ -447,6 +582,7 @@ export async function buildOrderChart(
             o.received_at,
             o.updated_at,
             s.interval  AS strategy_interval,
+            COALESCE(o.account_id, s.account_id) AS account_id,
             ea.exchange AS account_exchange,
             oel.placed_at AS oel_placed_at,
             oel.filled_at AS oel_filled_at
@@ -466,6 +602,7 @@ export async function buildOrderChart(
 
   return assemble(
     r.symbol,
+    r.account_id,
     r.account_exchange,
     requestedTimeframe ?? defaultTimeframe(r.strategy_interval),
     r.strategy_id,
@@ -511,6 +648,7 @@ export async function buildSignalChart(
             l.order_id,
             s.symbol,
             s.interval    AS strategy_interval,
+            s.account_id  AS account_id,
             ea.exchange   AS account_exchange,
             o.side,
             o.status,
@@ -549,6 +687,7 @@ export async function buildSignalChart(
 
   return assemble(
     r.symbol,
+    r.account_id,
     r.account_exchange,
     displayTf,
     r.strategy_id,

@@ -20,7 +20,12 @@ import httpx
 from eth_account import Account
 from eth_account.messages import encode_typed_data
 
-from app.adapters.base import ExchangeAdapter, ExchangeUnavailableError, MMR_CONSERVATISM_BUFFER
+from app.adapters.base import (
+    ExchangeAdapter,
+    ExchangeUnavailableError,
+    CANDLE_BAR_SECONDS,
+    MMR_CONSERVATISM_BUFFER,
+)
 from app.models import OrderRequest, OrderResult
 
 logger = logging.getLogger(__name__)
@@ -261,6 +266,55 @@ class HyperliquidAdapter(ExchangeAdapter):
         except Exception as e:
             logger.warning(f"HyperliquidAdapter.get_mark_price({symbol}) failed: {e}")
             return None
+
+    async def get_candles(
+        self, symbol: str, timeframe: str, limit: int = 300, end_ms: int | None = None
+    ) -> list[dict]:
+        """See ExchangeAdapter.get_candles. Uses the `candleSnapshot` info call,
+        which is windowed by time rather than by count, so the bar count is turned
+        into a start time. Note self.base_url already points at testnet for
+        mode=demo — that is exactly the point: these must be the bars the account
+        actually trades against."""
+        bar_seconds = CANDLE_BAR_SECONDS.get(timeframe)
+        if not bar_seconds:
+            logger.warning(f"HyperliquidAdapter.get_candles: unsupported timeframe {timeframe!r}")
+            return []
+        try:
+            coin = symbol.replace("-USDT", "").replace("-USD", "").upper()
+            end   = int(end_ms) if end_ms else int(time.time() * 1000)
+            start = end - max(1, limit) * bar_seconds * 1000
+            resp = await self._client.post(
+                f"{self.base_url}/info",
+                json={
+                    "type": "candleSnapshot",
+                    "req": {
+                        "coin": coin,
+                        "interval": timeframe,
+                        "startTime": start,
+                        "endTime": end,
+                    },
+                },
+            )
+            resp.raise_for_status()
+            rows = resp.json() or []
+            candles = [
+                {
+                    "time":   int(c["t"]),
+                    "open":   float(c["o"]),
+                    "high":   float(c["h"]),
+                    "low":    float(c["l"]),
+                    "close":  float(c["c"]),
+                    "volume": float(c.get("v") or 0),
+                }
+                for c in rows
+            ]
+            candles.sort(key=lambda c: c["time"])
+            return candles[-limit:]
+        except Exception as e:
+            logger.warning(
+                f"HyperliquidAdapter.get_candles({symbol},{timeframe}) failed: {e}"
+            )
+            return []
 
     # ── Private helpers ──────────────────────────────────────────────
 

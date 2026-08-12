@@ -11,7 +11,12 @@ from typing import Dict, List, Optional
 
 import httpx
 
-from app.adapters.base import ExchangeAdapter, ExchangeUnavailableError, MMR_CONSERVATISM_BUFFER
+from app.adapters.base import (
+    ExchangeAdapter,
+    ExchangeUnavailableError,
+    CANDLE_BAR_SECONDS,
+    MMR_CONSERVATISM_BUFFER,
+)
 from app.models import OrderRequest, OrderResult, Position
 
 logger = logging.getLogger(__name__)
@@ -23,6 +28,8 @@ _INSTRUMENTS_TTL = 86400  # 24 hours
 # recovered fill is matched against orders-history/fills-history by instId + side +
 # reduceOnly + size, within this window after the close call. The investigation
 # observed a real match at ~359ms; this is generous headroom, not a measured bound.
+_CANDLES_MAX_PER_CALL = 500   # BloFin's ceiling for /market/candles
+
 _RECOVERY_WINDOW_MS = 5000
 _RECOVERY_SIZE_TOLERANCE = Decimal("0.02")  # relative tolerance on contract count
 
@@ -407,6 +414,50 @@ class BlofinAdapter(ExchangeAdapter):
         except Exception as e:
             logger.warning(f"BlofinAdapter.get_mark_price({symbol}) failed: {e}")
             return None
+
+    async def get_candles(
+        self, symbol: str, timeframe: str, limit: int = 300, end_ms: int | None = None
+    ) -> list[dict]:
+        """See ExchangeAdapter.get_candles. self.base_url already points at
+        demo-trading-api for mode=demo, so a demo account is charted against the
+        demo market it actually fills in.
+
+        Blofin returns newest-first rows
+        `[ts, open, high, low, close, volContracts, volBase, volQuote, confirm]`;
+        column 6 (base-asset volume) is the one that matches every other candle
+        source in this system. `after` selects rows strictly older than a
+        timestamp, so the window end is passed as end_ms+1 to keep that bar."""
+        if timeframe not in CANDLE_BAR_SECONDS:
+            logger.warning(f"BlofinAdapter.get_candles: unsupported timeframe {timeframe!r}")
+            return []
+        try:
+            params = {
+                "instId": symbol,
+                "bar":    timeframe,
+                # 500 is the most one call returns; a chart asks for ~300.
+                "limit":  str(min(max(1, limit), _CANDLES_MAX_PER_CALL)),
+            }
+            if end_ms:
+                params["after"] = str(int(end_ms) + 1)
+            resp = await self._client.get("/api/v1/market/candles", params=params)
+            resp.raise_for_status()
+            rows = resp.json().get("data") or []
+            candles = [
+                {
+                    "time":   int(r[0]),
+                    "open":   float(r[1]),
+                    "high":   float(r[2]),
+                    "low":    float(r[3]),
+                    "close":  float(r[4]),
+                    "volume": float(r[6]),
+                }
+                for r in rows
+            ]
+            candles.sort(key=lambda c: c["time"])
+            return candles
+        except Exception as e:
+            logger.warning(f"BlofinAdapter.get_candles({symbol},{timeframe}) failed: {e}")
+            return []
 
     def _position_side(self, side: Optional[str]) -> str:
         """The value BloFin's positionSide field must carry for a call about `side`.

@@ -78,6 +78,14 @@ export interface ChartOverlay {
 export interface ChartPayload {
   symbol:              string;
   exchange:            string;
+  /** The account's trading mode ('live' | 'demo') when the candles came from it. */
+  mode:                string | null;
+  /**
+   * 'exchange' — bars from the account's own venue and mode: the market the trade
+   * actually filled in, and the only one the overlay lines can be trusted against.
+   * 'stream'   — a fallback from market-ingestion. A DIFFERENT market; `note` says so.
+   */
+  candle_source:       'exchange' | 'stream' | 'none';
   timeframe:           string | null;
   timeframe_requested: string | null;
   /** Ladder rungs that actually have candles — what the picker may offer. */

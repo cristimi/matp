@@ -229,16 +229,18 @@ services:
       REDIS_URL: redis://redis:6379
       INGESTION_EXCHANGE: blofin
       INGESTION_MODE: live
-      # These streams feed the position/order chart overlay. Every symbol that has
-      # an enabled strategy gets the full ladder the chart's timeframe picker
-      # offers (1m 5m 15m 30m 1h 4h 1d) — a chart opens two rungs below the
-      # strategy's interval and the user can switch to any rung, so a missing one
-      # is a dead button. Without a stream a chart has nothing to draw
-      # (ai-signal-generator fetches candles per-cycle and discards them, so it
-      # leaves nothing behind for the UI).
-      # One ccxt.pro instance multiplexes all of these over a single WS connection.
-      # HYPE-USDT and SUI-USDT are deliberately absent: both strategies are
-      # disabled, so no new position can open there. Add them if that changes.
+      # These streams feed signal-engine, and are the chart's FALLBACK candle
+      # source only. A chart of a trade asks order-executor for the bars of the
+      # account's own venue and mode first, always — a demo account fills in a
+      # simulated market whose prices drift from these live ones, and drawing its
+      # entry/stop/target over live bars puts the lines where the trade never was
+      # (docs/process/reports/btc-ai-position-chart-investigation.md). The stream
+      # is used only when that venue cannot be reached, and the chart says so.
+      # Every symbol with an enabled strategy still gets the full ladder
+      # (1m 5m 15m 30m 1h 4h 1d) so the fallback can serve any rung the picker
+      # offers. One ccxt.pro instance multiplexes all of these over a single WS
+      # connection. HYPE-USDT and SUI-USDT are absent: both strategies are
+      # disabled, and their charts now come from the exchange anyway.
       INGESTION_SUBSCRIPTIONS: >-
         BTC-USDT:1m,BTC-USDT:5m,BTC-USDT:15m,BTC-USDT:30m,BTC-USDT:1h,BTC-USDT:4h,BTC-USDT:1d,
         ETH-USDT:1m,ETH-USDT:5m,ETH-USDT:15m,ETH-USDT:30m,ETH-USDT:1h,ETH-USDT:4h,ETH-USDT:1d,

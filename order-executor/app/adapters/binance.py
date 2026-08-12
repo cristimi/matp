@@ -45,7 +45,12 @@ from urllib.parse import urlencode
 
 import httpx
 
-from app.adapters.base import ExchangeAdapter, ExchangeUnavailableError, MMR_CONSERVATISM_BUFFER
+from app.adapters.base import (
+    ExchangeAdapter,
+    ExchangeUnavailableError,
+    CANDLE_BAR_SECONDS,
+    MMR_CONSERVATISM_BUFFER,
+)
 from app.models import OrderRequest, OrderResult, Position
 
 logger = logging.getLogger(__name__)
@@ -53,6 +58,7 @@ logger = logging.getLogger(__name__)
 _EXCHANGE_INFO_TTL = 86400   # 24h — contract specs change rarely
 _BRACKET_TTL       = 86400
 _RECV_WINDOW       = 10000   # ms; homelab clock drift plus a slow hop
+_KLINES_MAX_PER_CALL = 1500  # Binance's ceiling for /fapi/v1/klines
 
 # Order types that are conditional triggers rather than resting book orders.
 # get_open_orders must exclude these (the base contract gives them to
@@ -405,6 +411,42 @@ class BinanceAdapter(ExchangeAdapter):
         except Exception as e:
             logger.warning(f"BinanceAdapter.get_mark_price({symbol}) failed: {e}")
             return None
+
+    async def get_candles(
+        self, symbol: str, timeframe: str, limit: int = 300, end_ms: int | None = None
+    ) -> list[dict]:
+        """See ExchangeAdapter.get_candles. Klines come back oldest-first as
+        `[openTime, o, h, l, c, volume, closeTime, ...]`, and `endTime` windows the
+        series on a past moment. The dash is stripped so a canonical BTC-USDT and a
+        Binance-native BTCUSDT both work."""
+        if timeframe not in CANDLE_BAR_SECONDS:
+            logger.warning(f"BinanceAdapter.get_candles: unsupported timeframe {timeframe!r}")
+            return []
+        try:
+            params: dict = {
+                "symbol":   symbol.replace("-", ""),
+                "interval": timeframe,
+                "limit":    min(max(1, limit), _KLINES_MAX_PER_CALL),
+            }
+            if end_ms:
+                params["endTime"] = int(end_ms)
+            rows = await self._public("/fapi/v1/klines", params)
+            if not isinstance(rows, list):
+                return []
+            return [
+                {
+                    "time":   int(r[0]),
+                    "open":   float(r[1]),
+                    "high":   float(r[2]),
+                    "low":    float(r[3]),
+                    "close":  float(r[4]),
+                    "volume": float(r[5]),
+                }
+                for r in rows
+            ]
+        except Exception as e:
+            logger.warning(f"BinanceAdapter.get_candles({symbol},{timeframe}) failed: {e}")
+            return []
 
     # ── orders ─────────────────────────────────────────────────────────────────
 
