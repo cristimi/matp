@@ -134,10 +134,33 @@ async def _raw_groq() -> list[dict]:
         return []
 
 
-_ZHIPU_FALLBACK = [
-    {"id": "glm-4.5-flash", "display_name": "GLM-4.5-Flash", "provider": "zhipu"},
-    {"id": "glm-4-flash",   "display_name": "GLM-4-Flash",   "provider": "zhipu"},
+# Zhipu's /models endpoint lists ONLY the paid tier. Its free Flash models are
+# callable but never enumerated, so without this merge the picker offers nothing
+# usable once the account balance hits zero (every paid model then 429s with
+# error 1113, "余额不足或无可用资源包" — insufficient balance).
+# Verified 2026-08-13: /models returned glm-4.5, glm-4.5-air, glm-4.6, glm-4.7,
+# glm-5, glm-5-turbo, glm-5.1, glm-5.2 — all 1113 — while glm-4.7-flash and
+# glm-4-flash answered on the same key.
+# glm-4.5-flash is deliberately absent: retired 2026-01-30, now server-side
+# aliased to glm-4.7-flash, so listing it would just duplicate an entry.
+_ZHIPU_FREE = [
+    {"id": "glm-4.7-flash", "display_name": "GLM-4.7-Flash (free)", "provider": "zhipu"},
+    {"id": "glm-4-flash",   "display_name": "GLM-4-Flash (free)",   "provider": "zhipu"},
 ]
+
+# Zhipu's reasoning models default to thinking mode. Thinking burns the response
+# on reasoning tokens instead of the tool call the signal pipeline parses, and it
+# is slow enough to threaten _PROBE_TIMEOUT (15 s). Measured 2026-08-13 on
+# glm-4.7-flash, same prompt: thinking on → 129 output tokens and a None parse
+# through _probe_zhipu's structured path; thinking off → 16 tokens, parsed fine.
+# The flag is a no-op on models that never think, so it is safe for all of them.
+_ZHIPU_NO_THINKING = {"extra_body": {"thinking": {"type": "disabled"}}}
+
+
+def zhipu_chat_kwargs() -> dict:
+    """Extra ChatOpenAI kwargs every Zhipu call needs. Shared by the probe and
+    the live chain so a model cannot pass one path and fail the other."""
+    return dict(_ZHIPU_NO_THINKING)
 
 
 async def _raw_cerebras() -> list[dict]:
@@ -157,16 +180,17 @@ async def _raw_cerebras() -> list[dict]:
 async def _raw_zhipu() -> list[dict]:
     if not _key('zhipu'):
         return []
+    listed: list[dict] = []
     try:
         from openai import AsyncOpenAI
         client = AsyncOpenAI(api_key=_key('zhipu'),
                              base_url=settings.zhipu_base_url)
         page = await client.models.list()
-        models = [{"id": m.id, "display_name": m.id, "provider": "zhipu"} for m in page.data]
-        return models or _ZHIPU_FALLBACK
+        listed = [{"id": m.id, "display_name": m.id, "provider": "zhipu"} for m in page.data]
     except Exception as exc:
-        logger.error("Failed to list Zhipu models: %s — using fallback", exc)
-        return _ZHIPU_FALLBACK
+        logger.error("Failed to list Zhipu models: %s — free models only", exc)
+    known = {m["id"] for m in listed}
+    return listed + [m for m in _ZHIPU_FREE if m["id"] not in known]
 
 
 async def _raw_openrouter() -> list[dict]:
@@ -344,7 +368,8 @@ async def _probe_zhipu(model_id: str) -> bool:
         from langchain_openai import ChatOpenAI
         llm = ChatOpenAI(model=model_id, temperature=0.1,
                          api_key=_key('zhipu'),
-                         base_url=settings.zhipu_base_url, max_retries=0)
+                         base_url=settings.zhipu_base_url, max_retries=0,
+                         **zhipu_chat_kwargs())
         # method="function_calling": matches node_analyze._STRUCTURED_OUTPUT_METHOD —
         # the default "json_schema" method isn't reliably honored by this
         # OpenAI-compatible gateway, so probing with the default would false-pass.
@@ -353,9 +378,15 @@ async def _probe_zhipu(model_id: str) -> bool:
         return resp.get("parsed") is not None
     except Exception as exc:
         exc_str = str(exc)
+        # '1113' = insufficient balance / no resource package. It arrives as a 429
+        # so the generic rate-limit path would call it transient and keep the model
+        # "ok" in the cache — which lets an unpayable model eat one of the three
+        # fallback slots on every cycle. It is definitive until the account is
+        # topped up, and the cache TTL re-probes so a top-up still self-heals.
         if any(s in exc_str for s in (
             "404", "model_not_found", "does not exist", "decommissioned",
             "tool calling", "tool_use_failed", "does not support tool", "function calling",
+            "'1113'",
         )):
             logger.debug("Zhipu probe %s: definitively unavailable — %s", model_id, exc)
             return False

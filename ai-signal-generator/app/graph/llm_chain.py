@@ -112,12 +112,16 @@ def _get_llm(provider: str, model: str, api_key: str | None):
         )
     elif provider == 'zhipu':
         from langchain_openai import ChatOpenAI
+        # zhipu_chat_kwargs() turns thinking mode off — see models_registry.
+        # A thinking zhipu model answers prose and never emits the tool call
+        # the branch below parses.
         return ChatOpenAI(
             model=model,
             temperature=0.1,
             api_key=api_key or None,
             base_url=settings.zhipu_base_url,
             max_retries=2,
+            **models_registry.zhipu_chat_kwargs(),
         )
     elif provider == 'openrouter':
         from langchain_openai import ChatOpenAI
