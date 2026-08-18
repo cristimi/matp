@@ -115,3 +115,47 @@ Ran as `/app/manual_open.py` inside the container and deleted afterwards. It loa
 execution strategy, refuses unless both the recorded legs and the exchange are flat,
 calls `emitter.emit("open_short", ...)`, then writes `social_signal_log`,
 `social_shadow_orders` and `open_leg`. Same sequence `main.handle()` performs.
+
+---
+
+## Follow-up: take-profit at 62,250 on the whole position
+
+Requested after the entry. Set through the listener's own `emitter.adjust_levels`,
+i.e. order-listener's `/strategies/{id}/adjust-stops`, so no exchange call was made
+outside order-executor.
+
+**Both levels had to be sent, not just the TP.** `modify-stops` is cancel-then-place:
+it cancels every resting trigger and places only what it is handed, so sending the
+take-profit alone would have deleted the guaranteed stop and left the short naked.
+The script therefore reads the resting stop first and re-sends it unchanged, and
+refuses outright if it cannot find one.
+
+Dry run:
+
+```
+position BTC-USDT short size=0.004700000000000000000 entry=64289.6
+resting sl=67215.2 tp=None  -> sending sl=67215.2 tp=62250.0
+ok= True dry run: intended sl=67215.2 tp=62250.0
+DRY RUN — nothing changed. re-run with --go
+```
+
+Live:
+
+```
+ok= True SHORT sl=67215.2 tp=62250.0 confirmed
+recorded levels: {'stop_price': 67215.2, 'tp_price': 62250.0, 'stop_mode': None}
+```
+
+`confirmed` is the endpoint's strict contract — `success`, `sl_ok` and `tp_ok` all true.
+Verified independently against the venue:
+
+```
+GET order-executor:8004/accounts/blofin-blofin-demo-v5vr/trigger-orders/BTC-USDT
+[{"oid":"10003425621","tpsl":"sl","triggerPx":"67215.200000000000000000","sz":"4.7"},
+ {"oid":"10003425620","tpsl":"tp","triggerPx":"62250.000000000000000000","sz":"4.7"}]
+```
+
+Both triggers rest on the full size (4.7 contracts = 0.0047 BTC). Guards checked before
+sending: TP 62,250 is below the 64,289.6 entry, which is the profitable side for a short.
+The levels are also recorded in `social_position_state`, so the listener knows about them
+and a later post that moves the stop will re-send this TP rather than drop it.
