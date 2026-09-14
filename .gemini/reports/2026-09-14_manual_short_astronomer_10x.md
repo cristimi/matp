@@ -99,3 +99,41 @@ GET order-executor:8004/accounts/blofin-blofin-demo-v5vr/positions
 - The listener now records a SHORT leg with both levels, so a later Telegram TRIM /
   CLOSE / stop-move post acts on this position normally and re-sends the TP.
 - Script ran as `/app/manual_open.py` in the container and was deleted afterwards.
+
+---
+
+## Follow-up: position doubled (same session)
+
+Requested right after the entry. Sent as the listener's own scale-in step
+(`add_short`, `intent=add_short`, size = the 0.0019 already held, `leverage=10`,
+`sl_price=82550`), then **both levels re-placed once** through `adjust_levels` so the
+triggers cover the doubled size — `modify-stops` sizes them from the live position.
+The TP was again left off the add order itself (R:R floor), and put back in the same
+call as the stop.
+
+```
+open position: size=0.0019 entry=78967.1 sl=82550.0 tp=76000.0
+mark=78915.1 adding 0.0019 -> target size 0.0038
+webhook: 200 {"order_id":"76d144f1-f8c6-4ac8-a28a-a61e00694c44","status":"received","message":"OK"}
+position now: size=0.003800000000000000000 entry=78940.6
+adjust_levels ok= True SHORT sl=82550.0 tp=76000.0 confirmed
+recorded levels: {'stop_price': 82550.0, 'tp_price': 76000.0, 'stop_mode': None}
+```
+
+Verified:
+
+```
+ 76d144f1-f8c6-4ac8-a28a-a61e00694c44 | open_short | 0.0019 | filled | 78914.1 | lev 10 | sl 82550.0 | intent add_short
+
+ 3718bac3-241a-4633-8230-3fca55a905eb | BTC-USDT | short | 0.0038 | 78940.6 | open      (blended entry)
+
+GET order-executor:8004/accounts/blofin-blofin-demo-v5vr/trigger-orders/BTC-USDT
+ sl triggerPx 82550  sz 3.8
+ tp triggerPx 76000  sz 3.8
+
+GET .../positions  BTC-USDT short size 0.0038 entry 78940.6 liquidation 86523.18
+```
+
+Audit rows written with synthetic `channel_msg_id = -202609141` (`action_type=ADD`,
+reason `manual_add`). `social_position_state` keeps the SHORT leg with both levels.
+Script `/app/manual_add.py` ran in the container and was deleted afterwards.
