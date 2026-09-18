@@ -36,6 +36,16 @@ class Settings(BaseSettings):
     executor_url: str = "http://order-executor:8004"
     health_poll_interval_s: int = 10
 
+    # Exchange accounts polled through order-executor's balance route, edge-triggered
+    # account.down/up. A wrong or expired API key answers on this route with an
+    # `error` field; the exchange being unreachable does too. Polled slowly — every
+    # call is an authenticated exchange request — and only reported down after
+    # `account_fail_threshold` misses in a row, so one slow answer under homelab
+    # load (cross-container HTTP can take 5-20s there) is not an outage.
+    account_poll_interval_s: int = 120
+    account_poll_timeout_s: float = 20.0
+    account_fail_threshold: int = 2
+
     class Config:
         env_file = ".env"
         case_sensitive = False

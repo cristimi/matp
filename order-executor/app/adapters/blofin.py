@@ -752,6 +752,24 @@ class BlofinAdapter(ExchangeAdapter):
                 error_msg=str(e),
             )
 
+    @staticmethod
+    def _data_or_unavailable(data: dict, what: str) -> list:
+        """The `data` list of a read response, or ExchangeUnavailableError.
+
+        BloFin answers an authentication failure (e.g. 152401 "Access key does not
+        exist") with HTTP 200 and an error `code` in the body, and no `data`. Reading
+        that as an empty list is exactly the "[] masks an error" case the positions
+        route forbids: on 2026-09-17 a dead API key made the reconciler read
+        "no positions" three passes in a row and close a live short in the DB.
+        """
+        code = str(data.get("code", "0"))
+        if code not in ("0", "200"):
+            raise ExchangeUnavailableError(
+                f"blofin {what}: API error {code}: {data.get('msg') or 'unknown'}"
+            )
+        entries = data.get("data")
+        return entries if isinstance(entries, list) else []
+
     async def get_open_positions(self) -> List[Position]:
         path = "/api/v1/account/positions"
         headers = self._headers("GET", path, "")
@@ -764,8 +782,8 @@ class BlofinAdapter(ExchangeAdapter):
             )
             
         data = response.json()
-        raw_positions = data.get("data", [])
-        
+        raw_positions = self._data_or_unavailable(data, "positions")
+
         mapped_positions = []
         for p in raw_positions:
             size_val = float(p.get("positions", 0))
@@ -1187,7 +1205,7 @@ class BlofinAdapter(ExchangeAdapter):
             headers = self._headers("GET", path, "")
             resp = await self._client.get(path, headers=headers)
             data = resp.json()
-            entries = data.get("data") or []
+            entries = self._data_or_unavailable(data, "orders-pending")
 
             result = []
             for o in entries:
@@ -1209,6 +1227,10 @@ class BlofinAdapter(ExchangeAdapter):
                     "created_at_ms": int(o.get("createTime") or 0),
                 })
             return result
+        except ExchangeUnavailableError:
+            # Let the route answer with its error shape: [] here would tell
+            # order-listener "confirmed no resting orders" on a failed read.
+            raise
         except Exception as e:
             logger.error(f"BlofinAdapter.get_open_orders failed: {e}")
             return []
@@ -1306,7 +1328,7 @@ class BlofinAdapter(ExchangeAdapter):
             headers = self._headers("GET", path, "")
             resp = await self._client.get(path, headers=headers)
             data = resp.json()
-            entries = data.get("data") or []
+            entries = self._data_or_unavailable(data, "orders-tpsl-pending")
             if position_side and position_side != "net":
                 entries = [
                     o for o in entries

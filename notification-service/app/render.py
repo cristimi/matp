@@ -28,6 +28,10 @@ def compute_dedup_key(event: str, data: dict) -> str | None:
         service = data.get("service")
         state = "down" if event == "service.down" else "up"
         return f"service:{service}:{state}"
+    if event in ("account.down", "account.up"):
+        acct = data.get("account_id")
+        state = "down" if event == "account.down" else "up"
+        return f"account:{acct}:{state}"
     if event in ("funding.hot", "funding.cooled"):
         symbol = data.get("symbol")
         state = "hot" if event == "funding.hot" else "cooled"
@@ -128,6 +132,32 @@ def render(event: str, data: dict) -> dict | None:
             "tag": f"service:{service}",
             "renotify": True,
             "data": {"service": service},
+        }
+
+    if event == "account.down":
+        acct = data.get("account_id", "?")
+        label = data.get("label") or acct
+        return {
+            "title": f"🚨 Account not working: {label}",
+            "body": (
+                f"{data.get('exchange', '?')} {data.get('mode', '?')} account {acct} is "
+                f"rejecting calls — orders and stop changes will fail, and open positions "
+                f"cannot be watched. {data.get('reason') or 'no answer'}"
+            ),
+            "tag": f"account:{acct}",
+            "renotify": True,
+            "data": {"account_id": acct, "reason": data.get("reason")},
+        }
+
+    if event == "account.up":
+        acct = data.get("account_id", "?")
+        label = data.get("label") or acct
+        return {
+            "title": f"✅ Account working again: {label}",
+            "body": f"{data.get('exchange', '?')} {data.get('mode', '?')} account {acct} answers again.",
+            "tag": f"account:{acct}",
+            "renotify": True,
+            "data": {"account_id": acct},
         }
 
     if event == "llm.degraded":
